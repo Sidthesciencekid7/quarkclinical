@@ -1,0 +1,24 @@
+# Railway bundles the directory `railway up` runs from and only honors ignore
+# files WITHIN that tree — the repo's .gitignore lives one level up, so secrets
+# must be excluded here explicitly. Without this, backend/.env (real Anthropic
+# key, Clerk secret, DB password) could be baked into the deployed image.
+.env
+.env.*
+!.env.example
+
+# Local-only cruft that is never imported at runtime — safe to keep out of the
+# image. (Deliberately NOT excluding _rlib/ or any app code, to avoid changing
+# runtime behavior; this file's job is secrets + obvious junk only.)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.sqlite3
+*.log

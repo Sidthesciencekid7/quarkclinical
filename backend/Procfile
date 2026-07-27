@@ -1,0 +1,8 @@
+# NOTE: worker count (--workers 2) is duplicated in Dockerfile's CMD — keep both
+# in sync, and see database.py's DB_POOL_SIZE/DB_MAX_OVERFLOW comment for how
+# worker count relates to the DB connection ceiling. Also: this line is the
+# canonical migration step, but Railway's dashboard Start Command has silently
+# overridden this Procfile before (see main.py's _run_migrations_on_boot
+# docstring) — verify the dashboard Start Command matches this if migrations
+# ever seem to not be running.
+web: python -m alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port $PORT --workers 2

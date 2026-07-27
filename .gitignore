@@ -1,0 +1,58 @@
+# ─────────────────────────────────────────────────────────────
+#  SECRETS — never commit. Real keys live in .env / .env.local.
+#  .env.example files ARE committed (placeholders only).
+# ─────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+credentials.json
+
+# ── Python (backend) ──────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.sqlite3
+
+# Project-local vendored R library (PowerTOST) — a large dev-only artifact,
+# reinstalled locally as needed; never belongs in version control. Production
+# uses the validated Python fallback, so this is not needed to deploy.
+_rlib/
+
+# Runtime logs + detached-server bookkeeping (can contain tracebacks / PII).
+*.log
+.backend_pid
+.frontend_pid
+
+# ── Node / Vite (frontend) ────────────────────────────────────
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+coverage/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ── Editors / OS ──────────────────────────────────────────────
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
