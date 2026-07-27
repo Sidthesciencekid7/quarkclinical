@@ -377,7 +377,7 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "7.5 Blinding, 7.6 Prior/Concomitant/Prohibited Medications, 7.7 Subject Restrictions); "
             "21 CFR 320.25; FDA Draft Guidance on Food-Effect Bioavailability (2002)"
         ),
-        "context_keys": ["drug_inn", "pk_parameters", "dose_strength", "formulation", "label_data", "study_type"],
+        "context_keys": ["drug_inn", "pk_parameters", "dose_strength", "formulation", "label_data", "study_type", "stratification"],
         "instructions": (
             "Where label_data is provided, align dose/route/formulation with the approved label "
             "and name the specific Reference Listed Drug (manufacturer and strength) rather than a "
@@ -389,7 +389,23 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "reviewer will flag. Write SEVEN subsections using <h2> headings, in this exact order: "
             "1) **Randomisation/Method of Assigning Subjects to Treatment Arms** — central "
             "randomisation (e.g. IRT/IWRS) in a 1:1 ratio, randomisation-code control and "
-            "concealment from blinded staff; "
+            "concealment from blinded staff. THEN, when a `stratification` object is present "
+            "in context, add an <h3> sub-subsection 'Stratification Factors' that: states the "
+            "randomisation is stratified on the listed factors; renders them as an HTML "
+            "<table> with the columns 'Factor', 'Basis for PK Variability' and 'Rationale for "
+            "Stratification' — one row per factor, in the order given, using that factor's "
+            "`magnitude` for the middle column and its `rationale` plus `effect` for the last; "
+            "and closes with one short paragraph drawn from `stratification.summary` "
+            "explaining what stratification does and does NOT buy in THIS design (in a "
+            "crossover each subject is their own control, so the benefit is balance across "
+            "SEQUENCES and protection from sequence/period confounding, NOT a narrower "
+            "confidence interval; in a parallel design it genuinely tightens the between-"
+            "subject error term). The factor list, its order and the stated magnitudes are "
+            "ALREADY DETERMINED — reproduce them faithfully and do NOT add factors, drop "
+            "factors, re-rank them, or invent effect sizes. Where a factor carries a `note` "
+            "about eligibility criteria already narrowing it, state that honestly rather than "
+            "overclaiming. If no `stratification` object is present, omit this sub-subsection "
+            "entirely; "
             "2) **Investigational Products** — Test and Reference product identity, strength, "
             "dosage form and manufacturer; "
             "3) **Management of Clinical Supplies** — THREE <h3> sub-subsections "

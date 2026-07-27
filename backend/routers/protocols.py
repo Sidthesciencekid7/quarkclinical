@@ -69,6 +69,7 @@ from services.guideline_coverage import compute_coverage
 from services.guidelines import GUIDELINES, is_supported
 from services.literature_service import LiteratureService
 from services.protocol_qc import run_qc
+from services.stratification import recommend_stratification
 from services.three_stage_pipeline import generate_protocol_via_pipeline
 from security import verify_password
 
@@ -150,7 +151,6 @@ _OPTIONAL_CTX_KEYS = (
     "analytical_method",
     "lloq",
     "acceptance_criteria",
-    "cv_intra",
     "irb_info",
     "org_name",
 )
@@ -327,11 +327,14 @@ def _augment_config_with_design(
     """
     cfg = dict(population_config)
 
-    cv_override = cfg.get("cv_intra")
+    # The within-subject CV is ALWAYS retrieved, never hand-entered. A manual
+    # override used to win over the sourced value, which meant the powering CV
+    # could silently lose its provenance (the SAP's cv_table would cite studies
+    # that didn't actually produce the number the study was powered on). The CV
+    # now comes only from the literature, falling back to a clearly-flagged
+    # assumption inside recommend_sample_size when nothing is retrievable.
     cv_high, cv_table = _select_cv_for_powering(extracted)
-    if cv_override:
-        cv_pct, cv_source = float(cv_override), "override"
-    elif cv_high:
+    if cv_high:
         # Power on the HIGHEST observed within-subject CV (Cmax or AUC) across the
         # healthy-volunteer literature — the conservative regulatory convention.
         cv_pct, cv_source = cv_high, "literature (highest observed)"
@@ -360,6 +363,19 @@ def _augment_config_with_design(
     # (the prompt renders it when present); empty when no literature CV was found.
     ss["cv_table"] = cv_table
     cfg["_sample_size"] = ss
+
+    # Stratification factors are resolved ONCE here, next to the design they
+    # depend on, for the same single-source-of-truth reason as _sample_size: the
+    # randomisation narrative, the population section and the export table must
+    # all cite the identical factor list. Derived from the real label text, so
+    # the applicability judgement is grounded rather than model-recalled.
+    cfg["_stratification"] = recommend_stratification(
+        design_key=ss.get("design_key"),
+        label=label,
+        is_nti=cfg.get("is_nti"),
+        cv_intra_pct=ss.get("cv_pct"),
+    )
+
     if label:
         cfg["_label"] = label
     return cfg
@@ -404,6 +420,11 @@ def _build_context(
     rec = population_config.get("_sample_size")
     if rec:
         ctx["sample_size"] = rec
+    # Locked stratification factors — the randomisation and population sections
+    # narrate these; they never re-derive or re-rank them.
+    strat = population_config.get("_stratification")
+    if strat:
+        ctx["stratification"] = strat
     label = population_config.get("_label")
     if label:
         ctx["label_data"] = label

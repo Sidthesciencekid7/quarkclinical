@@ -280,28 +280,24 @@ export default function PopulationBuilder({ value, onChange }: Props) {
         <SectionLabel>Study Design Parameters — Optional</SectionLabel>
         <p className="text-xs text-slate-400 mb-4 leading-relaxed">
           Supplying these refines the auto-computed sample size and design. Left blank,
-          the within-subject CV is taken from the literature (or a flagged assumption) and
           the Reference product / strength are written as placeholders.
         </p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
-          <div>
-            <FieldLabel>Within-subject CV (%)</FieldLabel>
-            <input
-              type="number"
-              min={1}
-              max={120}
-              step={0.5}
-              value={value.cv_intra ?? ''}
-              placeholder="e.g. 22"
-              onChange={e => {
-                const n = parseFloat(e.target.value)
-                set('cv_intra', e.target.value === '' || isNaN(n) ? undefined : n)
-              }}
-              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-400 transition-all"
-            />
-            <p className="text-[11px] text-slate-400 mt-1">Drives the BE sample-size calculation.</p>
-          </div>
 
+        {/* Within-subject CV is deliberately NOT an input: it is retrieved
+            automatically from the published literature (highest observed CV for
+            Cmax or AUC across healthy-volunteer studies — the conservative
+            regulatory convention) and the supporting trials are tabulated in the
+            SAP. A hand-typed CV silently overrode that sourced, citable value. */}
+        <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-2.5">
+          <p className="text-[11px] text-slate-500 leading-relaxed">
+            <span className="font-medium text-slate-600">Within-subject CV is retrieved automatically.</span>{' '}
+            The sample size is powered on the highest within-subject CV reported for Cmax or
+            AUC in the healthy-volunteer literature, with the supporting studies tabulated in
+            the Statistical Analysis Plan.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
           <div>
             <FieldLabel>Dose Strength</FieldLabel>
             <input

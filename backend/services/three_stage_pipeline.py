@@ -82,9 +82,14 @@ def _compute_deterministic_facts(classification: dict, user_params: dict) -> dic
     Merges PK values Stage 1 extracted from the raw query with any explicit
     user-supplied overrides, then computes washout, sampling schedule, sample
     size, and TOST limits via biostatistics.py (no SciPy, exact non-central t).
+
+    ``cv_intra_pct`` is deliberately NOT overridable: the within-subject CV is
+    always the AI/literature-retrieved value so the powering figure keeps a
+    traceable provenance. (Same rule as the protocol route — see
+    routers/protocols.py::_augment_config_with_design.)
     """
     pk = dict(classification.get("pk_params") or {})
-    for key in ("cv_intra_pct", "t_half_hours", "tmax_hours", "is_nti"):
+    for key in ("t_half_hours", "tmax_hours", "is_nti"):
         if user_params.get(key) is not None:
             pk[key] = user_params[key]
 

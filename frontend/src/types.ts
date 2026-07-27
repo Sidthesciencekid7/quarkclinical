@@ -110,7 +110,10 @@ export interface PopulationConfig {
   exclusion_presets: string[]
   // Optional study-design parameters that drive the sample-size engine and the
   // generated protocol. Omitted keys fall back to literature / sensible defaults.
-  cv_intra?: number          // within-subject CV % (drives BE sample size)
+  // NOTE: within-subject CV is intentionally absent. It is sourced automatically
+  // from the literature (highest observed Cmax/AUC CV across healthy-volunteer
+  // studies) in routers/protocols.py::_select_cv_for_powering — never hand-entered,
+  // so the powering value always carries a citable provenance.
   reference_product?: string // named Reference Listed Drug
   dose_strength?: string     // e.g. "400 mg tablet"
   is_nti?: boolean           // narrow-therapeutic-index → tightened limits

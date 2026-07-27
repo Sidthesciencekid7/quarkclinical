@@ -200,7 +200,9 @@ class ProtocolCreate(BaseModel):
     study_type: StudyType
     # population_config may include optional generation hints:
     # dose_strength, formulation, analytical_method, lloq,
-    # acceptance_criteria, cv_intra, irb_info, org_name
+    # acceptance_criteria, irb_info, org_name
+    # (within-subject CV is NOT accepted here — it is always sourced from the
+    # literature so the powering value keeps a citable provenance.)
     population_config: dict[str, Any] = {}
     guideline_version: str = "FDA-BE-2014"
     # The finalized study-design decisions from the "Review design" step
@@ -375,9 +377,13 @@ class ExportRequest(BaseModel):
 class PipelineGenerateRequest(BaseModel):
     """Free-form drug name / query plus optional structured overrides.
 
-    ``user_params`` may carry ``drug_inn``, ``cv_intra_pct``, ``t_half_hours``,
-    ``tmax_hours``, ``is_nti`` — any present value overrides what Stage 1 (Haiku)
-    extracts before the deterministic facts are computed for Stage 2 (Opus).
+    ``user_params`` may carry ``drug_inn``, ``t_half_hours``, ``tmax_hours``,
+    ``is_nti`` — any present value overrides what Stage 1 (Haiku) extracts before
+    the deterministic facts are computed for Stage 2 (Opus).
+
+    The within-subject CV is NOT accepted as an override: it is always the
+    AI/literature-retrieved value so the powering figure keeps a traceable
+    provenance.
     """
     query: str
     user_params: dict[str, Any] = {}
