@@ -73,6 +73,7 @@ from services.guideline_coverage import compute_coverage
 from services.guidelines import GUIDELINES, is_supported
 from services.icf import build_icf
 from services.literature_service import LiteratureService
+from services.meta_analysis import build_meta_analysis
 from services.protocol_qc import run_qc
 from services.randomization import blinded_view, generate_allocation
 from services.safety_gating import recommend_safety_gating
@@ -376,6 +377,7 @@ _CV_SOURCE_LITERATURE = "literature (highest observed)"
 def _resolve_powering_cv(
     population_config: dict[str, Any],
     extracted: list[dict[str, Any]],
+    literature: list[dict[str, Any]] | None = None,
 ) -> tuple[float | None, dict[str, Any]]:
     """Resolve the CV% used to power the study AND its provenance, together.
 
@@ -397,7 +399,18 @@ def _resolve_powering_cv(
     is available, so biostatistics' own "assumed" label stands) is what is
     passed to recommend_sample_size.
     """
-    cv_high, cv_table = _select_cv_for_powering(extracted)
+    # Population-matched: the CV that powers the study and the meta-analysis
+    # table the appendix prints come from ONE call, so they cannot disagree.
+    # A healthy-volunteer protocol is powered on healthy-volunteer studies; a
+    # patient protocol on patient studies. See services/meta_analysis.py for
+    # why mixing them silently mis-sizes the trial.
+    meta = build_meta_analysis(
+        extracted,
+        subject_type=population_config.get("subject_type", "healthy"),
+        literature=literature,
+    )
+    cv_high = meta.get("powering_cv_pct")
+    cv_table = meta.get("studies_matching") or []
 
     raw = population_config.get("cv_intra")
     override: float | None = None
@@ -421,6 +434,9 @@ def _resolve_powering_cv(
             # cv_table, and never rendered as the powering justification.
             "cv_literature_not_used_for_powering": cv_table,
             "cv_literature_highest_pct": cv_high,
+            # The appendix still prints the full meta-analysis: an override
+            # replaces the powering NUMBER, not the evidence review.
+            "meta_analysis": meta,
             "cv_provenance_note": (
                 f"The within-subject CV of {override:.1f}% used to power this study was "
                 "specified by the investigator/sponsor, NOT derived from the published "
@@ -445,10 +461,13 @@ def _resolve_powering_cv(
             # in the SAP — present here precisely because the number came from
             # these trials.
             "cv_table": cv_table,
+            "meta_analysis": meta,
             "cv_provenance_note": (
                 f"The within-subject CV of {cv_high:.1f}% is the highest value observed for "
-                "either Cmax or AUC across the published healthy-volunteer studies listed "
-                "in cv_table."
+                "either Cmax or AUC across the published "
+                f"{'patient' if meta.get('target_population') == 'patient' else 'healthy-volunteer'} "
+                "studies listed in cv_table. Studies in other populations were retrieved and "
+                "tabulated in the meta-analysis appendix but deliberately NOT used for powering."
             ),
         }
 
@@ -458,9 +477,11 @@ def _resolve_powering_cv(
     return None, {
         "cv_is_user_override": False,
         "cv_table": [],
+        "meta_analysis": meta,
         "cv_provenance_note": (
-            "No within-subject CV was retrievable from the literature and none was "
-            "supplied; the powering CV is an explicitly-flagged assumption."
+            "No within-subject CV was retrievable for the protocol's own population "
+            "and none was supplied; the powering CV is an explicitly-flagged "
+            "assumption. The meta-analysis appendix states this plainly."
         ),
     }
 
@@ -612,6 +633,10 @@ def _augment_config_with_design(
     # resolver above. Nothing else in this module writes them.
     ss.update(cv_provenance)
     cfg["_sample_size"] = ss
+    # Surfaced separately so the appendix renderer and the SAP prompt can reach
+    # the per-study table without digging through the sample-size dict. Same
+    # object, so the adopted CV in the table is by definition the powering CV.
+    cfg["_meta_analysis"] = cv_provenance.get("meta_analysis") or {}
 
     design_key = ss.get("design_key")
     is_nti = ss.get("is_nti") if ss.get("is_nti") is not None else cfg.get("is_nti")
@@ -856,6 +881,12 @@ def _build_context(
     strat = population_config.get("_stratification")
     if strat:
         ctx["stratification"] = strat
+    # Population-matched meta-analysis: the per-study table the appendix prints,
+    # and the source of the powering CV. Locked, so the SAP narrates it rather
+    # than re-deriving a different number.
+    meta = population_config.get("_meta_analysis")
+    if meta:
+        ctx["meta_analysis"] = meta
     # The five locked clinical decisions. create_protocol also sets this
     # explicitly (same value); copying it here means a single-section
     # regeneration gets the same locked directive instead of losing it.

@@ -23,6 +23,7 @@ from services.bioanalytical import bioanalytical_directive
 from services.crf_dmp import crf_dmp_directive
 from services.ddi_screening import ddi_directive
 from services.icf import icf_directive
+from services.meta_analysis import meta_analysis_directive
 from services.randomization import randomization_directive
 from services.safety_gating import safety_gating_directive
 from services.safety_reporting import safety_reporting_directive
@@ -792,10 +793,14 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "analyses; 13.14 Blinded Sample Size Re-estimation); FDA Statistical Approaches to "
             "Establishing Bioequivalence (2001); 21 CFR 320.23"
         ),
-        "context_keys": ["pk_parameters", "study_type", "acceptance_criteria", "cv_intra", "sample_size"],
+        "context_keys": [
+            "pk_parameters", "study_type", "acceptance_criteria", "cv_intra",
+            "sample_size", "meta_analysis",
+        ],
         "instructions": (
             "Write the complete statistical analysis plan, tailored to study_type, as ELEVEN <h2> "
-            "subsections in this exact order: "
+            "subsections in this exact order, FOLLOWED BY the meta-analysis appendix described "
+            "at the end of these instructions: "
             "1) **Study Populations** — define the Randomised Set, Pharmacokinetic Set (dosed with "
             "reliable bioanalytical data; BLQ concentrations treated as zero), and Safety Set "
             "(received any dose, analysed as treated); briefly note disposition-of-subjects and "
@@ -836,7 +841,13 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "literature-derived, or no such line is present): the within-subject CV used to "
             "power the study is the "
             "HIGHEST within-subject CV observed for either Cmax or AUC across published "
-            "single-dose PK studies in the SAME population (healthy volunteers), taken as a "
+            "single-dose PK studies IN THE SAME POPULATION THIS PROTOCOL ENROLS — read the "
+            "protocol population from the META-ANALYSIS locked block and name it explicitly "
+            "(healthy volunteers, or the patient population); never assume healthy volunteers. "
+            "Studies in a different population were retrieved and are tabulated in the "
+            "meta-analysis appendix, but they are NOT the basis of the sample size; if the "
+            "locked block reports a higher CV in a non-matching population, state in one "
+            "sentence that it was reviewed and deliberately not adopted, and why. Taken as a "
             "conservative basis. If the locked design parameters include a 'cv_table' (a list of "
             "trials with their source, population, parameter, and CV%), render it as an HTML "
             "<table> with columns Study/Source | Population | Parameter | Within-subject CV% and a "
@@ -887,7 +898,23 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "alpha-adjustment method to preserve the overall Type I error rate, full details "
             "deferred to the SAP. "
             "State explicitly: all primary analyses are pre-specified in this plan; no post-hoc "
-            "changes to primary endpoints or acceptance criteria are permitted."
+            "changes to primary endpoints or acceptance criteria are permitted. "
+            "FINALLY, when a `meta_analysis` object is present in context (equivalently, a "
+            "META-ANALYSIS OF PUBLISHED PK STUDIES locked block), append an <h2> subsection "
+            "titled 'Appendix: Meta-Analysis of Published Pharmacokinetic Studies'. Render EVERY "
+            "row of the locked table as an HTML <table> with columns "
+            "Study | Indication | AUC | Cmax | Within-subject CV%, in the locked order. "
+            "Reproduce the values EXACTLY as supplied — do NOT recompute, round, convert units, "
+            "reorder, add studies, or drop studies. Where the locked table says 'not reported', "
+            "write 'Not reported' in that cell; NEVER fill an empty cell from your own knowledge, "
+            "because an invented PK value in a meta-analysis is a fabrication rather than a gap. "
+            "Group or clearly mark the studies that are NOT in the protocol's population and "
+            "state, in one sentence directly beneath the table, that they were reviewed but "
+            "excluded from the sample-size determination because they do not describe the "
+            "population this protocol enrols. Close with one sentence naming the adopted CV, the "
+            "study it came from, and the fact that it is the highest among population-matched "
+            "studies. State the search basis honestly: these are the studies retrieved by the "
+            "literature search, not a claim of exhaustive systematic review."
         ),
     },
     "ethics": {
@@ -1436,6 +1463,12 @@ _ENGINE_DIRECTIVE_PLAN: dict[str, tuple[tuple[str, Any], ...]] = {
         # scope="all": the DMP narrative feeds subsections 1/3/4 and the CRF
         # specification feeds subsection 2 (eCRF / data collection).
         ("crf_dmp", lambda r: crf_dmp_directive(r, "all")),
+    ),
+    "statistical_analysis_plan": (
+        # The per-study meta-analysis table AND the CV the study is powered on
+        # come from one engine call, so the appendix and the sample-size
+        # justification cannot state different numbers.
+        ("meta_analysis", meta_analysis_directive),
     ),
     "ethics": (
         ("safety_reporting", safety_reporting_directive),
