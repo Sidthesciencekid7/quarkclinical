@@ -95,6 +95,11 @@ function ReviewTable({ drug, studyType, pop, guidelineLabel }: { drug: Drug; stu
   )
 }
 
+/** Sentinel for "the client stopped waiting", which is NOT a generation failure.
+ *  Kept distinct from any server-supplied generation_error so the UI never
+ *  reports a red failure for a protocol that is still being written. */
+const STILL_RUNNING = '__still_running__'
+
 export default function GenerateButton({ drug, studyType, populationConfig, designDecisions, onSuccess }: Props) {
   const [status, setStatus] = useState<Status>('idle')
   const [progressStep, setProgressStep] = useState(0)
@@ -134,7 +139,17 @@ export default function GenerateButton({ drug, studyType, populationConfig, desi
   // until it flips to complete/failed. Transient network blips are tolerated (we
   // just keep polling), which is the whole point of not holding one connection open.
   const pollUntilDone = async (id: string): Promise<GeneratedProtocol> => {
-    const MAX_ATTEMPTS = 200 // ~10 min at 3s
+    // ~30 min at 3s. Raised from 200 (10 min) after a real generation was cut
+    // off at the old ceiling while the server was still working normally: the
+    // nine deterministic engines each inject locked facts that the model must
+    // render as tables (sampling schedule, DDI list, safety gating, the BMV
+    // validation/stability/handling set, CRF spec, DMP, meta-analysis
+    // appendix), so a full protocol now takes substantially longer to write
+    // than it did when this ceiling was chosen. The server has no matching
+    // timeout -- it finishes and persists regardless -- so a client ceiling
+    // that is too low only ever produces a false failure for work that
+    // succeeded.
+    const MAX_ATTEMPTS = 600
     const INTERVAL_MS = 3000
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       if (!mountedRef.current) throw new Error('__abandoned__')
@@ -154,9 +169,11 @@ export default function GenerateButton({ drug, studyType, populationConfig, desi
       // still 'generating' — hold the progress bar near the end
       setProgressStep(s => Math.max(s, 2))
     }
-    throw new Error(
-      'Generation is taking longer than expected. It may still finish — check "My Reports" in a few minutes.',
-    )
+    // NOT a failure: the client stopped waiting, the server did not stop working.
+    // Tagged so the UI can say that honestly instead of reporting a red
+    // "Generation failed" for a protocol that is still being written and will
+    // persist normally.
+    throw new Error(STILL_RUNNING)
   }
 
   const handleGenerate = async () => {
@@ -367,7 +384,26 @@ export default function GenerateButton({ drug, studyType, populationConfig, desi
         </div>
       )}
 
-      {status === 'error' && (
+      {status === 'error' && errorMsg === STILL_RUNNING && (
+        // Amber, not red: nothing failed. The server keeps writing and persists
+        // the protocol; only this tab stopped watching.
+        <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="flex-shrink-0 mt-0.5">
+            <circle cx="8" cy="8" r="7" stroke="#b45309" strokeWidth="1.5" />
+            <path d="M8 4.5V8l2.5 1.5" stroke="#b45309" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+          <div>
+            <span className="font-semibold">Still generating.</span> This is a long
+            protocol and it has exceeded the time this page waits. It has{' '}
+            <span className="font-semibold">not</span> failed — generation continues on
+            the server and the finished protocol will appear in{' '}
+            <span className="font-semibold">My Reports</span>. Open it from there in a
+            few minutes; there is no need to generate again.
+          </div>
+        </div>
+      )}
+
+      {status === 'error' && errorMsg !== STILL_RUNNING && (
         <div className="flex items-start gap-3 p-4 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="flex-shrink-0 mt-0.5">
             <circle cx="8" cy="8" r="7" stroke="#dc2626" strokeWidth="1.5" />

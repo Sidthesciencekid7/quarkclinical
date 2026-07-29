@@ -87,7 +87,10 @@ export default function CSRView({ protocol, onBack }: { protocol: ProtocolSummar
   }
 
   async function pollUntilDone(id: string): Promise<StudyReport> {
-    for (let i = 0; i < 200; i++) {
+    // 600 x 3s = ~30 min, matching GenerateButton. The server has no matching
+    // timeout, so a client ceiling below the real generation time reports a
+    // failure for work that actually succeeded.
+    for (let i = 0; i < 600; i++) {
       await sleep(3000)
       let p: StudyReport
       try { p = await api.getStudyReport(id) } catch { continue }

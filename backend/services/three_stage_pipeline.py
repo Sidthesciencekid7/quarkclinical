@@ -51,6 +51,13 @@ SONNET_MODEL = "claude-sonnet-4-6"
 
 CONFIDENCE_THRESHOLD = 0.85
 
+# Output ceiling for the single call that writes the whole protocol. The model
+# supports 128k output tokens; 64k leaves generous headroom over the ~34k a
+# 17-section document needs while staying well inside that. Raising this is only
+# safe because the call streams -- a non-streaming request this large would hit
+# the SDK's HTTP timeout instead.
+MAX_PROTOCOL_OUTPUT_TOKENS = 64000
+
 TEMPLATE_IDS = {
     "small_molecule": "TEMPLATE_BE_SMALL_MOLECULE",
     "biologic": "TEMPLATE_PK_BIOLOGIC",
@@ -677,7 +684,16 @@ async def _stage2_generate_all_sections(
     try:
         async with client.messages.stream(
             model=OPUS_MODEL,
-            max_tokens=20000,
+            # One call emits ALL 17 sections as fields of a single tool call, so
+            # the ceiling has to cover the whole document at once. At 20000 this
+            # truncated mid-tool-call and returned ~10 of 17 sections: each of
+            # the nine deterministic engines now injects locked facts the model
+            # must render as tables (sampling schedule, DDI list, safety gating,
+            # the BMV validation/stability/handling set, CRF spec, DMP,
+            # meta-analysis appendix), so the document outgrew the old limit.
+            # The model supports 128k output; streaming (used here) is what makes
+            # a ceiling this large safe from HTTP timeouts.
+            max_tokens=MAX_PROTOCOL_OUTPUT_TOKENS,
             system=expertise,
             tools=[tool],
             tool_choice={"type": "tool", "name": "write_protocol"},
@@ -699,6 +715,33 @@ async def _stage2_generate_all_sections(
             break
 
     usage = message.usage
+
+    # A truncated generation MUST NOT be reported as success. Missing fields of
+    # the tool call arrive as empty strings, so the dict is still fully-keyed and
+    # truthy -- which is exactly how a run that produced 10 of 17 sections was
+    # logged "success", persisted, and shown to the user as a finished protocol
+    # with no error anywhere. For a regulated document a silently-incomplete
+    # output is the worst failure mode available, so both signals are checked:
+    # the API's own stop_reason, and the sections that actually came back.
+    empty = [name for name in section_order if not sections.get(name)]
+    truncated = getattr(message, "stop_reason", None) == "max_tokens"
+    if sections and (truncated or empty):
+        reason = (
+            f"Generation was cut off at the {MAX_PROTOCOL_OUTPUT_TOKENS}-token output ceiling"
+            if truncated else
+            "Generation returned an incomplete protocol"
+        )
+        detail = (
+            f"{reason}: {len(section_order) - len(empty)} of {len(section_order)} sections "
+            f"were produced. Missing: {', '.join(empty) or 'none'}. "
+            f"Output tokens used: {usage.output_tokens}."
+        )
+        return {}, _log_entry(
+            stage, OPUS_MODEL, "failed", error=detail,
+            input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
+            latency_ms=latency_ms,
+        )
+
     log = _log_entry(
         stage, OPUS_MODEL, "success" if sections else "failed",
         input_tokens=usage.input_tokens, output_tokens=usage.output_tokens, latency_ms=latency_ms,
