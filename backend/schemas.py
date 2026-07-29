@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, computed_field
+from pydantic import BaseModel, ConfigDict, computed_field, field_validator
 
 from models import LiteratureSource, PKParameter, ProtocolStatus, StudyType, UserRole
 from services.design_decisions import classify_drug_modality
@@ -128,10 +129,21 @@ class LeadRead(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+_INN_PATTERN = re.compile(r"^[A-Za-z][A-Za-z\s-]{1,63}$")
+
+
 class DrugCreate(BaseModel):
     inn: str
     brand_names: list[str] = []
     rxnorm_id: Optional[str] = None
+
+    @field_validator("inn")
+    @classmethod
+    def _validate_inn(cls, v: str) -> str:
+        v = v.strip()
+        if not _INN_PATTERN.match(v):
+            raise ValueError("inn must be 2-64 letters, spaces, or hyphens only")
+        return v.lower()
 
 
 class DrugRead(BaseModel):
@@ -196,13 +208,50 @@ class PKParamRead(BaseModel):
 
 
 class ProtocolCreate(BaseModel):
+    # population_config carries optional, all-defaulting generation hints. It is
+    # a free-form dict for backwards compatibility: every key below is optional
+    # and previously-stored configs keep loading unchanged.
+    #
+    # Document / study hints:
+    #   dose_strength, formulation, analytical_method, lloq, acceptance_criteria,
+    #   irb_info, org_name, dose_mg
+    #
+    # cv_intra (float, %) — INVESTIGATOR-SPECIFIED within-subject CV.
+    #   Supplying it OVERRIDES the literature-derived value used to power the
+    #   study AND CHANGES THE DECLARED PROVENANCE: the recommendation's
+    #   cv_source becomes "override (investigator-specified; not
+    #   literature-derived)", cv_is_user_override becomes True, and cv_table —
+    #   the supporting-trials table the SAP renders as the justification for the
+    #   powering figure — is emptied, because an investigator-specified number
+    #   has no literature provenance to cite. The literature rows are still
+    #   retained for the record under cv_literature_not_used_for_powering.
+    #   Omit it and the CV is sourced from the literature (highest observed
+    #   within-subject CV for Cmax or AUC across healthy-volunteer studies), or
+    #   falls back to a clearly-flagged assumption when nothing is retrievable.
+    #   See routers/protocols.py::_resolve_powering_cv.
+    #
+    # Deterministic-engine hints (each engine degrades gracefully without them):
+    #   dosing ('single'|'multiple'), dosing_interval_hours (tau, hours)
+    #       -> services/sampling_schedule.py
+    #   is_ind, is_applicable_clinical_trial, is_new_chemical_entity, radiolabeled
+    #       -> services/safety_reporting.py (sponsor regulatory-affairs overrides)
+    #   randomization_seed (int) -> services/randomization.py; recorded so the
+    #       allocation list can be regenerated years later. Normally derived from
+    #       the protocol's own UUID and written back here by the server.
+    #   icf_version, icf_date, protocol_number, protocol_version, protocol_title,
+    #   investigator_name, site_name, study_contact, rights_contact,
+    #   injury_contact, compensation_text, confinement_hours,
+    #   n_pk_draws_per_period, clinicaltrials_gov_id, prohibited_medications,
+    #   safety_text -> services/icf.py (absent ones become visible placeholders)
+    #
+    # Server-computed keys are UNDERSCORE-PREFIXED and are never accepted from a
+    # client (any client-supplied one is overwritten at creation): _sample_size,
+    # _stratification, _design_decisions, _sampling_schedule, _ddi,
+    # _safety_gating, _bioanalytical, _safety_reporting, _randomization,
+    # _crf_dmp, _icf, _label. They are stripped from the prompt's
+    # population_config and surfaced as their own locked-fact context keys.
     drug_id: uuid.UUID
     study_type: StudyType
-    # population_config may include optional generation hints:
-    # dose_strength, formulation, analytical_method, lloq,
-    # acceptance_criteria, irb_info, org_name
-    # (within-subject CV is NOT accepted here — it is always sourced from the
-    # literature so the powering value keeps a citable provenance.)
     population_config: dict[str, Any] = {}
     guideline_version: str = "FDA-BE-2014"
     # The finalized study-design decisions from the "Review design" step
@@ -377,13 +426,15 @@ class ExportRequest(BaseModel):
 class PipelineGenerateRequest(BaseModel):
     """Free-form drug name / query plus optional structured overrides.
 
-    ``user_params`` may carry ``drug_inn``, ``t_half_hours``, ``tmax_hours``,
-    ``is_nti`` — any present value overrides what Stage 1 (Haiku) extracts before
-    the deterministic facts are computed for Stage 2 (Opus).
+    ``user_params`` may carry ``drug_inn``, ``cv_intra_pct``, ``t_half_hours``,
+    ``tmax_hours``, ``is_nti`` — any present value overrides what Stage 1 (Haiku)
+    extracts before the deterministic facts are computed for Stage 2 (Opus).
 
-    The within-subject CV is NOT accepted as an override: it is always the
-    AI/literature-retrieved value so the powering figure keeps a traceable
-    provenance.
+    Supplying ``cv_intra_pct`` overrides the retrieved within-subject CV AND
+    changes the declared provenance: the computed sample_size comes back with
+    ``cv_source`` = "override (investigator-specified; not literature-derived)"
+    and ``cv_is_user_override`` = True, so no downstream consumer can present it
+    as a literature-sourced figure.
     """
     query: str
     user_params: dict[str, Any] = {}

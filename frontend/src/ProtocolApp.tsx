@@ -136,6 +136,7 @@ export default function ProtocolApp() {
   const [designDecisions, setDesignDecisions] = useState<DesignDecision[] | null>(null)
   const [protocol, setProtocol] = useState<GeneratedProtocol | null>(null)
   const [openingId, setOpeningId] = useState<string | null>(null)
+  const [openError, setOpenError] = useState<string | null>(null)
   // When set, the Clinical Study Report (CSR) flow is shown for this protocol.
   const [csrProtocol, setCsrProtocol] = useState<ProtocolSummary | null>(null)
 
@@ -169,6 +170,7 @@ export default function ProtocolApp() {
   // and drop straight into the editor.
   const openReport = async (summary: ProtocolSummary) => {
     setOpeningId(summary.id)
+    setOpenError(null)
     try {
       const full = await api.getProtocol(summary.id)
       setDrug({
@@ -182,6 +184,7 @@ export default function ProtocolApp() {
       setProtocol(full)
     } catch (err) {
       console.error('Failed to open report:', err)
+      setOpenError(err instanceof Error ? err.message : 'Failed to open that report. Please try again.')
     } finally {
       setOpeningId(null)
     }
@@ -211,7 +214,7 @@ export default function ProtocolApp() {
       <Header view={view} onNavReports={goToReports} onNavNew={goToNew} onNavTeam={goToTeam} />
 
       {view === 'reports' ? (
-        <ReportsView onOpen={openReport} onNew={goToNew} onOpenCsr={openCsr} openingId={openingId} />
+        <ReportsView onOpen={openReport} onNew={goToNew} onOpenCsr={openCsr} openingId={openingId} openError={openError} onDismissOpenError={() => setOpenError(null)} />
       ) : view === 'team' ? (
         <TeamView />
       ) : (
@@ -250,7 +253,14 @@ export default function ProtocolApp() {
           <div className="px-8 py-7">
             {step === 0 && <DrugSelector value={drug} onChange={handleDrugChange} />}
             {step === 1 && <StudyTypeSelector value={studyType} onChange={setStudyType} drug={drug} />}
-            {step === 2 && <PopulationBuilder value={populationConfig} onChange={setPopulationConfig} />}
+            {step === 2 && (
+              <PopulationBuilder
+                value={populationConfig}
+                onChange={setPopulationConfig}
+                drug={drug}
+                studyType={studyType}
+              />
+            )}
             {step === 3 && drug && studyType && (
               <ReviewDesign
                 drug={drug}

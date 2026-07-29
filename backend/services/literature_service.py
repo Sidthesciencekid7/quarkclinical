@@ -40,6 +40,13 @@ _SPL_SECTIONS = {
     # instructions, not a guess from a curated drug-class table.
     "34068-7": "dosage_and_administration",
     "34069-5": "how_supplied",
+    # Interaction/contraindication text for the DDI screening engine
+    # (services/ddi_screening.py) - a named interacting agent HERE is the
+    # strongest evidence that a clearance pathway is real and clinically
+    # consequential for this product, so the drug-specific prohibited
+    # comedication list is grounded in the label rather than model recall.
+    "34073-7": "drug_interactions",
+    "34070-3": "contraindications",
 }
 
 # ---------------------------------------------------------------------------

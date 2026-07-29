@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import { useOrg } from '../lib/org'
+import { useActingUser } from '../lib/actingUser'
 import { ROLE_DISPLAY_NAMES } from '../types'
 import type { OrgMember } from '../types'
 
@@ -15,20 +16,24 @@ function CopyIcon() {
 
 export default function TeamView() {
   const { org, refresh } = useOrg()
+  const { currentUser } = useActingUser()
   const [members, setMembers] = useState<OrgMember[]>([])
   const [loading, setLoading] = useState(true)
   const [copied, setCopied] = useState(false)
   const [rotating, setRotating] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [membersError, setMembersError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
+    setLoading(true)
+    setMembers([])
     api.listOrgMembers()
       .then(list => { if (!cancelled) setMembers(list) })
-      .catch(() => { /* leave empty on failure */ })
+      .catch(e => { if (!cancelled) setMembersError(e instanceof Error ? e.message : 'Could not load team members.') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [])
+  }, [currentUser?.id])
 
   if (!org) return null
 
@@ -118,6 +123,8 @@ export default function TeamView() {
         </div>
         {loading ? (
           <p className="px-6 py-4 text-sm text-slate-400">Loading…</p>
+        ) : membersError ? (
+          <p className="px-6 py-4 text-sm text-red-500">Couldn&rsquo;t load team members: {membersError}</p>
         ) : (
           <ul className="divide-y divide-slate-100">
             {members.map(m => (

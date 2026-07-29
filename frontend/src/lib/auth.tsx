@@ -12,7 +12,7 @@
  */
 import { createContext, useContext } from 'react'
 import type { ReactNode } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import {
   SignedIn,
   SignedOut,
@@ -40,23 +40,31 @@ export const useLaunch = () => useContext(LaunchContext)
 function AuthedLaunchProvider({ children }: { children: ReactNode }) {
   const clerk = useClerk()
   const navigate = useNavigate()
+  const location = useLocation()
+
+  // Round-trip back to whatever protected route the user was actually trying
+  // to reach (e.g. /join/:token) after auth completes. The one exception is
+  // the marketing landing page itself ('/'), whose own login/signup buttons
+  // have always intentionally sent new/returning users into the app shell.
+  const redirectTarget =
+    location.pathname === '/' ? '/app' : `${location.pathname}${location.search}`
 
   // Defensive: only call Clerk's modal openers when Clerk has actually loaded
   // and the method exists. If Clerk failed to load (blocked script, dev-instance
   // limit, a stale tab pointing at a restarted dev server, etc.) the click must
-  // still DO something — fall back to navigating to /app (the Protected route
-  // renders the full-page sign-in) rather than silently doing nothing.
+  // still DO something — fall back to navigating to redirectTarget (the Protected
+  // route renders the full-page sign-in) rather than silently doing nothing.
   const open = (which: 'signIn' | 'signUp') => {
     try {
       const fn = which === 'signIn' ? clerk?.openSignIn : clerk?.openSignUp
       if (clerk?.loaded && typeof fn === 'function') {
-        fn.call(clerk, { forceRedirectUrl: '/app' })
+        fn.call(clerk, { forceRedirectUrl: redirectTarget })
         return
       }
     } catch (err) {
       console.error('Clerk modal failed to open; navigating to /app instead.', err)
     }
-    navigate('/app')
+    navigate(redirectTarget)
   }
 
   const api: LaunchApi = {

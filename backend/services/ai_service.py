@@ -13,6 +13,21 @@ import os
 from services.biostatistics import WASHOUT_HALF_LIVES
 from services.guidelines import get_profile, regulatory_directive
 from services.design_decisions import design_directive as _design_decisions_directive
+
+# Deterministic engines. Every number a regulator could challenge is computed in
+# Python by one of these modules and injected here as a LOCKED fact the model may
+# only narrate. Each engine exposes a *_directive() that renders its own result
+# under an "ALREADY DETERMINED" header and returns "" for empty/missing input, so
+# the assembly in _engine_directives() can concatenate them unconditionally.
+from services.bioanalytical import bioanalytical_directive
+from services.crf_dmp import crf_dmp_directive
+from services.ddi_screening import ddi_directive
+from services.icf import icf_directive
+from services.randomization import randomization_directive
+from services.safety_gating import safety_gating_directive
+from services.safety_reporting import safety_reporting_directive
+from services.sampling_schedule import sampling_schedule_directive
+
 from typing import Any
 
 import anthropic
@@ -32,6 +47,10 @@ _LONG_SECTIONS = frozenset({
     "study_assessments",
     "safety_monitoring",
     "statistical_analysis_plan",
+    # Data Handling now carries the computed CRF specification and the Data
+    # Management Plan (services/crf_dmp.py), which include tables; the default
+    # 4096-token budget truncated it mid-table.
+    "data_handling",
 })
 
 # ---------------------------------------------------------------------------
@@ -160,7 +179,7 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
         ),
         "context_keys": [
             "drug_inn", "study_type", "pk_parameters", "population_config",
-            "guideline_version", "sample_size",
+            "guideline_version", "sample_size", "sampling_schedule",
         ],
         "instructions": (
             "Write the protocol synopsis as a structured summary (450-600 words) covering, "
@@ -180,7 +199,23 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "acceptance criteria), summary of the primary analysis. "
             "For Study Design, Number of Subjects, and Acceptance Criteria you MUST use the exact "
             "values from the locked design parameters — these must match the Study Design and "
-            "Statistical Analysis Plan sections verbatim. Use present tense."
+            "Statistical Analysis Plan sections verbatim. Use present tense. "
+            "In part 6 (Assessments and Evaluations), when a `sampling_schedule` object is "
+            "present in context or a LOCKED PK BLOOD-SAMPLING SCHEDULE block is supplied, "
+            "summarise it using its EXACT locked numbers — the number of PK samples per "
+            "period, the first and last nominal timepoint, and the total blood volume across "
+            "the study — and state that the full timepoint list appears in Study Assessments. "
+            "Do NOT re-derive, round or invent a different sample count, last timepoint or "
+            "blood volume here; those figures must match Study Assessments verbatim. If no "
+            "sampling schedule is supplied, describe the PK sampling qualitatively without "
+            "quoting specific timepoint counts or volumes. "
+            "In part 7 (Statistical Methods), whenever you quote the within-subject CV used to "
+            "power the study, its provenance MUST match the CV PROVENANCE line in the locked "
+            "design parameters: if that line says the CV is INVESTIGATOR-SPECIFIED, write that "
+            "it was specified by the investigator/sponsor and do NOT describe it as literature-"
+            "derived, pooled from published studies, or supported by a table of prior trials; "
+            "if it says the CV is ASSUMED, say so plainly; otherwise describe it as sourced "
+            "from the published literature exactly as the locked parameters state."
         ),
     },
     "introduction": {
@@ -338,7 +373,7 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "6.3 Subject Withdrawal/Discontinuation and Replacement; 6.4 Study or Study Site "
             "Termination); ICH E6(R2) Section 4.3"
         ),
-        "context_keys": ["population_config", "sample_size"],
+        "context_keys": ["population_config", "sample_size", "ddi", "safety_gating"],
         "instructions": (
             "Write FOUR subsections using <h2> headings, in this exact order: "
             "1) **Subject Selection Criteria** — open with one sentence on the eligibility-review "
@@ -357,14 +392,37 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "significant acute or chronic illness, hypersensitivity to the drug class or "
             "formulation excipients, clinically significant abnormal vital signs at "
             "screening/check-in (give the specific BP/pulse/respiratory-rate/temperature bounds), "
-            "difficult venipuncture history, and recent blood donation; "
+            "difficult venipuncture history, and recent blood donation. "
+            "THEN, when a `ddi` object is present in context or a LOCKED PROHIBITED AND "
+            "RESTRICTED CONCOMITANT MEDICATIONS block is supplied, the medication-related "
+            "exclusion criteria MUST come from it and ONLY from it: add one exclusion "
+            "criterion per PROHIBITED entry naming that entry's drug class/`label`, its "
+            "`examples` and its EXACT `washout_days` before first dose, and one criterion "
+            "covering every `history_exclusion_agents` entry (agents that cannot be washed out "
+            "and are excluded on history alone, using the stated "
+            "`screening_history_window_days`). Do NOT insert a generic 'CYP3A4 inhibitors or "
+            "inducers' clause, or any other pathway clause, unless that pathway actually "
+            "appears in the locked list — this drug's clearance pathways were determined from "
+            "its own label. Do NOT invent, round or harmonise a washout period, and do NOT "
+            "add drug classes that are not listed. Where the locked facts report `unresolved` "
+            "items or `assumptions`, disclose them in one short sentence rather than hiding "
+            "them. If no `ddi` object is present, write the medication exclusions generically "
+            "as before; "
             "2) **Planned number of subjects** — state the total N, the randomisation ratio (1:1) "
             "and the per-arm N exactly as given in the locked design parameters; "
             "3) **Subject Withdrawal/Discontinuation and Replacement** — numbered list of "
             "withdrawal circumstances (consent withdrawal; AE/safety concern; protocol violation; "
             "non-compliance; prohibited-treatment use; lost to follow-up; death; other justifiable "
             "reason), documentation requirements, and state the replacement policy: subjects "
-            "withdrawn after randomization/dosing are NOT replaced; "
+            "withdrawn after randomization/dosing are NOT replaced. "
+            "When a LOCKED SAFETY GATING RULES block is supplied, the safety-driven withdrawal "
+            "circumstances in this list MUST be the engine's INDIVIDUAL SUBJECT STOPPING RULES, "
+            "reproduced with their EXACT triggers and numeric thresholds, rather than a generic "
+            "'adverse event' bullet — a rounded or softened threshold is not a stopping rule. "
+            "Do NOT list the COHORT/STUDY HALTING rules here: those stop dosing of all further "
+            "subjects and belong in Safety Monitoring; merging the two levels is the specific "
+            "error this locked list exists to prevent. State that the cohort-level halting "
+            "rules are specified in the Safety Monitoring section; "
             "4) **Study or Study Site Termination** — the sponsor's right to terminate for medical "
             "or administrative reasons, subject notification and follow-up, and IRB notification "
             "of premature termination."
@@ -377,7 +435,10 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "7.5 Blinding, 7.6 Prior/Concomitant/Prohibited Medications, 7.7 Subject Restrictions); "
             "21 CFR 320.25; FDA Draft Guidance on Food-Effect Bioavailability (2002)"
         ),
-        "context_keys": ["drug_inn", "pk_parameters", "dose_strength", "formulation", "label_data", "study_type", "stratification"],
+        "context_keys": [
+            "drug_inn", "pk_parameters", "dose_strength", "formulation", "label_data",
+            "study_type", "stratification", "randomization", "ddi",
+        ],
         "instructions": (
             "Where label_data is provided, align dose/route/formulation with the approved label "
             "and name the specific Reference Listed Drug (manufacturer and strength) rather than a "
@@ -389,7 +450,24 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "reviewer will flag. Write SEVEN subsections using <h2> headings, in this exact order: "
             "1) **Randomisation/Method of Assigning Subjects to Treatment Arms** — central "
             "randomisation (e.g. IRT/IWRS) in a 1:1 ratio, randomisation-code control and "
-            "concealment from blinded staff. THEN, when a `stratification` object is present "
+            "concealment from blinded staff. "
+            "When a LOCKED RANDOMIZATION AND BLINDING block is supplied, take the method "
+            "statement from it verbatim in substance: the exact design label, the EXACT "
+            "sequence set (e.g. TRTR/RTRT for a 4-period full replicate — never a different "
+            "sequence set), the allocation ratio, the permuted-block method and the stated "
+            "balance guarantee. CRITICAL ALLOCATION-CONCEALMENT RULES, which override any "
+            "instinct to be more informative: NEVER print the block size or any block-size "
+            "range; NEVER print, list, tabulate or give an example of any individual subject's "
+            "randomisation number, stratum assignment, sequence or treatment order; NEVER "
+            "state the random seed or any means of regenerating the list. Instead state where "
+            "the randomisation list is held (a restricted document outside the protocol body, "
+            "released only to the unblinded personnel named in the locked facts) and reproduce "
+            "the locked protocol-body statement about the block structure and balance. Also "
+            "narrate the locked blinding posture and the replacement rule EXACTLY as given — "
+            "in particular do NOT describe the study as double-blind if the locked facts "
+            "specify open-label dosing with a blinded bioanalytical laboratory, and do NOT "
+            "claim subject masking that the locked facts do not support. "
+            "THEN, when a `stratification` object is present "
             "in context, add an <h3> sub-subsection 'Stratification Factors' that: states the "
             "randomisation is stratified on the listed factors; renders them as an HTML "
             "<table> with the columns 'Factor', 'Basis for PK Variability' and 'Rationale for "
@@ -417,11 +495,28 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "administration; "
             "5) **Blinding** — TWO <h3> sub-subsections 'Blinding Procedures' (state the blinding "
             "level: double-blind is typical for a biosimilar PK similarity study, open-label is "
-            "typical for a small-molecule BE crossover — choose based on study_type) and "
-            "'Breaking the Blind' (emergency unblinding procedure, if double-blind; state N/A for "
-            "an open-label design); "
+            "typical for a small-molecule BE crossover — choose based on study_type; when a "
+            "LOCKED RANDOMIZATION AND BLINDING block is supplied it OVERRIDES this default and "
+            "you must state the masking posture it specifies, including which parties are "
+            "blinded and which are not) and "
+            "'Breaking the Blind' (emergency unblinding procedure per the locked unblinding "
+            "procedure where one is given, if double-blind; state N/A for an open-label design); "
             "6) **Prior, Concomitant, and Prohibited Medications** — recording window and "
-            "prohibited medication classes consistent with the exclusion criteria; "
+            "prohibited medication classes consistent with the exclusion criteria. When a "
+            "LOCKED PROHIBITED AND RESTRICTED CONCOMITANT MEDICATIONS block is supplied, render "
+            "it as an HTML <table> with the columns 'Status', 'Class or Agent', 'Examples', "
+            "'Washout Before First Dose' and 'Conditions/Rationale' — one row per PROHIBITED "
+            "entry first, then each RESTRICTED entry, then each PERMITTED entry, in the order "
+            "given, using each entry's own `washout_days` verbatim (state 'Not applicable' where "
+            "no washout is given). These statuses, agents and washout periods are ALREADY "
+            "DETERMINED from this drug's own label: do NOT add classes, do NOT change a status, "
+            "do NOT invent or round a washout period, and do NOT add a generic CYP3A4 clause "
+            "unless CYP3A4 is in the locked list. Every washout figure in this subsection must "
+            "also appear in the Exclusion Criteria, and must not be confused with the washout "
+            "BETWEEN TREATMENT PERIODS given in the locked design parameters — they are "
+            "different quantities and must not be harmonised into one number. Where a "
+            "post-dose restriction window is given, state it. If no such block is supplied, "
+            "write this subsection generically as before; "
             "7) **Subject Restrictions During the Study** — meal schedule, water restriction "
             "around dosing, alcohol/recreational-drug restriction, post-dose activity restriction."
         ),
@@ -432,30 +527,70 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "9.2 Immunogenicity Assessments, 9.3 Blood Sample Processing, 9.4 Safety and "
             "Tolerability Assessment); FDA Guidance on Bioanalytical Method Validation (May 2018)"
         ),
-        "context_keys": ["pk_parameters", "study_type", "drug_inn", "analytical_method", "lloq"],
+        "context_keys": [
+            "pk_parameters", "study_type", "drug_inn", "analytical_method", "lloq",
+            "sampling_schedule", "bioanalytical", "safety_gating",
+        ],
         "instructions": (
-            "Design the blood sampling schedule, deriving timing from the drug's ACTUAL "
-            "pharmacokinetics in pk_parameters (cite the specific t_half/Tmax values used). "
             "Write subsections using <h2> headings, in this exact order: "
-            "1) **Pharmacokinetic Assessment** — pre-dose sample within 60 minutes before dosing; "
-            "at least 12-16 post-dose timepoints with 3-4 points around the literature Tmax and "
-            "taper through the elimination phase so the last sample extends to >= 3-5 x terminal "
-            "t1/2 (AUC0-t >= 80% of AUC0-inf); present the schedule as a Markdown table with EXACT "
-            "headers '| Nominal Time (h) | Acceptable Window (min) | Volume per Draw (mL) | "
-            "Cumulative Volume (mL) |' using 4-6 mL per draw; state the sample collection time "
-            "windows (e.g. +-2 min confinement, +-120 min ambulatory) and total blood volume "
-            "across the whole study, confirming it stays within ~500 mL per any 8-week window; "
+            "1) **Pharmacokinetic Assessment** — "
+            "WHEN a `sampling_schedule` object is present in context (equivalently, when a "
+            "LOCKED PK BLOOD-SAMPLING SCHEDULE block is supplied): the schedule is ALREADY "
+            "DETERMINED and you must REPRODUCE IT VERBATIM. Render `sampling_schedule."
+            "timepoints` as a Markdown table with the EXACT headers '| Nominal Time (h) | "
+            "Acceptable Window (min) | Volume per Draw (mL) | Cumulative Volume (mL) |', one "
+            "row per entry in the given order, mapping the columns 1:1 onto that entry's "
+            "`hours`, `window_minutes`, `volume_ml` and `cumulative_volume_ml`. Do NOT add, "
+            "drop, merge, re-order, round or re-derive a single timepoint, window or volume, "
+            "and do NOT substitute your own judgement about how many samples are needed. State "
+            "the Tmax and terminal t1/2 the schedule was built on and their basis, the last "
+            "nominal timepoint expressed in half-lives, the predicted %AUC extrapolated against "
+            "its limit, the number of samples available for the terminal-slope (lambda_z) fit, "
+            "and the pre-dose carry-over rule exactly as locked. State the total blood volume "
+            "and the 8-week ceiling it is checked against, using the locked figures and the "
+            "locked basis text — do not assert compliance with a limit the locked facts do not "
+            "claim. Surface every locked assumption and every flagged item marked as requiring "
+            "disclosure rather than omitting it. "
+            "OTHERWISE (no sampling_schedule supplied), fall back to deriving the timing "
+            "yourself from the drug's ACTUAL pharmacokinetics in pk_parameters (cite the "
+            "specific t_half/Tmax values used): pre-dose sample within 60 minutes before "
+            "dosing; at least 12-16 post-dose timepoints with 3-4 points around the literature "
+            "Tmax and taper through the elimination phase so the last sample extends to "
+            ">= 3-5 x terminal t1/2 (AUC0-t >= 80% of AUC0-inf); present the schedule as a "
+            "Markdown table with the same EXACT headers using 4-6 mL per draw; state the "
+            "sample collection time windows (e.g. +-2 min confinement, +-120 min ambulatory) "
+            "and total blood volume across the whole study, confirming it stays within ~500 mL "
+            "per any 8-week window; "
             "2) **Immunogenicity Assessments** — ONLY if study_type is 'biosimilar_pk': ADA/NAb "
-            "sampling timepoints (pre-dose plus follow-up days/weeks matching the PK tail, e.g. "
-            "Day 29, 57, 85, and a Week-24 EOS sample), tiered testing strategy (screening "
-            "ELISA/ECL bridging assay -> confirmatory competitive-inhibition assay -> NAb assay if "
-            "positive), and sample handling. Omit this subsection entirely for non-biosimilar "
-            "study types; "
+            "sampling timepoints (use the locked immunogenicity timepoints where the sampling "
+            "schedule supplies them; otherwise pre-dose plus follow-up days/weeks matching the "
+            "PK tail, e.g. Day 29, 57, 85, and a Week-24 EOS sample), tiered testing strategy "
+            "(screening ELISA/ECL bridging assay -> confirmatory competitive-inhibition assay "
+            "-> NAb assay if positive), and sample handling. Omit this subsection entirely for "
+            "non-biosimilar study types; "
             "3) **Blood Sample Processing / Bioanalytical Method** — central-laboratory analysis "
-            "using a validated method; for a small molecule describe LC-MS/MS (LLOQ/ULOQ, "
-            "calibration range, accuracy/precision acceptance of +-15% RE / <=15% CV, ISR >= 10% "
-            "of samples); for a biologic describe a ligand-binding assay (ELISA/ECL), minimum "
-            "required dilution, and +-20% RE / <=20% CV acceptance; "
+            "using a validated method. WHEN a `bioanalytical` object is present in context "
+            "(equivalently, a LOCKED BIOANALYTICAL METHOD block): the assay class, calibration "
+            "range, acceptance criteria, stability battery, sample-handling steps, "
+            "chain-of-custody requirements, laboratory qualification requirements and the "
+            "incurred-sample-reanalysis (ISR) plan are ALREADY DETERMINED — narrate them "
+            "EXACTLY, and render the validation parameters, the stability battery and the "
+            "sample-handling steps as HTML <table>s (parameter | requirement/acceptance "
+            "criterion, one row per locked entry). Do NOT invent, round, rescale or recalculate "
+            "any concentration, temperature, duration, percentage or acceptance criterion, and "
+            "do NOT state a numeric LLOQ or ULOQ unless the locked facts supply one — where "
+            "they report that the calibration range could not be derived, say so plainly rather "
+            "than inventing a range. If the free-text `analytical_method` or `lloq` context "
+            "hints disagree with the locked calibration range, treat the LOCKED value as "
+            "authoritative and state the sponsor-specified value only as a stated override; "
+            "never print two different LLOQs as if both applied. Name the bioanalytical "
+            "facility only if the locked facts name one — otherwise state it is to be "
+            "confirmed, and never invent a laboratory name. Disclose the locked assumptions and "
+            "any flagged items. OTHERWISE (no bioanalytical object): for a small molecule "
+            "describe LC-MS/MS (LLOQ/ULOQ, calibration range, accuracy/precision acceptance of "
+            "+-15% RE / <=15% CV, ISR >= 10% of samples); for a biologic describe a "
+            "ligand-binding assay (ELISA/ECL), minimum required dilution, and +-20% RE / "
+            "<=20% CV acceptance; "
             "4) **Safety and Tolerability Assessment** — SIX <h3> sub-subsections: "
             "'Demographic Data' (DOB, height, weight, BMI, sex, race); "
             "'Vital Signs' (BP/pulse/respiration/temperature at check-in, pre-dose, and defined "
@@ -464,7 +599,21 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "local-tolerability grading; omit for an oral small molecule); "
             "'Electrocardiogram (ECG)' (12-lead at screening, check-in, EOS); "
             "'Physical Examination' (complete at screening/EOS, abbreviated at other visits); "
-            "'Adverse Event Monitoring' (non-leading, open-ended querying at each safety contact). "
+            "'Adverse Event Monitoring' (non-leading, open-ended querying at each safety contact); "
+            "5) **Discharge Criteria** — include this subsection ONLY when a `safety_gating` "
+            "object supplying `discharge_criteria` is present in context (equivalently, when "
+            "the LOCKED SAFETY GATING RULES block contains discharge criteria); omit it "
+            "entirely otherwise. Render the criteria as a numbered list in the given order, "
+            "reproducing each criterion and its objective threshold EXACTLY — these are "
+            "pre-specified boundaries, and an 'approximately' or rounded version of one is not "
+            "a criterion. The criterion flagged as mandatory (documented authorisation by the "
+            "Investigator or a qualified delegate) MUST appear explicitly and MUST NOT be "
+            "softened. State the minimum post-dose observation period, what happens when the "
+            "criteria are not met, and the readmission provision, all using the locked values. "
+            "Where the locked facts carry a design note about a multi-period study (discharge "
+            "from one period not authorising dosing in the next), state it. Do NOT restate the "
+            "individual or cohort stopping rules here — they belong in Population and Safety "
+            "Monitoring respectively. "
             "Justify each PK sampling window based on the PK profile."
         ),
     },
@@ -475,10 +624,12 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "Recording and Follow-up; Abnormal Lab Results; Pregnancy Reporting; Reporting of "
             "SAEs; Concomitant Medication); ICH E6(R2) Section 4.4; 21 CFR 312.32; CTCAE v5.0"
         ),
-        "context_keys": ["drug_inn", "study_type"],
+        "context_keys": ["drug_inn", "study_type", "safety_gating", "safety_reporting"],
         "instructions": (
             "Write ONE <h2> subsection '10.1 Handling and Reporting of Adverse Events' containing "
-            "EIGHT <h3> sub-subsections in this exact order: "
+            "EIGHT <h3> sub-subsections in this exact order (plus the TWO additional "
+            "sub-subsections 9 and 10 defined below when the locked safety gating rules are "
+            "supplied): "
             "1) **Definitions** — define, in formal regulatory language: Adverse Event (AE), "
             "Adverse Drug Reaction (ADR), Serious Adverse Event (SAE) with its full outcome "
             "criteria (death; life-threatening; hospitalization/prolongation; persistent/"
@@ -498,19 +649,57 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "alternative-cause documentation when Not-Related), 'Assessment of Expectedness' "
             "(against the Investigator's Brochure or reference safety information), and "
             "'Assessment of Severity' (CTCAE v5.0 Grade 1-5 scale, stating each grade's "
-            "definition, and the distinction that 'severe' measures intensity, not seriousness); "
+            "definition, and the distinction that 'severe' measures intensity, not seriousness) "
+            "— when a LOCKED SAFETY GATING RULES block supplies a grading scale, render that "
+            "scale's grades as an HTML <table> with the columns 'Grade', 'Title', 'Definition' "
+            "and 'Protocol Consequence', one row per locked grade, taken VERBATIM, instead of "
+            "describing the grades in prose, and state the locked severity-versus-seriousness "
+            "and causality-basis wording; "
             "5) **Abnormal Lab Results** — criteria for reporting an abnormal result as an AE "
             "(discontinuation, intervention required, further diagnostic workup, clinically "
             "significant signs/symptoms); "
             "6) **Pregnancy Reporting** — exclusion/withdrawal of confirmed pregnancy, 24-hour "
             "sponsor notification, IRB notification within 72 hours, spontaneous abortion always "
             "treated as an SAE; "
-            "7) **Reporting of Serious Adverse Events** — 24-hour sponsor notification, written "
-            "report within 72 hours, and expedited regulatory timelines (7 calendar days for "
-            "fatal/life-threatening SUSARs, 15 calendar days for other SUSARs, per 21 CFR 312.32); "
+            "7) **Reporting of Serious Adverse Events** — WHEN a LOCKED SAFETY REPORTING PLAN "
+            "block is supplied it is the SINGLE source of every reporting deadline: state the "
+            "regulatory regime and its basis, present the expedited-reporting test as a "
+            "CONJUNCTION (all criteria must hold together — never as a list of alternatives), "
+            "and render the reporting obligations as an HTML <table> with the columns 'Who "
+            "Reports', 'What', 'To Whom', 'Deadline' and 'Regulatory Basis', one row per "
+            "APPLICABLE locked duty, in the given order. Every day count, its unit and its "
+            "clock start MUST be copied exactly from the locked plan — do NOT state a day "
+            "count that does not appear there, do NOT convert calendar days into business or "
+            "working days, and do NOT start a clock at anything other than the locked clock "
+            "start. Where a duty is marked as an assumed convention rather than a figure fixed "
+            "in regulation, say so plainly instead of attributing it to a guideline. Where the "
+            "locked plan reports that the study is NOT under an IND, do not assert an FDA "
+            "expedited-reporting obligation — state instead why those duties do not apply and "
+            "that they take effect if an IND is opened. OTHERWISE (no locked plan supplied), "
+            "use the default wording: 24-hour sponsor notification, written report within 72 "
+            "hours, and expedited regulatory timelines (7 calendar days for fatal/life-"
+            "threatening SUSARs, 15 calendar days for other SUSARs, per 21 CFR 312.32); "
             "8) **Concomitant Medication and Treatment** — recording window and the "
             "investigator/sponsor decision process for permitting concomitant medication during "
-            "the study."
+            "the study; "
+            "9) **Individual Subject Stopping Rules** — include ONLY when a LOCKED SAFETY "
+            "GATING RULES block is supplied; omit entirely otherwise. Reproduce the INDIVIDUAL "
+            "SUBJECT STOPPING RULES as a numbered list in the given order, each with its EXACT "
+            "trigger, numeric threshold and required action. Open with one sentence stating "
+            "that these rules withdraw ONE subject from further dosing and never, by "
+            "themselves, stop the study. Do NOT use the phrase 'halt dosing of all further "
+            "subjects' or any equivalent in this sub-subsection; "
+            "10) **Cohort Halting Rules and Resumption** — include ONLY when a LOCKED SAFETY "
+            "GATING RULES block is supplied; omit entirely otherwise. Reproduce the "
+            "COHORT/STUDY HALTING rules as a SEPARATE numbered list, never merged with the "
+            "individual rules, each with its EXACT subject count, threshold and timeframe — a "
+            "count rendered as 'two or more subjects' must not become 'several subjects', and "
+            "a rounded count is not a rule. Then narrate the locked review-and-resumption "
+            "requirements (who must review, what must be documented, what authorises "
+            "resumption). Finally state the DISCLOSED ASSUMPTIONS from the locked block as "
+            "pre-specified protocol conventions, explicitly NOT as regulatory requirements. "
+            "Where the locked facts report a boxed warning detected on the product label, "
+            "ensure it is acknowledged."
         ),
     },
     "data_handling": {
@@ -519,7 +708,7 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "documents, 11.2 Data collection, 11.3 Database Management, 11.4 Record Retention); "
             "ICH E6(R2)"
         ),
-        "context_keys": ["study_type", "org_name"],
+        "context_keys": ["study_type", "org_name", "crf_dmp"],
         "instructions": (
             "Write FOUR subsections using <h2> headings: "
             "1) **Source documents** — definition and examples (hospital records, lab notes, "
@@ -532,7 +721,42 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "authorization for any post-lock changes; "
             "4) **Record Retention** — retention period (state 25 years or per applicable "
             "regulatory guideline, whichever is longer, after study completion or regulatory "
-            "submission) and that records are never destroyed without written sponsor approval."
+            "submission) and that records are never destroyed without written sponsor approval. "
+            "WHEN a `crf_dmp` object is present in context (equivalently, when a LOCKED CASE "
+            "REPORT FORM / DATA MANAGEMENT block is supplied), expand the section as follows "
+            "using ONLY the locked content — the forms, fields, permitted values, edit checks, "
+            "standards versions, dictionaries, intervals and retention period are ALREADY "
+            "DETERMINED and must not be invented, renamed, renumbered or rounded: "
+            "(a) inside subsection 2 add an <h3> sub-subsection 'Case Report Form "
+            "Specification' rendering the locked FORM INVENTORY as an HTML <table> with the "
+            "columns 'Form', 'SDTM Domain', 'When Completed' and 'Repeating' — one row per "
+            "locked form in the given order — followed by, for the forms marked CRITICAL only, "
+            "a per-form HTML <table> of 'Field', 'Type', 'Units', 'Permitted Values' and "
+            "'Required'; do not expand the non-critical forms field-by-field; "
+            "(b) also inside subsection 2, state the actual-versus-nominal PK draw time rule "
+            "exactly as locked (actual clock times are recorded and used for the "
+            "pharmacokinetic analysis; nominal times are used only for presentation), and the "
+            "locked time-recording precision; "
+            "(c) inside subsection 3 narrate the locked Data Management Plan sections in the "
+            "order given — data flow, database build and user-acceptance testing, external data "
+            "transfers, medical coding, query management, SAE reconciliation, protocol-deviation "
+            "and blinded data review, database lock, Part 11 audit trail, data privacy and "
+            "archival — using the locked query-response target, SAE reconciliation interval and "
+            "coding dictionaries (state each dictionary and its version policy verbatim), and "
+            "render the edit checks as a summary <table> of 'Check Type', 'Severity' and "
+            "'Count' from the locked counts plus a handful of the locked example rules stated "
+            "verbatim; do NOT invent an edit check that is not listed; "
+            "(d) state the locked data standards (including the SDTM implementation-guide "
+            "version) and note explicitly where the locked facts say a version must be "
+            "re-confirmed against the current regulatory data-standards catalogue at "
+            "submission; "
+            "(e) use the locked retention period rather than the default wording above if the "
+            "two differ, and disclose the locked assumptions as pre-specified conventions "
+            "rather than regulatory requirements; "
+            "(f) surface every locked flag marked as requiring disclosure in the protocol. "
+            "This is a protocol-package specification of what will be captured and how the "
+            "data will be managed — do NOT write it as if the database already exists, and do "
+            "NOT invent site names, vendor names or system names."
         ),
     },
     "study_monitoring": {
@@ -605,22 +829,41 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "listings) of AEs/SAEs (MedDRA-coded, by System Organ Class and Preferred Term), "
             "laboratory tests, vital signs, ECG, physical examination, and (for a biologic) "
             "injection/infusion-site reactions and concomitant medications; "
-            "6) **Sample Size Determination** — the within-subject CV used to power the study is the "
+            "6) **Sample Size Determination** — FIRST read the CV PROVENANCE line in the locked "
+            "design parameters; it decides how this subsection justifies the within-subject CV, "
+            "and it overrides the default wording below. "
+            "(a) DEFAULT / LITERATURE-DERIVED CV (the CV PROVENANCE line says the CV is "
+            "literature-derived, or no such line is present): the within-subject CV used to "
+            "power the study is the "
             "HIGHEST within-subject CV observed for either Cmax or AUC across published "
             "single-dose PK studies in the SAME population (healthy volunteers), taken as a "
             "conservative basis. If the locked design parameters include a 'cv_table' (a list of "
             "trials with their source, population, parameter, and CV%), render it as an HTML "
             "<table> with columns Study/Source | Population | Parameter | Within-subject CV% and a "
             "final row identifying the maximum CV adopted; explicitly state which study and which "
-            "parameter (Cmax vs AUC) gave the highest CV. State the assumed GMR, target power, and "
+            "parameter (Cmax vs AUC) gave the highest CV. "
+            "(b) INVESTIGATOR-SPECIFIED CV (the CV PROVENANCE line says the CV is "
+            "investigator-specified / a sponsor override): state plainly, in one sentence, that "
+            "the within-subject CV used for powering was specified by the investigator/sponsor "
+            "rather than derived from the published literature, give the value, and state that "
+            "its justification is the sponsor's own (for example internal or pilot data) and is "
+            "held outside this protocol. In this case you MUST NOT render the 'cv_table' at "
+            "all, MUST NOT describe the literature trials as the basis, source, support or "
+            "provenance of the adopted CV, and MUST NOT write that the CV was 'observed', "
+            "'pooled', 'taken from' or 'confirmed by' published studies. If a cv_table is "
+            "nevertheless present in context you may mention the literature values only as "
+            "separately-reported context, clearly labelled as NOT the source of the value used "
+            "— never as its justification. "
+            "(c) ASSUMED CV (the CV is marked 'assumed' because no value was available): say so "
+            "and note that values from FDA/EMA reviews, AUSPAR, and Japanese (PMDA) or Chinese "
+            "(NMPA) registration studies should be sought to confirm it; do not present a "
+            "cv_table as its provenance. "
+            "In every case: state the assumed GMR, target power, and "
             "significance level EXACTLY as given in the locked design parameters, the planned "
             "enrolment (with dropout allowance) and the resulting evaluable N. State simply that the "
             "sample size was calculated in R using the two one-sided tests (TOST) method — do NOT "
             "reproduce the calculation, formulas, or console output. Do NOT recompute or "
-            "restate a different sample size — cite the planned N exactly as given. If the CV is "
-            "marked 'assumed' (no literature value was available), say so and note that values from "
-            "FDA/EMA reviews, AUSPAR, and Japanese (PMDA) or Chinese (NMPA) registration studies "
-            "should be sought to confirm it; "
+            "restate a different sample size — cite the planned N exactly as given; "
             "7) **Summary Statistics** — descriptive statistics (n, mean, SD, median, min, max, "
             "geometric mean, CV%) for demographics and all PK parameters, plus geometric means, "
             "ratio of means, and the 90% CI for the primary PK parameters; "
@@ -655,7 +898,7 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "21 CFR Part 50; 21 CFR Part 56; Declaration of Helsinki (2013 revision); "
             "21 CFR Part 11"
         ),
-        "context_keys": ["org_name", "irb_info", "study_type"],
+        "context_keys": ["org_name", "irb_info", "study_type", "icf", "safety_reporting"],
         "instructions": (
             "Write FOUR subsections using <h2> headings, in this exact order: "
             "1) **Ethical principles, laws, and regulations** — conduct per the Declaration of "
@@ -664,10 +907,32 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "2) **Ethics Committee/Institutional Review Board** — protocol and consent-material "
             "submission and written approval required before enrolment; amendments submitted "
             "before implementation (except to eliminate immediate hazard); annual progress "
-            "reporting; "
+            "reporting. When a LOCKED SAFETY REPORTING PLAN block is supplied, state the IRB "
+            "notification duties it contains (what must be reported to the IRB, by whom, and "
+            "within what period) using its EXACT deadlines and clock starts, and where a "
+            "deadline is marked as an assumed convention rather than a figure fixed in "
+            "regulation, say so and note that a stricter IRB standard operating procedure "
+            "governs where one applies. Do NOT invent an IRB reporting deadline that the locked "
+            "plan does not state. Where the locked plan states that the study is or is not an "
+            "applicable clinical trial for public registry purposes, state that conclusion and "
+            "its basis rather than asserting a registration obligation the plan does not "
+            "support; "
             "3) **Informed Consent Process** — written consent per 21 CFR 50.25 required elements, "
             "obtained before any study procedure, in language the subject understands, with a "
-            "copy provided to the subject, who may withdraw at any time; "
+            "copy provided to the subject, who may withdraw at any time. When an `icf` object "
+            "is present in context (equivalently, when a LOCKED STANDALONE INFORMED CONSENT "
+            "FORM block is supplied), reference it CORRECTLY: the Informed Consent Form is a "
+            "SEPARATE, standalone document accompanying this protocol, carrying its OWN version "
+            "number and date distinct from the protocol's, and submitted to the IRB with the "
+            "protocol. Do NOT reproduce the consent form, its sections, its plain-language text "
+            "or its signature block inside this protocol section — state only that it exists, "
+            "cite its title and its version/date identifiers exactly as locked (or state that "
+            "they are to be assigned where the locked facts leave them pending), and confirm "
+            "which regulatory basis it is written against and that it covers the required "
+            "elements of informed consent. Where the locked facts report missing required "
+            "elements or pending site-specific fields (contacts, compensation, site and "
+            "investigator identification, IRB details), state honestly that those must be "
+            "completed before IRB submission rather than implying the form is final; "
             "4) **Participant and Data Confidentiality** — coded subject identifiers, no PHI in "
             "data transmissions, sponsor/monitor/IRB access to records for quality assurance, and "
             "21 CFR Part 11 compliance for electronic records and signatures (audit-trailed, "
@@ -940,8 +1205,11 @@ def _build_section_prompt(
     section_name: str, config: dict[str, Any], context: dict
 ) -> tuple[str, str]:
     section_title = section_name.replace("_", " ").title()
+    # Engine results are projected BEFORE serialisation: the raw dicts are far
+    # too large for a prompt, and their authoritative form is the directive.
+    context_for_json = _project_engine_context(context)
     context_block = (
-        json.dumps(context, indent=2, default=str) if context else "{}"
+        json.dumps(context_for_json, indent=2, default=str) if context_for_json else "{}"
     )
 
     study_type = context.get("study_type", "BE")
@@ -951,6 +1219,10 @@ def _build_section_prompt(
     design_directive = _locked_design_directive(context.get("sample_size"))
     reg_directive = regulatory_directive(guideline_version or "", study_type)
     decisions_directive = _design_decisions_directive(context.get("design_decisions") or [])
+    # Deterministic-engine locked facts, rendered by the engines that own the
+    # numbers. Sits immediately after the locked design block so every "ALREADY
+    # DETERMINED" fact in the prompt is in one contiguous region.
+    engine_directive = _engine_directives(section_name, context)
 
     user_prompt = (
         f"Generate the '{section_title}' section for a {protocol_type} study protocol.\n\n"
@@ -959,6 +1231,7 @@ def _build_section_prompt(
         f"{decisions_directive}\n"
         f"Instructions:\n{config['instructions']}\n"
         f"{design_directive}\n"
+        f"{engine_directive}\n"
         f"Context:\n{context_block}\n\n"
         "Write only the section body text."
     )
@@ -1005,6 +1278,51 @@ def _expertise_for(study_type: str, guideline_version: str | None = None) -> tup
     return expertise, "bioequivalence"
 
 
+_CV_OVERRIDE_MARKERS = ("override", "investigator", "sponsor", "user", "manual")
+
+
+def cv_is_user_override(ss: dict[str, Any] | None) -> bool:
+    """True when the powering CV was specified by the investigator/sponsor.
+
+    Deterministic-fact rule: the model must never be left to infer provenance by
+    reading a free-text ``cv_source`` string. The verdict is decided HERE, in
+    Python, and injected as a locked fact, so the SAP and synopsis cannot present
+    the literature ``cv_table`` as the justification for a number that did not
+    come from the literature.
+
+    Accepts either an explicit ``cv_is_user_override`` boolean (preferred, set by
+    the override path) or a ``cv_source`` string carrying one of the override
+    markers -- whichever the sample-size engine happens to emit.
+    """
+    if not ss:
+        return False
+    flag = ss.get("cv_is_user_override")
+    if flag is not None:
+        return bool(flag)
+    src = str(ss.get("cv_source") or "").lower()
+    return any(marker in src for marker in _CV_OVERRIDE_MARKERS)
+
+
+def _cv_provenance_lines(ss: dict[str, Any]) -> list[str]:
+    """The CV PROVENANCE locked-fact line, or nothing.
+
+    Only emitted for the investigator-specified case: the literature-sourced
+    default wording is deliberately left exactly as it was, so a non-override
+    protocol reads identically to before this engine wiring landed.
+    """
+    if not cv_is_user_override(ss):
+        return []
+    return [
+        "- CV PROVENANCE: INVESTIGATOR-SPECIFIED. The within-subject CV above was "
+        "supplied by the investigator/sponsor; it was NOT derived from the "
+        "published literature. State that plainly wherever the CV is quoted "
+        "(Statistical Analysis Plan, synopsis). Do NOT render the literature "
+        "'cv_table' as its justification, source or provenance, and do NOT write "
+        "that the value was observed, pooled, taken from, or confirmed by "
+        "published studies.",
+    ]
+
+
 def _locked_design_directive(ss: dict[str, Any] | None) -> str:
     """Authoritative design block injected into every section that receives the
     sample_size recommendation, so the design, N, and limits are identical across
@@ -1025,6 +1343,7 @@ def _locked_design_directive(ss: dict[str, Any] | None) -> str:
         "for the 90% CI of the Test/Reference geometric mean ratio",
         f"- Co-primary endpoints: {ss['endpoint']}",
         f"- Assumed within-subject CV: {ss['cv_pct']}% (source: {ss['cv_source']})",
+        *_cv_provenance_lines(ss),
         f"- True GMR assumption: {ss['gmr']:.2f}; Power: {ss['power']*100:.0f}%; "
         f"alpha: {ss['alpha']}",
         f"- Planned enrolment: {ss['n_enrolled']} subjects{per_arm}, "
@@ -1053,8 +1372,14 @@ def _locked_design_directive(ss: dict[str, Any] | None) -> str:
         lines.append(
             f"- Washout between EVERY period: {washout_str} "
             f"({WASHOUT_HALF_LIVES:.0f} x t1/2, t1/2={t_half:.1f}h) — use this EXACT "
-            f"figure everywhere washout is mentioned (synopsis, study design); never "
-            f"state a generic '7 days' unless it happens to equal this value."
+            f"figure everywhere the washout BETWEEN TREATMENT PERIODS is mentioned "
+            f"(synopsis, study design); never state a generic '7 days' unless it "
+            f"happens to equal this value. This figure applies ONLY to the interval "
+            f"between dosing periods. It is NOT the washout of a prohibited "
+            f"concomitant medication before first dose — those are separate, "
+            f"per-agent periods given in the locked concomitant-medication facts, "
+            f"and the two must never be merged, harmonised, or substituted for one "
+            f"another."
         )
     if ss.get("needs_simulation"):
         lines.append(
@@ -1062,6 +1387,278 @@ def _locked_design_directive(ss: dict[str, Any] | None) -> str:
             "simulation; present the stated N as the planned/conservative estimate."
         )
     return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Deterministic-engine locked facts
+#
+# Every engine result reaches the prompt by TWO complementary routes:
+#   1. its *_directive() text, assembled below and injected next to the locked
+#      washout/design block. This is the authoritative form: it is written by the
+#      engine that owns the numbers, opens with an "ALREADY DETERMINED" header,
+#      and tells the model exactly what it may not re-derive.
+#   2. a PROJECTION of its result dict inside the JSON context block, carrying the
+#      row-level fields a table needs (and only those).
+#
+# The projection exists because the raw engine dicts are not prompt-sized: the CRF
+# specification alone serialises to ~336 KB, the ICF to ~69 KB. Dumping them whole
+# would multiply the cost and latency of every generation while duplicating facts
+# the directive already renders better. The whitelists below are therefore a
+# deliberate prompt-hygiene step, NOT a filter on what the model is allowed to
+# know -- anything dropped here is either present in the directive or is not
+# protocol-body content.
+# ---------------------------------------------------------------------------
+
+# section name -> ((context key, renderer), ...). A renderer takes the engine's
+# result dict and returns prompt text, or "" when the engine produced nothing.
+_ENGINE_DIRECTIVE_PLAN: dict[str, tuple[tuple[str, Any], ...]] = {
+    "synopsis": (
+        ("sampling_schedule", sampling_schedule_directive),
+    ),
+    "population": (
+        ("ddi", ddi_directive),
+        ("safety_gating", safety_gating_directive),
+    ),
+    "treatment": (
+        ("randomization", randomization_directive),
+        ("ddi", ddi_directive),
+    ),
+    "study_assessments": (
+        ("sampling_schedule", sampling_schedule_directive),
+        ("bioanalytical", bioanalytical_directive),
+        ("safety_gating", safety_gating_directive),
+    ),
+    "safety_monitoring": (
+        ("safety_gating", safety_gating_directive),
+        ("safety_reporting", safety_reporting_directive),
+    ),
+    "data_handling": (
+        # scope="all": the DMP narrative feeds subsections 1/3/4 and the CRF
+        # specification feeds subsection 2 (eCRF / data collection).
+        ("crf_dmp", lambda r: crf_dmp_directive(r, "all")),
+    ),
+    "ethics": (
+        ("safety_reporting", safety_reporting_directive),
+        # The ICF is a SEPARATE document, not a protocol section. Its directive is
+        # injected here only so the Ethics section references it with the right
+        # title, version identity and pending fields instead of inventing them.
+        ("icf", icf_directive),
+    ),
+}
+
+# Every engine context key this module knows about, in a stable order.
+_ENGINE_CONTEXT_KEYS: tuple[str, ...] = (
+    "sampling_schedule",
+    "ddi",
+    "safety_gating",
+    "bioanalytical",
+    "randomization",
+    "crf_dmp",
+    "safety_reporting",
+    "icf",
+)
+
+# Top-level engine-result fields kept in the JSON context block. Anything not
+# listed reaches the model through the engine's own directive instead.
+_ENGINE_CONTEXT_FIELDS: dict[str, tuple[str, ...]] = {
+    # Keeps `timepoints` because the Study Assessments table needs the per-row
+    # cumulative_volume_ml, which the directive summarises rather than tabulates.
+    "sampling_schedule": (
+        "summary", "n_timepoints", "periods", "timepoints", "blood_volume",
+        "tmax_hours", "tmax_basis", "t_half_hours", "t_half_basis",
+        "last_timepoint_hours", "last_timepoint_label", "last_timepoint_half_lives",
+        "auc_metric", "auc_extrap_pct", "auc_extrap_limit_pct",
+        "auc_extrap_within_limit", "auc_extrap_basis",
+        "terminal_points", "min_terminal_points_required", "lambda_z_estimable",
+        "lambda_z_required", "predose_carryover_rule", "immunogenicity_timepoints",
+        "steady_state_troughs", "analytes", "assumptions", "flags", "must_disclose",
+    ),
+    "ddi": (
+        "summary", "pathways", "pathway_keys", "prohibited", "restricted", "permitted",
+        "max_washout_days", "screening_history_window_days", "history_exclusion_agents",
+        "post_dose_restriction_hours", "unresolved", "assumptions",
+    ),
+    # Grading scale and the two rule lists come from the directive; what the
+    # tables need row-by-row is the discharge criteria and the halting counts.
+    "safety_gating": (
+        "summary", "counts", "thresholds", "discharge_criteria", "label_findings",
+        "review_and_resumption", "denominator_basis", "n_dosed_planned", "assumptions",
+    ),
+    "bioanalytical": (
+        "summary", "assay_class", "assay_class_label", "assay_class_basis", "criteria",
+        "calibration", "dilution", "analytes", "parameters", "stability", "isr",
+        "sample_handling", "lab_qualification", "immunogenicity", "assumptions", "flags",
+    ),
+    # NOTE: `unblinded_allocation`, `blinded_enrolment_log` and `reproducibility`
+    # are absent BY DESIGN -- see _scrub_allocation_secrets below.
+    "randomization": (
+        "summary", "design", "block", "stratification", "balance", "blinding",
+        "replacement", "cautions", "assumptions", "engine", "engine_version",
+    ),
+    # `forms`, `fields`, `edit_checks`, `pk_sample_log_rows` and `visit_schedule`
+    # are what make this result ~336 KB; the scoped directive renders them.
+    "crf_dmp": (
+        "summary", "standards", "sdtm_domains", "washout_days", "periods", "sequences",
+        "n_forms", "n_fields", "n_edit_checks", "edit_check_counts", "critical_forms",
+        "downstream_analysis_coverage", "active_conditions", "detected_from_label",
+        "condition_rationale", "assumptions", "flags", "must_disclose",
+    ),
+    "safety_reporting": (
+        "summary", "regime", "conjunction", "expedited_criteria", "seriousness",
+        "timelines", "parallel_obligations", "clock", "clinicaltrials_gov",
+        "expectedness_reference", "safety_signals", "assumptions",
+        "regional_cross_reference", "disclaimer", "scope_note",
+    ),
+    # The Ethics section must REFERENCE the consent form, never reproduce it, so
+    # the consent body (`sections`, `risks`, `restrictions`, ...) is withheld.
+    "icf": (
+        "document_type", "title", "version", "regulatory_basis", "elements_coverage",
+        "missing_required_elements", "pending_fields", "readability", "assumptions",
+    ),
+}
+
+# Allocation concealment (ICH E9 s2.3.2). If the caller ever hands us the RAW
+# generate_allocation() result instead of randomization.blinded_view(), the
+# per-subject assignment list, the block size and the seed that regenerates the
+# whole list would otherwise be serialised straight into the prompt -- and from
+# there into the protocol body. These keys are stripped recursively, at every
+# depth, so a shape change upstream cannot silently reopen the leak.
+_ALLOCATION_SECRET_KEYS = frozenset({
+    "unblinded_allocation",
+    "blinded_enrolment_log",
+    "entries",
+    "reproducibility",
+    "seed",
+    "randomization_seed",
+    # The block size and everything it can be arithmetically recovered from
+    # (size = n_sequences x repeats_per_sequence_per_block).
+    "size",
+    "block_size",
+    "repeats_per_sequence_per_block",
+    "n_blocks_per_stream",
+    # Per-subject assignment fields, wherever they appear.
+    "sequence",
+    "treatment_by_period",
+    "randomization_number",
+    "position_in_block",
+})
+
+# Nested whitelists for the randomization projection. `block` and `balance` each
+# carry fields the engine itself labels RESTRICTED -- the block structure, and the
+# unblinded balance statement. blinded_view() already prunes them, but the router
+# wiring lives in another module, so this module does not depend on that having
+# been done correctly.
+_RANDOMIZATION_SUBFIELDS: dict[str, tuple[str, ...]] = {
+    "block": (
+        "method", "method_detail", "source", "disclosure", "disclosed",
+        "protocol_body_statement", "reason", "n_sequences",
+        "is_multiple_of_n_sequences",
+    ),
+    "balance": (
+        "allocation_ratio", "sequences", "disclosable_statement",
+        "counts_at_planned_enrolment", "max_imbalance_at_planned_enrolment",
+        "exact_at_every_completed_block",
+    ),
+}
+
+
+def _scrub_allocation_secrets(value: Any) -> Any:
+    """Recursively drop allocation-concealment-sensitive keys from a value."""
+    if isinstance(value, dict):
+        return {
+            k: _scrub_allocation_secrets(v)
+            for k, v in value.items()
+            if k not in _ALLOCATION_SECRET_KEYS
+        }
+    if isinstance(value, list):
+        return [_scrub_allocation_secrets(v) for v in value]
+    return value
+
+
+def _project_engine_result(key: str, result: Any) -> Any:
+    """Trim one engine result to the fields the JSON context block should carry."""
+    fields = _ENGINE_CONTEXT_FIELDS.get(key)
+    if not fields or not isinstance(result, dict):
+        return result
+    projected: dict[str, Any] = {k: result[k] for k in fields if k in result}
+    if key == "randomization":
+        for sub, allowed in _RANDOMIZATION_SUBFIELDS.items():
+            block = projected.get(sub)
+            if isinstance(block, dict):
+                projected[sub] = {k: v for k, v in block.items() if k in allowed}
+        projected = _scrub_allocation_secrets(projected)
+    return projected
+
+
+def _project_engine_context(context: dict) -> dict:
+    """Return ``context`` with every known engine result replaced by its projection."""
+    if not any(k in context for k in _ENGINE_CONTEXT_KEYS):
+        return context
+    out = dict(context)
+    for key in _ENGINE_CONTEXT_KEYS:
+        if key in out:
+            out[key] = _project_engine_result(key, out[key])
+    return out
+
+
+def _render_engine_directive(key: str, renderer: Any, result: Any) -> str:
+    """Render one engine directive, never letting a bad payload break generation.
+
+    A malformed or unexpectedly-shaped engine result must degrade to "no locked
+    facts for this engine" rather than failing the whole section: losing a
+    directive costs precision, raising costs the document.
+    """
+    if not result:
+        return ""
+    try:
+        text = renderer(result)
+    except Exception:  # noqa: BLE001 - see docstring
+        return ""
+    return text.strip() if isinstance(text, str) else ""
+
+
+def _engine_directives(section_name: str, context: dict) -> str:
+    """Assemble the locked-fact blocks the given section's engines contribute.
+
+    Sibling of _locked_design_directive(): same contract (returns "" when there
+    is nothing to lock), same purpose (stop the model inventing a number a
+    regulator could challenge), applied per-engine rather than to the sample
+    size. Order is stable so the prompt is reproducible.
+    """
+    plan = _ENGINE_DIRECTIVE_PLAN.get(section_name)
+    if not plan:
+        return ""
+    blocks = [
+        block
+        for key, renderer in plan
+        if (block := _render_engine_directive(key, renderer, context.get(key)))
+    ]
+    if not blocks:
+        return ""
+    return "\n\n" + "\n\n".join(blocks) + "\n"
+
+
+def _all_engine_directives(context: dict) -> str:
+    """Every engine's locked facts, once each, for whole-document callers.
+
+    The per-section path uses _engine_directives(); this is the equivalent for a
+    caller that generates all sections in ONE request (services/three_stage_
+    pipeline.py), where per-section scoping is not available. Each engine appears
+    at most once even though several sections consume the same engine.
+    """
+    seen: set[str] = set()
+    blocks: list[str] = []
+    for plan in _ENGINE_DIRECTIVE_PLAN.values():
+        for key, renderer in plan:
+            if key in seen:
+                continue
+            seen.add(key)
+            block = _render_engine_directive(key, renderer, context.get(key))
+            if block:
+                blocks.append(block)
+    if not blocks:
+        return ""
+    return "\n\n" + "\n\n".join(blocks) + "\n"
 
 
 def _filter_context(context: dict, keys: list[str]) -> dict:

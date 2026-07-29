@@ -35,6 +35,7 @@ export default function CSRDatasetUpload({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [rowErrors, setRowErrors] = useState<string[]>([])
+  const lloqInvalid = kind === 'nca' && lloq.trim() !== '' && !(Number.isFinite(Number(lloq)) && Number(lloq) > 0)
 
   async function download(fmt: 'csv' | 'xlsx') {
     try {
@@ -47,6 +48,10 @@ export default function CSRDatasetUpload({
 
   async function analyze() {
     if (!file) return
+    if (lloqInvalid) {
+      setError('LLOQ must be a positive number.')
+      return
+    }
     setBusy(true)
     setError(null)
     setRowErrors([])
@@ -93,11 +98,14 @@ export default function CSRDatasetUpload({
             <input
               type="number"
               step="any"
+              min="0.0000001"
               value={lloq}
               onChange={e => setLloq(e.target.value)}
               placeholder="e.g. 5"
-              className="w-40 rounded-lg border border-slate-300 px-3 py-1.5 text-sm focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+              aria-invalid={lloqInvalid}
+              className={`w-40 rounded-lg border px-3 py-1.5 text-sm focus:outline-none focus:ring-1 ${lloqInvalid ? 'border-red-400 focus:border-red-500 focus:ring-red-500' : 'border-slate-300 focus:border-cyan-500 focus:ring-cyan-500'}`}
             />
+            {lloqInvalid && <p className="text-[11px] text-red-600 mt-1">LLOQ must be a positive number.</p>}
             <p className="text-[11px] text-slate-400 mt-1.5 leading-relaxed">
               Below-LLOQ samples: leave the concentration blank or enter <code className="text-slate-500">BLQ</code>. They are treated as
               missing (never zero) after the first measurable sample, and as 0 before it — the standard convention.
@@ -118,7 +126,7 @@ export default function CSRDatasetUpload({
 
         <button
           onClick={analyze}
-          disabled={!file || busy}
+          disabled={!file || busy || lloqInvalid}
           className="mt-4 inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-bold shadow-sm shadow-cyan-600/20 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {busy ? 'Analyzing…' : 'Upload & analyze'}

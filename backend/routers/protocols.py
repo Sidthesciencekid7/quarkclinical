@@ -60,15 +60,24 @@ from services.ai_service import AIService
 from services.design_decisions import (
     allowed_study_types,
     apply_decision_overrides,
+    classify_drug_modality,
     determine_design_decisions,
     decisions_to_dicts,
 )
 from auth import require_user
+from services.bioanalytical import plan_bioanalytical
 from services.biostatistics import recommend_sample_size
+from services.crf_dmp import build_crf_spec
+from services.ddi_screening import screen_interactions
 from services.guideline_coverage import compute_coverage
 from services.guidelines import GUIDELINES, is_supported
+from services.icf import build_icf
 from services.literature_service import LiteratureService
 from services.protocol_qc import run_qc
+from services.randomization import blinded_view, generate_allocation
+from services.safety_gating import recommend_safety_gating
+from services.safety_reporting import build_safety_reporting_plan
+from services.sampling_schedule import compute_sampling_schedule
 from services.stratification import recommend_stratification
 from services.three_stage_pipeline import generate_protocol_via_pipeline
 from security import verify_password
@@ -145,14 +154,47 @@ SECTION_DISPLAY_NAMES: dict[str, str] = {
     "references": "References",
 }
 
+# Flat, user-supplied hint values copied verbatim from population_config to the
+# top level of the generation context. Computed engine results are NOT listed
+# here — they are underscore-prefixed keys copied explicitly in _build_context.
 _OPTIONAL_CTX_KEYS = (
     "dose_strength",
     "formulation",
     "analytical_method",
     "lloq",
     "acceptance_criteria",
+    # Investigator-specified within-subject CV%. Supplying it OVERRIDES the
+    # literature-sourced value and changes the declared provenance — see
+    # _resolve_powering_cv, which is the single place that decides both.
+    "cv_intra",
     "irb_info",
     "org_name",
+    # --- sampling-schedule hints -------------------------------------------
+    "dosing",                  # 'single' | 'multiple'
+    "dosing_interval_hours",   # tau, hours (multiple-dose only)
+    # --- bioanalytical hint -------------------------------------------------
+    "dose_mg",
+    # --- safety-reporting hints (sponsor regulatory-affairs overrides) ------
+    "is_ind",
+    "is_applicable_clinical_trial",
+    "is_new_chemical_entity",
+    "radiolabeled",
+    # --- ICF hints (site-specific; absent ones become visible placeholders) --
+    "icf_version",
+    "icf_date",
+    "protocol_number",
+    "protocol_version",
+    "protocol_title",
+    "investigator_name",
+    "site_name",
+    "study_contact",
+    "rights_contact",
+    "injury_contact",
+    "compensation_text",
+    "confinement_hours",
+    "n_pk_draws_per_period",
+    "clinicaltrials_gov_id",
+    "safety_text",
 )
 
 logger = logging.getLogger("protocols")
@@ -220,6 +262,57 @@ def _median_t_half(pk_params: list[PKParameterRecord]) -> float | None:
     return statistics.median(vals) if vals else None
 
 
+# Unit spellings the PK extractor has been observed to emit. A Tmax reported in
+# minutes read as hours would put the dense peak cluster of the sampling
+# schedule in completely the wrong place, so the conversion is explicit and
+# anything unrecognised is DROPPED rather than guessed at.
+_MINUTE_UNITS = {"min", "mins", "minute", "minutes"}
+_DAY_UNITS = {"d", "day", "days"}
+_HOUR_UNITS = {"h", "hr", "hrs", "hour", "hours", ""}
+
+
+def _median_tmax_hours(pk_params: list[PKParameterRecord]) -> float | None:
+    """Median Tmax in HOURS from extracted PK records, if any.
+
+    Feeds services/sampling_schedule.py, which places its dense peak cluster as
+    fractions of Tmax. Units are normalised explicitly (see _MINUTE_UNITS).
+    """
+    vals: list[float] = []
+    for p in pk_params:
+        if p.parameter != PKParameter.tmax or not p.value or p.value <= 0:
+            continue
+        unit = (p.unit or "").strip().lower()
+        if unit in _MINUTE_UNITS:
+            vals.append(float(p.value) / 60.0)
+        elif unit in _DAY_UNITS:
+            vals.append(float(p.value) * 24.0)
+        elif unit in _HOUR_UNITS:
+            vals.append(float(p.value))
+        # else: unrecognised unit — safer to drop than to guess.
+    return statistics.median(vals) if vals else None
+
+
+def _pk_records_to_dicts(pk_params: list[PKParameterRecord]) -> list[dict[str, Any]]:
+    """The JSON-ish PK record shape the generation context and several of the
+    deterministic engines (ddi_screening, bioanalytical) both consume.
+
+    Defined once so the records the engines reason about are byte-identical to
+    the ones the prompt sees — a divergence here would let an engine lock a fact
+    that the narrative context contradicts.
+    """
+    return [
+        {
+            "parameter": p.parameter.value,
+            "value": p.value,
+            "unit": p.unit,
+            "population": p.population,
+            "source_pmid": p.source_pmid,
+            "confidence": p.confidence,
+        }
+        for p in pk_params
+    ]
+
+
 def _truncate(value: str | None, max_len: int) -> str | None:
     """Defensively cap an AI-extracted string to a DB column's max length."""
     if value is None:
@@ -271,6 +364,107 @@ def _select_cv_for_powering(
     return highest, rows
 
 
+# The cv_source string recorded when the CV was hand-entered. It starts with
+# "override" because services/risk_scoring.py keys the "CV was manually
+# overridden" risk factor off exactly that prefix, and it names the provenance
+# in plain words because services/ai_service.py::_locked_design_directive
+# prints it verbatim into the prompt ("source: ...").
+_CV_SOURCE_OVERRIDE = "override (investigator-specified; not literature-derived)"
+_CV_SOURCE_LITERATURE = "literature (highest observed)"
+
+
+def _resolve_powering_cv(
+    population_config: dict[str, Any],
+    extracted: list[dict[str, Any]],
+) -> tuple[float | None, dict[str, Any]]:
+    """Resolve the CV% used to power the study AND its provenance, together.
+
+    This function is the ONLY place either is decided, and it always returns
+    both at once, so the powering number and the evidence presented as its
+    justification cannot be set independently. That coupling is the point.
+
+    The defect this prevents (it shipped once, and was the reason the manual
+    override was removed entirely): a hand-entered CV won over the sourced
+    value, but ``cv_table`` — the supporting-trials table the SAP renders as the
+    provenance of the powering figure — was still populated from the literature.
+    The document then cited studies that did not produce the number the study
+    was actually powered on. Here, an override yields ``cv_table == []`` BY
+    CONSTRUCTION; the literature rows are still retained for the record, but
+    under a key whose name cannot be mistaken for a justification.
+
+    Returns ``(cv_pct_or_None, provenance)``. ``provenance`` is merged wholesale
+    into the sample-size dict; ``provenance["cv_source"]`` (absent when nothing
+    is available, so biostatistics' own "assumed" label stands) is what is
+    passed to recommend_sample_size.
+    """
+    cv_high, cv_table = _select_cv_for_powering(extracted)
+
+    raw = population_config.get("cv_intra")
+    override: float | None = None
+    if raw is not None:
+        try:
+            candidate = float(raw)
+        except (TypeError, ValueError):
+            candidate = 0.0
+        if candidate > 0:
+            override = candidate
+
+    if override is not None:
+        return override, {
+            "cv_source": _CV_SOURCE_OVERRIDE,
+            "cv_is_user_override": True,
+            # Empty BY CONSTRUCTION: an investigator-specified CV has no
+            # supporting-trials provenance, so the SAP has no table to render
+            # and cannot claim sourcing the number does not have.
+            "cv_table": [],
+            # Retained for the audit record only. Deliberately NOT named
+            # cv_table, and never rendered as the powering justification.
+            "cv_literature_not_used_for_powering": cv_table,
+            "cv_literature_highest_pct": cv_high,
+            "cv_provenance_note": (
+                f"The within-subject CV of {override:.1f}% used to power this study was "
+                "specified by the investigator/sponsor, NOT derived from the published "
+                "literature. State its justification explicitly and do NOT present any "
+                "table of literature trials as its source."
+                + (
+                    f" For reference only, the highest within-subject CV found in the "
+                    f"literature search was {cv_high:.1f}%."
+                    if cv_high else
+                    " No within-subject CV was retrievable from the literature search."
+                )
+            ),
+        }
+
+    if cv_high:
+        # Power on the HIGHEST observed within-subject CV (Cmax or AUC) across the
+        # healthy-volunteer literature — the conservative regulatory convention.
+        return cv_high, {
+            "cv_source": _CV_SOURCE_LITERATURE,
+            "cv_is_user_override": False,
+            # The CV trials table backs the Sample Size Determination narrative
+            # in the SAP — present here precisely because the number came from
+            # these trials.
+            "cv_table": cv_table,
+            "cv_provenance_note": (
+                f"The within-subject CV of {cv_high:.1f}% is the highest value observed for "
+                "either Cmax or AUC across the published healthy-volunteer studies listed "
+                "in cv_table."
+            ),
+        }
+
+    # Nothing retrievable and nothing supplied: recommend_sample_size falls back
+    # to its own clearly-flagged ASSUMED_CV_PCT and labels the source "assumed".
+    # cv_source is deliberately omitted so that label is not overwritten here.
+    return None, {
+        "cv_is_user_override": False,
+        "cv_table": [],
+        "cv_provenance_note": (
+            "No within-subject CV was retrievable from the literature and none was "
+            "supplied; the powering CV is an explicitly-flagged assumption."
+        ),
+    }
+
+
 async def _fetch_label_safe(
     lit_svc: LiteratureService, drug_inn: str
 ) -> dict[str, str] | None:
@@ -311,6 +505,58 @@ async def _fetch_label_safe(
 _DESIGN_THREAD_LIMITER = CapacityLimiter(4)
 
 
+def _safe_engine(name: str, fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """Run one deterministic engine, returning None if it raises.
+
+    Every engine here is pure Python over already-fetched inputs, so a raise
+    means a genuine input the engine rejects (e.g. randomization refuses an
+    n_enrolled below 2, or a stratification factor with no matching stratum).
+    That must not take down an otherwise-complete generation: the protocol is
+    still produced, the engine's key is simply absent, and the QC layer sees the
+    absence. The failure is logged loudly with the engine name so it is
+    diagnosable rather than silent.
+    """
+    try:
+        return fn(*args, **kwargs)
+    except Exception:  # noqa: BLE001 — one engine must not abort generation
+        logger.exception("deterministic engine '%s' failed; continuing without it", name)
+        return None
+
+
+def _randomization_seed(
+    cfg: dict[str, Any],
+    protocol_id: uuid.UUID | None,
+    drug_inn: str,
+    study_type: str,
+) -> int:
+    """The integer seed the randomization list is generated from.
+
+    Chosen so that regenerating reproduces the SAME list, and so that two
+    different studies never share one:
+
+    1. An already-stored ``randomization_seed`` always wins. Once a list has
+       been generated and filed, the seed that produced it is the record; a
+       later re-run must reuse it or the filed list stops being reproducible.
+    2. Otherwise it is derived from the protocol's own UUID — stable for the
+       life of the protocol (the id never changes), unique per protocol, and
+       already persisted, so the derivation is auditable from the row itself.
+    3. Only if no protocol id is available does it fall back to a SHA-256 of the
+       drug/study identity. That is deterministic but NOT protocol-unique, so it
+       is a last resort rather than the primary rule.
+
+    A random seed would be none of these things: the filed list could never be
+    regenerated for an inspection.
+    """
+    for key in ("_randomization_seed", "randomization_seed"):
+        stored = cfg.get(key)
+        if isinstance(stored, int) and not isinstance(stored, bool) and stored > 0:
+            return stored
+    if protocol_id is not None:
+        return int.from_bytes(protocol_id.bytes[:6], "big")
+    digest = hashlib.sha256(f"{drug_inn}|{study_type}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:6], "big")
+
+
 def _augment_config_with_design(
     population_config: dict[str, Any],
     study_type: str,
@@ -318,35 +564,37 @@ def _augment_config_with_design(
     extracted: list[dict[str, Any]],
     pk_params: list[PKParameterRecord],
     label: dict[str, str] | None,
+    guideline_version: str = "",
+    design_decisions: list[dict[str, Any]] | None = None,
+    protocol_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
-    """Compute the planned sample size ONCE and bake it into the stored config.
+    """Run every deterministic engine ONCE and bake the results into the config.
 
-    This makes the design the single source of truth: the same numbers feed the
-    synopsis, study-design and SAP prompts and the export tables, and they stay
-    stable across section regenerations.
+    This makes the computed design the single source of truth: the same numbers
+    feed the synopsis, study-design and SAP prompts and the export tables, and
+    they stay stable across section regenerations. Each engine's result is
+    stored under an underscore-prefixed key (server-computed, never accepted
+    from a client) and copied into the prompt context by _build_context.
+
+    Ordering matters and is deliberate: sample size first (it decides the
+    design), then the engines that consume the design, then the two document
+    builders (CRF/DMP and ICF) that consume the engines before them.
     """
     cfg = dict(population_config)
+    pk_list = _pk_records_to_dicts(pk_params)
 
-    # The within-subject CV is ALWAYS retrieved, never hand-entered. A manual
-    # override used to win over the sourced value, which meant the powering CV
-    # could silently lose its provenance (the SAP's cv_table would cite studies
-    # that didn't actually produce the number the study was powered on). The CV
-    # now comes only from the literature, falling back to a clearly-flagged
-    # assumption inside recommend_sample_size when nothing is retrievable.
-    cv_high, cv_table = _select_cv_for_powering(extracted)
-    if cv_high:
-        # Power on the HIGHEST observed within-subject CV (Cmax or AUC) across the
-        # healthy-volunteer literature — the conservative regulatory convention.
-        cv_pct, cv_source = cv_high, "literature (highest observed)"
-    else:
-        cv_pct, cv_source = None, None
+    # --- 1. Sample size + CV provenance -----------------------------------
+    # The CV and the evidence presented as its justification are decided
+    # together, in one place, so they cannot diverge — see _resolve_powering_cv.
+    cv_pct, cv_provenance = _resolve_powering_cv(cfg, extracted)
 
     t_half = _median_t_half(pk_params)
+    tmax = _median_tmax_hours(pk_params)
     rec = recommend_sample_size(
         study_type=study_type,
         drug_inn=drug_inn,
         cv_intra_pct=cv_pct,
-        cv_source=cv_source,
+        cv_source=cv_provenance.get("cv_source"),
         t_half_hours=t_half,
         is_nti=cfg.get("is_nti"),
         requested_design=cfg.get("design"),
@@ -359,22 +607,215 @@ def _augment_config_with_design(
     # Carry the median half-life alongside the recommendation so the QC
     # validator can check washout adequacy without re-querying PK records.
     ss["t_half_hours"] = t_half
-    # The CV trials table backs the Sample Size Determination narrative in the SAP
-    # (the prompt renders it when present); empty when no literature CV was found.
-    ss["cv_table"] = cv_table
+    ss["tmax_hours"] = tmax
+    # cv_table / cv_source / cv_is_user_override all arrive from the single
+    # resolver above. Nothing else in this module writes them.
+    ss.update(cv_provenance)
     cfg["_sample_size"] = ss
 
+    design_key = ss.get("design_key")
+    is_nti = ss.get("is_nti") if ss.get("is_nti") is not None else cfg.get("is_nti")
+    healthy_volunteers = str(cfg.get("subject_type", "healthy")).lower() != "patient"
+    is_biologic = classify_drug_modality(drug_inn) == "biologic" or study_type == "biosimilar_pk"
+    dosing = str(cfg.get("dosing") or "single")
+
+    # --- 2. Stratification -------------------------------------------------
     # Stratification factors are resolved ONCE here, next to the design they
     # depend on, for the same single-source-of-truth reason as _sample_size: the
     # randomisation narrative, the population section and the export table must
     # all cite the identical factor list. Derived from the real label text, so
     # the applicability judgement is grounded rather than model-recalled.
     cfg["_stratification"] = recommend_stratification(
-        design_key=ss.get("design_key"),
+        design_key=design_key,
         label=label,
         is_nti=cfg.get("is_nti"),
         cv_intra_pct=ss.get("cv_pct"),
     )
+
+    # --- 3. The five locked clinical design decisions ----------------------
+    # Finalised HERE rather than after this function returns, because four of
+    # the engines below (randomisation blinding, CRF PD forms, safety gating
+    # route, ICF population) have to agree with them. The reviewer's choices
+    # from the "Review design" step win; otherwise they are derived fresh from
+    # the design just computed, so generation ALWAYS reflects the 5 rules.
+    label_text = " ".join(filter(None, [
+        (label or {}).get("dosage_and_administration", ""),
+        (label or {}).get("how_supplied", ""),
+    ]))
+    decisions = design_decisions or decisions_to_dicts(
+        determine_design_decisions(
+            drug_inn=drug_inn,
+            study_type=study_type,
+            design_key=design_key,
+            t_half_hours=t_half,
+            label_text=label_text,
+        )
+    )
+    cfg["_design_decisions"] = decisions
+    decision_values = {
+        d.get("key"): (d.get("value") or "")
+        for d in decisions if isinstance(d, dict)
+    }
+    pd_value = decision_values.get("pd_endpoint", "")
+    pd_coprimary = bool(pd_value) and not pd_value.strip().lower().startswith("none")
+
+    # --- 4. PK blood-sampling schedule ------------------------------------
+    cfg["_sampling_schedule"] = _safe_engine(
+        "sampling_schedule",
+        compute_sampling_schedule,
+        t_half,
+        tmax,
+        design_key=design_key,
+        study_type=study_type,
+        dosing=dosing,
+        is_biologic=is_biologic,
+        label=label,
+        tau_hours=cfg.get("dosing_interval_hours"),
+    )
+    sched = cfg.get("_sampling_schedule")
+
+    # --- 5. Drug-drug interaction screening (concomitant-medication rules) --
+    cfg["_ddi"] = _safe_engine(
+        "ddi_screening",
+        screen_interactions,
+        label,
+        pk_list,
+        drug_inn,
+        design_key=design_key,
+        is_nti=cfg.get("is_nti"),
+        healthy_volunteers=healthy_volunteers,
+    )
+
+    # --- 6. Safety gating (stopping / halting rules, discharge criteria) ----
+    # n_enrolled/dropout_rate come from the SAME recommendation the study is
+    # powered on, so the halting counts and the powering assumption cannot
+    # contradict each other in one document.
+    cfg["_safety_gating"] = _safe_engine(
+        "safety_gating",
+        recommend_safety_gating,
+        study_type=study_type,
+        design_key=design_key,
+        n_enrolled=ss.get("n_enrolled"),
+        n_evaluable=ss.get("n_evaluable"),
+        label=label,
+        is_nti=cfg.get("is_nti"),
+        route=decision_values.get("route") or None,
+        dropout_rate=ss.get("dropout_rate"),
+        healthy_volunteers=healthy_volunteers,
+    )
+
+    # --- 7. Bioanalytical method validation package ------------------------
+    cfg["_bioanalytical"] = _safe_engine(
+        "bioanalytical",
+        plan_bioanalytical,
+        pk_parameters=pk_list,
+        label=label,
+        drug_inn=drug_inn,
+        study_type=study_type,
+        is_biologic=is_biologic,
+        dose_mg=cfg.get("dose_mg"),
+    )
+
+    # --- 8. Expedited safety reporting plan --------------------------------
+    cfg["_safety_reporting"] = _safe_engine(
+        "safety_reporting",
+        build_safety_reporting_plan,
+        study_type,
+        cfg.get("is_ind"),
+        cfg.get("org_name"),
+        drug_inn=drug_inn,
+        label=label,
+        healthy_volunteers=healthy_volunteers,
+        guideline_version=guideline_version or None,
+        is_applicable_clinical_trial=cfg.get("is_applicable_clinical_trial"),
+        is_new_chemical_entity=bool(cfg.get("is_new_chemical_entity")),
+        radiolabeled=bool(cfg.get("radiolabeled")),
+    )
+
+    # --- 9. Randomization list ---------------------------------------------
+    # The seed is derived deterministically and PERSISTED (see
+    # _randomization_seed): the filed allocation list must be regenerable years
+    # later during an inspection, which a fresh random seed would make
+    # impossible. Nothing about the list reaches the prompt or the protocol body
+    # unredacted — _build_context passes it through blinded_view().
+    seed = _randomization_seed(cfg, protocol_id, drug_inn, study_type)
+    # Stored UNDERSCORE-PREFIXED, and the plain key a client may have supplied
+    # is removed. _build_context copies every non-underscore population_config
+    # key straight into the prompt, and the seed plus the recorded arguments
+    # regenerate the allocation list entry for entry — publishing it would undo
+    # blinded_view() completely. This is why the key is not "randomization_seed".
+    cfg.pop("randomization_seed", None)
+    cfg["_randomization_seed"] = seed
+    n_enrolled = ss.get("n_enrolled")
+    if isinstance(n_enrolled, int) and n_enrolled >= 2:
+        cfg["_randomization"] = _safe_engine(
+            "randomization",
+            generate_allocation,
+            design_key=design_key or "crossover",
+            n_enrolled=n_enrolled,
+            seed=seed,
+            stratify_by=cfg.get("_stratification"),
+            is_nti=is_nti,
+            pd_coprimary=pd_coprimary,
+            label=label,
+        )
+
+    # --- 10. CRF specification + Data Management Plan ----------------------
+    # Consumes the sampling schedule (for the pre-printed PK sample log) and the
+    # locked decisions (for the PD forms), so it runs after both. The context it
+    # is handed deliberately EXCLUDES _randomization — nothing downstream of the
+    # allocation list should be able to echo it.
+    engine_ctx: dict[str, Any] = {
+        "drug_inn": drug_inn,
+        "study_type": study_type,
+        "guideline_version": guideline_version,
+        "sample_size": ss,
+        "label_data": label or {},
+        "pk_parameters": pk_list,
+        "design_decisions": decisions,
+        "population_config": {
+            k: v for k, v in cfg.items() if k != "_randomization"
+        },
+    }
+    cfg["_crf_dmp"] = _safe_engine(
+        "crf_dmp",
+        build_crf_spec,
+        engine_ctx,
+        design_key=design_key,
+        study_type=study_type,
+        sampling=sched,
+        label=label,
+        dosing=dosing,
+        is_biologic=is_biologic,
+        n_enrolled=ss.get("n_enrolled"),
+        t_half_hours=t_half,
+        lloq=cfg.get("lloq"),
+        pd_endpoint=pd_value or None,
+    )
+
+    # --- 11. Informed Consent Form (separate IRB document) -----------------
+    # Runs last: its blood-volume and duration arithmetic must be computed from
+    # the SAME sampling schedule the protocol locks, and its prohibited-
+    # medication list from the SAME DDI screen, or the two documents disagree.
+    icf_ctx = dict(engine_ctx)
+    if sched and sched.get("timepoints"):
+        icf_ctx["sampling_schedule_hours"] = [
+            tp["hours"] for tp in sched["timepoints"] if tp.get("hours") is not None
+        ]
+    ddi = cfg.get("_ddi")
+    if ddi and ddi.get("prohibited") and not cfg.get("prohibited_medications"):
+        icf_ctx["prohibited_medications"] = [
+            str(row.get("label")) for row in ddi["prohibited"] if row.get("label")
+        ]
+    cfg["_icf"] = _safe_engine("icf", build_icf, icf_ctx)
+
+    # Drop engines that failed so downstream `if cfg.get(...)` guards behave.
+    for key in (
+        "_sampling_schedule", "_ddi", "_safety_gating", "_bioanalytical",
+        "_safety_reporting", "_randomization", "_crf_dmp", "_icf",
+    ):
+        if cfg.get(key) is None:
+            cfg.pop(key, None)
 
     if label:
         cfg["_label"] = label
@@ -389,17 +830,7 @@ def _build_context(
     guideline_version: str,
     pk_params: list[PKParameterRecord],
 ) -> dict[str, Any]:
-    pk_list = [
-        {
-            "parameter": p.parameter.value,
-            "value": p.value,
-            "unit": p.unit,
-            "population": p.population,
-            "source_pmid": p.source_pmid,
-            "confidence": p.confidence,
-        }
-        for p in pk_params
-    ]
+    pk_list = _pk_records_to_dicts(pk_params)
     ctx: dict[str, Any] = {
         "drug_inn": drug.inn,
         "brand_names": drug.brand_names,
@@ -425,6 +856,52 @@ def _build_context(
     strat = population_config.get("_stratification")
     if strat:
         ctx["stratification"] = strat
+    # The five locked clinical decisions. create_protocol also sets this
+    # explicitly (same value); copying it here means a single-section
+    # regeneration gets the same locked directive instead of losing it.
+    decisions = population_config.get("_design_decisions")
+    if decisions:
+        ctx["design_decisions"] = decisions
+
+    # ---- Deterministic engines: computed once at creation, narrated only ----
+    # Each is stored under an underscore key (stripped from the prompt's
+    # population_config above) and surfaced under the context key its own
+    # directive expects. Guarded so an engine that could not run simply leaves
+    # its key absent rather than injecting an empty object the model would try
+    # to narrate.
+    sched = population_config.get("_sampling_schedule")
+    if sched:
+        ctx["sampling_schedule"] = sched
+    ddi = population_config.get("_ddi")
+    if ddi:
+        ctx["ddi"] = ddi
+    gating = population_config.get("_safety_gating")
+    if gating:
+        ctx["safety_gating"] = gating
+    bioanalytical = population_config.get("_bioanalytical")
+    if bioanalytical:
+        ctx["bioanalytical"] = bioanalytical
+    reporting = population_config.get("_safety_reporting")
+    if reporting:
+        ctx["safety_reporting"] = reporting
+    crf = population_config.get("_crf_dmp")
+    if crf:
+        ctx["crf_dmp"] = crf
+    icf = population_config.get("_icf")
+    if icf:
+        ctx["icf"] = icf
+
+    # RANDOMIZATION — the single highest-risk line in this function. ctx is what
+    # reaches the AI prompt and, through it, the protocol body. The raw stored
+    # dict contains the full unblinded subject-to-treatment allocation AND the
+    # seed that regenerates it; putting either in front of a blinded reader is
+    # an allocation-concealment breach (ICH E9 sect. 2.3.2). blinded_view()
+    # strips both, plus the block size that makes the last allocation of each
+    # block deducible. Never pass the raw dict here.
+    rand = population_config.get("_randomization")
+    if rand:
+        ctx["randomization"] = blinded_view(rand)
+
     label = population_config.get("_label")
     if label:
         ctx["label_data"] = label
@@ -689,6 +1166,7 @@ async def _run_generation_pipeline(
     guideline_version: str,
     population_config: dict[str, Any],
     design_decisions: list[dict[str, Any]],
+    protocol_id: uuid.UUID | None = None,
 ) -> tuple[dict[str, str], dict[str, Any], dict[str, Any]]:
     """The full literature -> PK -> design -> 3-stage-pipeline flow, shared by
     the sync request path and the async background task.
@@ -782,28 +1260,17 @@ async def _run_generation_pipeline(
             extracted=extracted,
             pk_params=all_pk,
             label=label,
+            guideline_version=guideline_version,
+            # The five design decisions are finalized INSIDE the augment call
+            # now (the reviewer's if supplied, else derived fresh from the
+            # computed design), because several of the deterministic engines
+            # run there have to agree with them.
+            design_decisions=design_decisions,
+            protocol_id=protocol_id,
         ),
         limiter=_DESIGN_THREAD_LIMITER,
     )
-
-    # Finalize the five design decisions: use the reviewer's if provided, else
-    # derive them fresh from the computed design so generation ALWAYS reflects
-    # the 5 clinical rules (population, dose, route, design, PD co-primary).
-    _ss = augmented_config.get("_sample_size") or {}
-    _label_text = " ".join(filter(None, [
-        (label or {}).get("dosage_and_administration", ""),
-        (label or {}).get("how_supplied", ""),
-    ]))
-    decisions = design_decisions or decisions_to_dicts(
-        determine_design_decisions(
-            drug_inn=drug.inn,
-            study_type=study_type,
-            design_key=_ss.get("design_key"),
-            t_half_hours=_ss.get("t_half_hours"),
-            label_text=_label_text,
-        )
-    )
-    augmented_config["_design_decisions"] = decisions
+    decisions = augmented_config.get("_design_decisions") or []
 
     context = _build_context(
         drug=drug,
@@ -915,6 +1382,7 @@ async def _generation_task(
                 guideline_version=guideline_version,
                 population_config=population_config,
                 design_decisions=design_decisions,
+                protocol_id=protocol_id,
             )
             protocol = await session.get(Protocol, protocol_id)
             if protocol is None:
@@ -994,6 +1462,11 @@ async def create_protocol(
 
     # ---- Synchronous path (pytest): generate inline, return the finished row.
     if _generate_synchronously():
+        # The id is minted BEFORE generation because the randomization engine
+        # seeds its allocation list from it (see _randomization_seed): the seed
+        # has to be the protocol's own, stable identifier, not a value invented
+        # after the list already exists.
+        new_protocol_id = uuid.uuid4()
         sections, augmented_config, change_detail = await _run_generation_pipeline(
             db,
             drug=drug,
@@ -1002,9 +1475,10 @@ async def create_protocol(
             guideline_version=payload.guideline_version,
             population_config=payload.population_config,
             design_decisions=payload.design_decisions,
+            protocol_id=new_protocol_id,
         )
         protocol = Protocol(
-            id=uuid.uuid4(),
+            id=new_protocol_id,
             org_id=actor.org_id,
             drug_id=drug.id,
             study_type=payload.study_type,

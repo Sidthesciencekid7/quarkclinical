@@ -110,10 +110,19 @@ export interface PopulationConfig {
   exclusion_presets: string[]
   // Optional study-design parameters that drive the sample-size engine and the
   // generated protocol. Omitted keys fall back to literature / sensible defaults.
-  // NOTE: within-subject CV is intentionally absent. It is sourced automatically
-  // from the literature (highest observed Cmax/AUC CV across healthy-volunteer
-  // studies) in routers/protocols.py::_select_cv_for_powering — never hand-entered,
-  // so the powering value always carries a citable provenance.
+  /**
+   * Within-subject CV %, OPTIONAL and normally left blank.
+   *
+   * Blank (the default and the safer path) = the powering CV is sourced
+   * automatically from the literature — the highest within-subject CV reported
+   * for Cmax or AUC across healthy-volunteer studies, with the supporting
+   * trials tabulated in the SAP (routers/protocols.py::_select_cv_for_powering).
+   *
+   * A value here is an INVESTIGATOR-SPECIFIED OVERRIDE: it replaces the
+   * literature-derived figure, and the protocol must declare it as such rather
+   * than implying the SAP's supporting-studies table backs it.
+   */
+  cv_intra?: number
   reference_product?: string // named Reference Listed Drug
   dose_strength?: string     // e.g. "400 mg tablet"
   is_nti?: boolean           // narrow-therapeutic-index → tightened limits
@@ -128,9 +137,13 @@ export const defaultPopulationConfig: PopulationConfig = {
   weight_max: 100,
   renal_status: 'normal',
   hepatic_status: 'normal',
+  // Only drug-AGNOSTIC criteria are pre-selected. Pathway-specific exclusions
+  // (CYP/UGT/transporter perpetrators, grapefruit, tobacco-as-CYP1A2-inducer)
+  // are supplied per drug by the backend DDI screening engine — a hardcoded
+  // "CYP3A4 inhibitors or inducers" default used to be applied to every drug
+  // regardless of whether it is a CYP3A4 substrate at all.
   exclusion_presets: [
     'Tobacco or nicotine use within 6 months',
-    'CYP3A4 inhibitors or inducers within 14 days',
   ],
 }
 
@@ -191,6 +204,74 @@ export interface DesignPreviewResponse {
   drug_inn: string
   study_type: StudyType
   decisions: DesignDecision[]
+  /** Present only if the backend attaches the DDI screening to this preview
+   *  instead of exposing it on its own route (see api/client.ts::previewDdi). */
+  ddi?: DdiScreeningResult
+}
+
+// ── Drug-drug interaction screening (backend services/ddi_screening.py) ────
+// The engine reads the drug's real DailyMed label, detects which metabolic and
+// transporter pathways actually apply, and returns the comedication rows that
+// belong in the exclusion criteria. This is what replaces the old static
+// "CYP3A4 inhibitors or inducers within 14 days" preset, which was offered for
+// every drug regardless of whether it is a CYP3A4 substrate.
+
+export type DdiStatus = 'prohibited' | 'restricted' | 'permitted'
+
+export interface DdiEvidence {
+  /** Which label section the cue was found in. */
+  source?: string | null
+  /** The regex cue that matched. */
+  cue?: string | null
+  /** The matched label text. */
+  quote?: string | null
+}
+
+/** One comedication row. Flat by design — it renders straight into a table. */
+export interface DdiRow {
+  key: string
+  label: string
+  status: DdiStatus | string
+  pathway?: string | null
+  examples?: string[]
+  washout_days?: number | null
+  washout_basis?: string | null
+  extended_washout?: boolean
+  history_exclusion?: boolean
+  rationale?: string | null
+  conditions?: string | null
+  escalated_by_nti?: boolean
+  /** Set when the row rests on a stated convention rather than pharmacology. */
+  assumption?: string | null
+  evidence?: DdiEvidence | null
+  /** Optional server-rendered protocol sentence. Used verbatim when present so
+   *  the wording the protocol carries is the wording the engine wrote. */
+  criterion?: string | null
+}
+
+export interface DdiScreeningResult {
+  drug_inn?: string
+  design_key?: string | null
+  is_nti?: boolean | null
+  /** Detected pathway records. The UI only relies on `pathway_keys`. */
+  pathways?: unknown[]
+  /** e.g. ["cyp3a4", "pgp"] — empty when the label identified nothing. */
+  pathway_keys?: string[]
+  prohibited?: DdiRow[]
+  restricted?: DdiRow[]
+  permitted?: DdiRow[]
+  max_washout_days?: number | null
+  screening_history_window_days?: number | null
+  /** Agents excluded on history because they cannot be washed out. */
+  history_exclusion_agents?: string[]
+  study_drug_t_half_hours?: number | null
+  post_dose_restriction_hours?: number | null
+  /** Non-empty when no pathway could be resolved from the label — the engine
+   *  then falls back to one conservative pan-pathway prohibition. Shape is
+   *  server-owned; the UI only counts these, it never renders their contents. */
+  unresolved?: unknown[]
+  assumptions?: unknown[]
+  summary?: string
 }
 
 /** A row in the "My Reports" history list (GET /api/protocols). */

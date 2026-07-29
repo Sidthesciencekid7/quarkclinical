@@ -50,20 +50,20 @@ export default function ReviewDesign({ drug, studyType, populationConfig, decisi
     onChange(decisions.map(d => (d.key === key ? { ...d, value } : d)))
   }
 
+  if (error) {
+    return (
+      <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+        Couldn&apos;t determine the study design: {error}
+      </div>
+    )
+  }
+
   if (loading || decisions === null) {
     return (
       <div className="space-y-2.5">
         {[0, 1, 2, 3, 4].map(i => (
           <div key={i} className="h-[74px] rounded-xl border border-slate-200 bg-slate-50/60 animate-pulse" />
         ))}
-      </div>
-    )
-  }
-
-  if (error) {
-    return (
-      <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-        Couldn&apos;t determine the study design: {error}
       </div>
     )
   }

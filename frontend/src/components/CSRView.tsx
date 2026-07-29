@@ -58,7 +58,10 @@ export default function CSRView({ protocol, onBack }: { protocol: ProtocolSummar
         else if (hasNarrative(full) && full.generation_status === 'complete') setPhase('report')
         else setPhase('review')
       } catch (e) {
-        if (!cancelled) setLoadError(e instanceof Error ? e.message : 'Failed to load study report')
+        if (!cancelled) {
+          setLoadError(e instanceof Error ? e.message : 'Failed to load study report')
+          setPhase('start')
+        }
       }
     })()
     return () => { cancelled = true }
@@ -180,7 +183,7 @@ export default function CSRView({ protocol, onBack }: { protocol: ProtocolSummar
           <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{loadError}</div>
         )}
 
-        {phase === 'loading' && (
+        {phase === 'loading' && !loadError && (
           <div className="space-y-3">{[0, 1].map(i => <div key={i} className="h-24 rounded-2xl border border-slate-200 bg-white/60 animate-pulse" />)}</div>
         )}
 

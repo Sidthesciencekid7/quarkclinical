@@ -2986,8 +2986,20 @@ def _ss_kv_table_docx(doc: Document, rows: list[tuple[str, str]]) -> None:
     doc.add_paragraph()
 
 
-def _ss_grid_table_docx(doc: Document, rows: list[list[str]]) -> None:
-    """Header + data grid used for the CV sensitivity table."""
+def _ss_grid_table_docx(
+    doc: Document,
+    rows: list[list[str]],
+    col_widths: list[Any] | None = None,
+    font_pt: float = 9,
+) -> None:
+    """Header + data grid used for the CV sensitivity table.
+
+    ``col_widths`` / ``font_pt`` are optional and default to the original
+    behaviour (equal columns across the 6.75" body width, 9 pt); the standalone
+    companion documents (ICF / randomization list / CRF spec) reuse this same
+    grid with a wide first column and a smaller face so a long field or rule
+    does not wrap into an unreadable column.
+    """
     tbl = doc.add_table(rows=len(rows), cols=len(rows[0]))
     tbl.style = "Table Grid"
     col_w = Inches(6.75) / len(rows[0])
@@ -3001,7 +3013,7 @@ def _ss_grid_table_docx(doc: Document, rows: list[list[str]]) -> None:
             para.paragraph_format.space_after = Pt(0)
             rn = para.add_run(cell_text)
             rn.font.name = "Times New Roman"
-            rn.font.size = Pt(9)
+            rn.font.size = Pt(font_pt)
             shd = OxmlElement("w:shd")
             shd.set(qn("w:val"), "clear")
             shd.set(qn("w:color"), "auto")
@@ -3013,9 +3025,28 @@ def _ss_grid_table_docx(doc: Document, rows: list[list[str]]) -> None:
             else:
                 shd.set(qn("w:fill"), "F0F4F8" if r_idx % 2 == 0 else "FFFFFF")
                 cell._tc.get_or_add_tcPr().append(shd)
-        for cell in row.cells:
-            cell.width = col_w
+        for c_idx, cell in enumerate(row.cells):
+            cell.width = (
+                col_widths[c_idx]
+                if col_widths and c_idx < len(col_widths)
+                else col_w
+            )
+    _repeat_header_row_docx(tbl)
     doc.add_paragraph()
+
+
+def _repeat_header_row_docx(tbl) -> None:
+    """Mark row 0 as a repeating header (w:tblHeader) so Word reprints it at the
+    top of every page a long table spills onto — without it, page 2 of the
+    allocation list is a wall of unlabelled columns."""
+    try:
+        tr_pr = tbl.rows[0]._tr.get_or_add_trPr()
+        if tr_pr.find(qn("w:tblHeader")) is None:
+            el = OxmlElement("w:tblHeader")
+            el.set(qn("w:val"), "true")
+            tr_pr.append(el)
+    except Exception:  # noqa: BLE001 — cosmetic only; never break an export
+        pass
 
 
 def _add_sample_size_section_legacy_docx(doc: Document, section_idx: int) -> None:
@@ -3341,3 +3372,2191 @@ def _add_abbreviations_pdf(story: list, study_type: str, styles: dict) -> None:
     data = [["Abbreviation", "Definition"]]
     data.extend([abbr, full] for abbr, full in _abbreviations_for(study_type))
     _simple_table_pdf(story, data, styles, col_widths=[34 * rl_mm, 126 * rl_mm])
+
+
+# ===========================================================================
+# Standalone companion documents (ICF / randomization list / CRF spec + DMP)
+# ===========================================================================
+# These are SEPARATE documents, not appendices of the protocol body:
+#
+#   * the Informed Consent Form is reviewed and approved by the IRB on its own
+#     cycle and is version-controlled separately from the protocol, so it gets
+#     its own file, its own cover and its own version/date in the running
+#     header and footer;
+#   * the UNBLINDED randomization allocation list must never travel inside a
+#     document that reaches investigators, recruiters or the bioanalytical
+#     laboratory (ICH E9 sect. 2.3.2 - allocation concealment), so it is
+#     reachable only through its own endpoint and every page of it is stamped
+#     RESTRICTED - UNBLINDED. It is deliberately absent from _build_docx /
+#     _build_pdf and must stay that way;
+#   * the CRF specification and Data Management Plan is an operational
+#     companion that would swamp the protocol body.
+#
+# All three are assembled with the SAME helpers the protocol export already
+# uses (_apply_doc_styles, _enable_update_fields_on_open, _hf_tab_line,
+# _add_page_number, _ss_para, _ss_kv_table_docx, _ss_grid_table_docx,
+# _unstyled_subheading_docx, _pdf_styles, _simple_table_pdf, _pdf_safe). That
+# is deliberate rather than lazy: the w:settings child ordering handled by
+# _enable_update_fields_on_open / _SETTINGS_TAG_ORDER is schema-sensitive
+# (ECMA-376/ISO-29500) and this codebase has already shipped a "Word wants to
+# repair this document" bug from getting it wrong. Do not invent new document
+# scaffolding here.
+
+# The content engines are imported defensively: a missing or broken companion
+# engine must degrade to a clear 501 on its own endpoint, never take the
+# protocol .docx/.pdf export down with it.
+try:  # pragma: no cover - exercised whenever the engine module imports cleanly
+    from services.icf import build_icf as _build_icf_content
+    _ICF_ENGINE_OK = True
+except Exception:  # noqa: BLE001
+    _build_icf_content = None  # type: ignore[assignment]
+    _ICF_ENGINE_OK = False
+
+try:  # pragma: no cover
+    from services.crf_dmp import build_crf_spec as _build_crf_content
+    _CRF_ENGINE_OK = True
+except Exception:  # noqa: BLE001
+    _build_crf_content = None  # type: ignore[assignment]
+    _CRF_ENGINE_OK = False
+
+try:  # pragma: no cover
+    from services.randomization import format_unblinded_list as _format_unblinded_list
+    _RANDOMIZATION_ENGINE_OK = True
+except Exception:  # noqa: BLE001
+    _format_unblinded_list = None  # type: ignore[assignment]
+    _RANDOMIZATION_ENGINE_OK = False
+
+
+# The one string that must be impossible to miss on the allocation list. Kept
+# ASCII (cp1252-safe) because this document is printed and filed on Windows.
+_RESTRICTED_BANNER = "RESTRICTED - UNBLINDED - DO NOT CIRCULATE"
+_RESTRICTED_RGB = RGBColor(0xB9, 0x1C, 0x1C)
+_RESTRICTED_HEX = "#B91C1C"
+_BLANK_LINE = "_" * 46
+
+
+def _cell(value: Any, default: str = "") -> str:
+    """Flatten an engine value into one plain string for a table cell.
+
+    The companion engines emit nested lists/dicts freely; a table cell has to be
+    a string, and str({...}) in a regulatory document is not acceptable output.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, float):
+        return f"{value:g}"
+    if isinstance(value, (list, tuple)):
+        parts = [_cell(v) for v in value]
+        return "; ".join(p for p in parts if p)
+    if isinstance(value, dict):
+        parts = [f"{k}: {_cell(v)}" for k, v in value.items()]
+        return "; ".join(p for p in parts if p)
+    return str(value)
+
+
+# ---------------------------------------------------------------------------
+# Resolving the engine payloads
+# ---------------------------------------------------------------------------
+
+
+def _companion_context(protocol: Protocol, drug_inn: str) -> dict[str, Any]:
+    """Rebuild the minimal generation context the companion engines read.
+
+    Used ONLY as a fallback for a protocol created before the engine was wired
+    into _augment_config_with_design. Everything here is either stored on the
+    protocol row or derived deterministically from it - nothing is invented and
+    nothing is re-fetched from an external service at export time.
+    """
+    pop = dict(protocol.population_config or {})
+    ss = pop.get("_sample_size") or {}
+    title = _strip_html(protocol.sections.get("title") or "").strip()
+    return {
+        "drug_inn": drug_inn,
+        "study_type": protocol.study_type.value,
+        "population_config": pop,
+        "sample_size": ss,
+        "_sample_size": ss,
+        "label_data": pop.get("_label") or {},
+        "guideline_version": protocol.guideline_version,
+        "org_name": pop.get("org_name") or protocol.org_id or "",
+        "protocol_number": _protocol_code(protocol, drug_inn),
+        "protocol_version": f"{protocol.version}.0",
+        "protocol_title": title or None,
+        "sampling_schedule": pop.get("_sampling_schedule"),
+        "_sampling_schedule": pop.get("_sampling_schedule"),
+        "design_decisions": pop.get("_design_decisions"),
+        "_design_decisions": pop.get("_design_decisions"),
+    }
+
+
+def _resolve_icf(protocol: Protocol, drug_inn: str) -> dict[str, Any]:
+    """The stored ICF content model, or a freshly computed one for a protocol
+    created before the engine was wired in."""
+    stored = (protocol.population_config or {}).get("_icf")
+    if isinstance(stored, dict) and stored.get("sections"):
+        return stored
+    if not _ICF_ENGINE_OK:
+        raise HTTPException(
+            501,
+            detail="Informed Consent Form generation is unavailable "
+                   "(services/icf.py could not be imported).",
+        )
+    try:
+        return _build_icf_content(_companion_context(protocol, drug_inn))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            500, detail=f"Informed Consent Form content could not be assembled: {exc}"
+        ) from exc
+
+
+def _resolve_crf_dmp(protocol: Protocol, drug_inn: str) -> dict[str, Any]:
+    """The stored CRF/DMP specification, or a freshly computed one."""
+    stored = (protocol.population_config or {}).get("_crf_dmp")
+    if isinstance(stored, dict) and stored.get("forms"):
+        return stored
+    if not _CRF_ENGINE_OK:
+        raise HTTPException(
+            501,
+            detail="CRF/DMP generation is unavailable "
+                   "(services/crf_dmp.py could not be imported).",
+        )
+    pop = protocol.population_config or {}
+    ss = pop.get("_sample_size") or {}
+    try:
+        return _build_crf_content(
+            _companion_context(protocol, drug_inn),
+            design_key=ss.get("design_key"),
+            study_type=protocol.study_type.value,
+            sampling=pop.get("_sampling_schedule"),
+            label=pop.get("_label"),
+            n_enrolled=ss.get("n_enrolled"),
+            t_half_hours=ss.get("t_half_hours"),
+            lloq=pop.get("lloq"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            500, detail=f"CRF specification could not be assembled: {exc}"
+        ) from exc
+
+
+def _resolve_randomization(protocol: Protocol) -> dict[str, Any]:
+    """The stored allocation list - never regenerated at export time.
+
+    Unlike the ICF and the CRF specification, the randomization list is NOT a
+    pure function of the protocol: it is a function of the recorded seed. Making
+    one up at export time would produce a list that is not the one the study was
+    randomised against, which is the single worst failure this document can
+    have. So a protocol without a filed schedule gets an explicit refusal.
+    """
+    stored = (protocol.population_config or {}).get("_randomization")
+    if isinstance(stored, dict) and stored.get("unblinded_allocation"):
+        return stored
+    raise HTTPException(
+        409,
+        detail=(
+            "No randomization schedule has been generated and filed for this "
+            "protocol, so there is no allocation list to export. The list is "
+            "never regenerated at export time: a re-drawn list would not be the "
+            "one this study was randomised against. Regenerate the protocol "
+            "design so the schedule and its seed are recorded, then export."
+        ),
+    )
+
+
+async def _log_companion_export(
+    db: AsyncSession,
+    actor: Any,
+    protocol_id: Any,
+    action: str,
+    diff: dict[str, Any],
+) -> None:
+    """Audit-log a companion-document export (same shape as the protocol export
+    entries, so one query over resource_type='protocol' still sees everything)."""
+    db.add(AuditLog(
+        id=uuid.uuid4(),
+        user_id=actor.id,
+        action=action,
+        resource_type="protocol",
+        resource_id=str(protocol_id),
+        diff={**diff, "exported_at": datetime.now(timezone.utc).isoformat()},
+        timestamp=datetime.now(timezone.utc),
+    ))
+    await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Shared DOCX scaffolding for the companion documents
+# ---------------------------------------------------------------------------
+
+
+def _companion_docx() -> Document:
+    """A blank A4 document with the protocol export's page setup and styles."""
+    doc = Document()
+    sec = doc.sections[0]
+    sec.page_width = int(8.27 * 914400)
+    sec.page_height = int(11.69 * 914400)
+    sec.left_margin = Inches(0.75)
+    sec.right_margin = Inches(0.75)
+    sec.top_margin = Inches(1.0)
+    sec.bottom_margin = Inches(1.0)
+    sec.different_first_page_header_footer = False
+    _apply_doc_styles(doc)
+    _enable_update_fields_on_open(doc)
+    return doc
+
+
+def _companion_header_docx(
+    section, left1: str, right1: str, left2: str, right2: str, banner: str = "",
+) -> None:
+    """Two-line running header, optionally preceded by a bold red banner line."""
+    header = section.header
+    header.is_linked_to_previous = False
+    first = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
+    first.clear()
+    if banner:
+        first.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        rb = first.add_run(banner)
+        rb.bold = True
+        rb.font.name = "Times New Roman"
+        rb.font.size = Pt(9)
+        rb.font.color.rgb = _RESTRICTED_RGB
+        line1 = header.add_paragraph()
+    else:
+        line1 = first
+    _hf_tab_line(line1, left1, right1)
+    _hf_tab_line(header.add_paragraph(), left2, right2)
+
+
+def _companion_footer_docx(section, note: str = "", banner: str = "") -> None:
+    """Centered 'Page N of M', an optional document-identity note, and an
+    optional bold red confidentiality banner on every page."""
+    footer = section.footer
+    footer.is_linked_to_previous = False
+    para = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+    para.clear()
+    para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _add_page_number(para, size_pt=9)
+    if note:
+        p = footer.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        rn = p.add_run(note)
+        rn.italic = True
+        rn.font.name = "Times New Roman"
+        rn.font.size = Pt(8)
+        rn.font.color.rgb = RGBColor(0x64, 0x74, 0x8B)
+    if banner:
+        p = footer.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        rb = p.add_run(banner)
+        rb.bold = True
+        rb.font.name = "Times New Roman"
+        rb.font.size = Pt(9)
+        rb.font.color.rgb = _RESTRICTED_RGB
+
+
+def _companion_cover_docx(
+    doc: Document,
+    *,
+    doc_type: str,
+    subtitle: str,
+    rows: list[tuple[str, str]],
+    notices: tuple[str, ...] = (),
+    banner: str = "",
+) -> None:
+    """Cover page: optional banner, document type, subtitle, metadata table."""
+    if banner:
+        pb = doc.add_paragraph()
+        pb.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        pb.paragraph_format.space_before = Pt(12)
+        pb.paragraph_format.space_after = Pt(12)
+        rb = pb.add_run(banner)
+        rb.bold = True
+        rb.font.name = "Times New Roman"
+        rb.font.size = Pt(16)
+        rb.font.color.rgb = _RESTRICTED_RGB
+
+    p_title = doc.add_paragraph()
+    p_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p_title.paragraph_format.space_before = Pt(0 if banner else 36)
+    p_title.paragraph_format.space_after = Pt(10)
+    rt = p_title.add_run(doc_type)
+    rt.bold = True
+    rt.font.name = "Times New Roman"
+    rt.font.size = Pt(15)
+
+    if subtitle:
+        p_sub = doc.add_paragraph()
+        p_sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_sub.paragraph_format.space_after = Pt(24)
+        rs = p_sub.add_run(subtitle)
+        rs.bold = True
+        rs.font.name = "Times New Roman"
+        rs.font.size = Pt(11)
+
+    if rows:
+        _ss_kv_table_docx(doc, rows)
+    for notice in notices:
+        _ss_para(doc, notice, italic=True, size=10)
+
+
+# ---------------------------------------------------------------------------
+# Shared PDF scaffolding for the companion documents
+# ---------------------------------------------------------------------------
+
+
+def _make_companion_canvas(
+    *,
+    left1: str,
+    left2: str,
+    right1: str,
+    right2: str,
+    footer_note: str = "",
+    banner: str = "",
+) -> type:
+    """NumberedCanvas variant for a companion document.
+
+    Same two-pass buffering as _make_numbered_canvas (page states are held and
+    replayed once the total is known, giving 'Page N of M'), with the protocol
+    header swapped for the companion document's own identity and an optional
+    confidentiality banner top and bottom of every page.
+    """
+
+    class CompanionCanvas(rl_canvas.Canvas):  # type: ignore[misc]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            rl_canvas.Canvas.__init__(self, *args, **kwargs)
+            self._saved_states: list[dict[str, Any]] = []
+
+        def showPage(self) -> None:
+            self._saved_states.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self) -> None:
+            total = len(self._saved_states)
+            for state in self._saved_states:
+                self.__dict__.update(state)
+                self._draw_hf(total)
+                rl_canvas.Canvas.showPage(self)
+            rl_canvas.Canvas.save(self)
+
+        def _draw_hf(self, total_pages: int) -> None:
+            W, H = RL_A4
+            lm = rm = 30 * rl_mm
+            self.saveState()
+
+            top = H - 15 * rl_mm
+            if banner:
+                self.setFont("Helvetica-Bold", 9)
+                self.setFillColor(rl_colors.HexColor(_RESTRICTED_HEX))
+                self.drawCentredString(W / 2, H - 11 * rl_mm, banner)
+                top = H - 19 * rl_mm
+
+            self.setFont("Helvetica", 8)
+            self.setFillColor(rl_colors.HexColor("#64748B"))
+            self.drawString(lm, top, left1)
+            self.drawString(lm, top - 4 * rl_mm, left2)
+            self.drawRightString(W - rm, top, right1)
+            self.drawRightString(W - rm, top - 4 * rl_mm, right2)
+            self.setStrokeColor(rl_colors.HexColor("#E2E8F0"))
+            self.line(lm, top - 6 * rl_mm, W - rm, top - 6 * rl_mm)
+
+            self.line(lm, 16 * rl_mm, W - rm, 16 * rl_mm)
+            self.setFont("Helvetica", 9)
+            self.setFillColor(rl_colors.HexColor("#64748B"))
+            self.drawCentredString(
+                W / 2, 11 * rl_mm, f"Page {self._pageNumber} of {total_pages}"
+            )
+            if footer_note:
+                self.setFont("Helvetica-Oblique", 7)
+                self.drawCentredString(W / 2, 7.5 * rl_mm, footer_note)
+            if banner:
+                self.setFont("Helvetica-Bold", 8)
+                self.setFillColor(rl_colors.HexColor(_RESTRICTED_HEX))
+                self.drawCentredString(W / 2, 4 * rl_mm, banner)
+
+            self.restoreState()
+
+    return CompanionCanvas
+
+
+def _companion_pdf_doc(
+    buf: io.BytesIO, *, title: str, subject: str,
+    top_mm: float = 38.0, bottom_mm: float = 28.0,
+) -> Any:
+    """SimpleDocTemplate with the protocol export's A4 geometry."""
+    return SimpleDocTemplate(
+        buf,
+        pagesize=RL_A4,
+        leftMargin=30 * rl_mm,
+        rightMargin=30 * rl_mm,
+        topMargin=top_mm * rl_mm,
+        bottomMargin=bottom_mm * rl_mm,
+        title=title,
+        subject=subject,
+        author="PK/BE Protocol Platform",
+    )
+
+
+def _companion_cover_pdf(
+    story: list[Any],
+    styles: dict[str, Any],
+    *,
+    doc_type: str,
+    subtitle: str,
+    rows: list[tuple[str, str]],
+    notices: tuple[str, ...] = (),
+    banner: str = "",
+) -> None:
+    """PDF cover page, parity with _companion_cover_docx."""
+    if banner:
+        story.append(Paragraph(
+            f'<font color="{_RESTRICTED_HEX}"><b>{_pdf_safe(banner)}</b></font>',
+            styles["CoverTitle"]))
+        story.append(Spacer(1, 4 * rl_mm))
+    story.append(Paragraph(_pdf_safe(doc_type), styles["CoverTitle"]))
+    if subtitle:
+        story.append(Spacer(1, 4 * rl_mm))
+        story.append(Paragraph(_pdf_safe(subtitle), styles["CoverSubtitle"]))
+    story.append(Spacer(1, 8 * rl_mm))
+    if rows:
+        _long_table_pdf(
+            story,
+            [["Field", "Value"]] + [[_pdf_safe(k), _pdf_safe(v)] for k, v in rows],
+            styles,
+            col_widths=[55 * rl_mm, 105 * rl_mm],
+            font_size=9,
+        )
+    for notice in notices:
+        story.append(Paragraph(f"<i>{_pdf_safe(notice)}</i>", styles["Body"]))
+
+
+def _long_table_pdf(
+    story: list[Any],
+    data: list[list[str]],
+    styles: dict[str, Any],
+    *,
+    col_widths: list[float] | None = None,
+    font_size: float = 8.0,
+) -> None:
+    """Header + body table whose header row REPEATS on every page.
+
+    _simple_table_pdf is fine for the short protocol tables it was written for,
+    but the allocation list and the CRF field tables run for pages, and a
+    continuation page of unlabelled columns is unusable. Cell text must already
+    be _pdf_safe'd by the caller.
+    """
+    if not _RL_OK or not data:
+        return
+    from reportlab.lib.styles import ParagraphStyle as _PS
+    cell_style = _PS(
+        "CmpCell", parent=styles["Body"], fontSize=font_size,
+        leading=font_size + 2.6, spaceAfter=0, spaceBefore=0,
+    )
+    hdr_style = _PS(
+        "CmpHdr", parent=cell_style, fontName=_SANS_BOLD,
+        textColor=rl_colors.white,
+    )
+    n_cols = len(data[0])
+    if col_widths is None:
+        col_widths = [(160 * rl_mm) / n_cols] * n_cols
+
+    rendered = [
+        [_safe_paragraph(str(c), hdr_style if r_idx == 0 else cell_style) for c in row]
+        for r_idx, row in enumerate(data)
+    ]
+    tbl = Table(rendered, colWidths=col_widths, repeatRows=1)
+    cmds = [
+        ("GRID", (0, 0), (-1, -1), 0.5, rl_colors.HexColor("#CBD5E1")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("BACKGROUND", (0, 0), (-1, 0), rl_colors.HexColor("#1E3A5F")),
+    ]
+    for r_idx in range(1, len(data)):
+        if r_idx % 2 == 0:
+            cmds.append(
+                ("BACKGROUND", (0, r_idx), (-1, r_idx), rl_colors.HexColor("#F0F4F8"))
+            )
+    tbl.setStyle(TableStyle(cmds))
+    story.append(tbl)
+    story.append(Spacer(1, 4 * rl_mm))
+
+
+# ---------------------------------------------------------------------------
+# Informed Consent Form (its own document, its own version, its own IRB cycle)
+# ---------------------------------------------------------------------------
+
+
+def _icf_header_fields(icf: dict[str, Any]) -> list[tuple[str, str]]:
+    """Split the ICF's own 'header' section (a labelled field list, not prose)
+    into (label, value) pairs for the cover table.
+
+    Two fields share one line where the engine pairs them (e.g. 'Protocol
+    number: X   Protocol version: Y'), separated by run of spaces.
+    """
+    out: list[tuple[str, str]] = []
+    for s in icf.get("sections") or []:
+        if s.get("key") != "header":
+            continue
+        for line in s.get("body") or []:
+            for frag in re.split(r"\s{3,}", str(line)):
+                frag = frag.strip()
+                if not frag:
+                    continue
+                if ":" in frag:
+                    label, value = frag.split(":", 1)
+                    out.append((label.strip(), value.strip()))
+                else:
+                    out.append((frag, ""))
+        break
+    return out
+
+
+def _icf_cover_rows(
+    protocol: Protocol, drug_inn: str, icf: dict[str, Any],
+) -> list[tuple[str, str]]:
+    ver = icf.get("version") or {}
+    facts = icf.get("study_facts") or {}
+    rows = _icf_header_fields(icf)
+    if not rows:
+        rows = [
+            ("Consent form version", _cell(ver.get("icf_version"), "1.0")),
+            ("Consent form date", _cell(ver.get("icf_date"), "[__________]")),
+            ("Protocol number", _cell(ver.get("protocol_number"),
+                                      _protocol_code(protocol, drug_inn))),
+            ("Protocol version", _cell(ver.get("protocol_version"),
+                                       f"{protocol.version}.0")),
+        ]
+    rows += [
+        ("Investigational product", drug_inn.title()),
+        ("Study", _phase_label(protocol.study_type.value)),
+        ("Subjects", _cell(facts.get("subject_population"))),
+        ("Guideline", _cell(ver.get("guideline_version"), protocol.guideline_version)),
+        ("Regulatory basis", _cell(icf.get("regulatory_basis"))),
+    ]
+    return [(k, v) for k, v in rows if k]
+
+
+def _build_icf_docx(protocol: Protocol, drug_inn: str, icf: dict[str, Any]) -> bytes:
+    """Assemble the Informed Consent Form as its own .docx."""
+    doc = _companion_docx()
+    ver = icf.get("version") or {}
+    icf_version = _cell(ver.get("icf_version"), "1.0")
+    icf_date = _cell(ver.get("icf_date"), "[__________]")
+
+    _companion_header_docx(
+        doc.sections[0],
+        "Informed Consent Form", f"ICF Version: {icf_version}",
+        _cell(ver.get("protocol_number"), _protocol_code(protocol, drug_inn)),
+        f"ICF Dated: {icf_date}",
+    )
+    _companion_footer_docx(
+        doc.sections[0],
+        note=("Informed Consent Form - version controlled and IRB-approved "
+              "separately from the protocol"),
+    )
+
+    _companion_cover_docx(
+        doc,
+        doc_type="Informed Consent Form",
+        subtitle=_cell(icf.get("title")),
+        rows=_icf_cover_rows(protocol, drug_inn, icf),
+        notices=(
+            _cell(ver.get("note")),
+            "A signed and dated copy of this form is given to the subject.",
+        ),
+    )
+    doc.add_page_break()
+
+    # --- the form itself ---------------------------------------------------
+    idx = 0
+    for s in icf.get("sections") or []:
+        if s.get("key") == "header":
+            continue  # already rendered as the cover's identification block
+        idx += 1
+        doc.add_heading(f"{idx} {_cell(s.get('heading'), _cell(s.get('key')))}", level=1)
+
+        refs = s.get("cfr_refs") or []
+        if refs:
+            p = doc.add_paragraph()
+            rr = p.add_run("21 CFR " + "; ".join(str(r) for r in refs))
+            rr.italic = True
+            rr.font.name = "Times New Roman"
+            rr.font.size = Pt(8)
+            rr.font.color.rgb = RGBColor(0x64, 0x74, 0x8B)
+
+        if not s.get("applicable", True):
+            _ss_para(doc, "Not applicable to this study. "
+                          + _cell(s.get("applicability_note")), italic=True, size=10)
+            continue
+
+        if s.get("verbatim"):
+            # Statutory wording. It is emitted character-for-character and must
+            # not be reflowed, shortened or run through a plain-language pass.
+            _ss_para(
+                doc,
+                "The wording below is prescribed by regulation and is reproduced "
+                "exactly. It must not be simplified, shortened or reformatted.",
+                italic=True, size=9,
+            )
+        for line in s.get("body") or []:
+            _ss_para(doc, str(line), size=10.5)
+        for bullet in s.get("bullets") or []:
+            doc.add_paragraph(str(bullet), style="List Bullet")
+
+    _icf_signatures_docx(doc, icf)
+    _icf_readiness_docx(doc, icf)
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def _icf_signatures_docx(doc: Document, icf: dict[str, Any]) -> None:
+    """Signature pages: the timing rule, then a ruled block per signatory."""
+    sig = icf.get("signature_block") or {}
+    doc.add_page_break()
+    doc.add_heading("Signatures", level=1)
+    if sig.get("timing_rule"):
+        _ss_para(doc, _cell(sig.get("timing_rule")))
+    if sig.get("copy_rule"):
+        _ss_para(doc, _cell(sig.get("copy_rule")))
+    if sig.get("regulatory_basis"):
+        _ss_para(doc, "Regulatory basis: " + _cell(sig.get("regulatory_basis")),
+                 italic=True, size=9)
+
+    for row in sig.get("rows") or []:
+        required = bool(row.get("required"))
+        label = _cell(row.get("role"))
+        if not required:
+            label += "  (complete only if applicable - otherwise write N/A)"
+        _unstyled_subheading_docx(doc, label, size=11)
+        if not required and row.get("required_when"):
+            _ss_para(doc, "When required: " + _cell(row.get("required_when")),
+                     italic=True, size=9)
+        if row.get("note"):
+            _ss_para(doc, _cell(row.get("note")), italic=True, size=9)
+        fields = [str(f) for f in (row.get("fields") or [])]
+        if fields:
+            _ss_kv_table_docx(doc, [(f, _BLANK_LINE) for f in fields])
+
+
+def _icf_readiness_docx(doc: Document, icf: dict[str, Any]) -> None:
+    """Appendix A/B: what still blocks IRB submission, and 50.25 coverage.
+
+    Kept as appendices of the ICF rather than folded into the protocol's QC
+    appendix, because the IRB reviews this document on its own.
+    """
+    doc.add_page_break()
+    doc.add_heading("Appendix A: IRB Submission Readiness", level=1)
+
+    missing = icf.get("missing_required_elements") or []
+    if missing:
+        _ss_para(
+            doc,
+            "BLOCKING - required basic elements of consent (21 CFR 50.25(a)) that "
+            "this form does not cover: " + ", ".join(str(m) for m in missing)
+            + ". A form missing a basic element is an administrative rejection.",
+        )
+    else:
+        _ss_para(doc, "All basic elements of informed consent required by "
+                      "21 CFR 50.25(a) are covered by this form.")
+
+    _unstyled_subheading_docx(doc, "Fields still to be completed", size=11)
+    pending = icf.get("pending_fields") or []
+    if pending:
+        _ss_grid_table_docx(
+            doc,
+            [["Field", "Why it is required"]]
+            + [[_cell(p.get("field")), _cell(p.get("why"))] for p in pending],
+            col_widths=[Inches(1.9), Inches(4.85)], font_pt=8.5,
+        )
+        _ss_para(doc, "Placeholders shown as [__________] in the body above must be "
+                      "filled in before this form is submitted to the IRB.",
+                 italic=True, size=9)
+    else:
+        _ss_para(doc, "None - no placeholder fields remain.")
+
+    assumptions = icf.get("assumptions") or []
+    if assumptions:
+        _unstyled_subheading_docx(doc, "Disclosed assumptions", size=11)
+        _ss_grid_table_docx(
+            doc,
+            [["Field", "Value", "Basis"]]
+            + [[_cell(a.get("field")), _cell(a.get("value")), _cell(a.get("why"))]
+               for a in assumptions],
+            col_widths=[Inches(1.5), Inches(1.3), Inches(3.95)], font_pt=8.5,
+        )
+
+    readability = icf.get("readability") or {}
+    overall = readability.get("overall") or {}
+    if overall:
+        _unstyled_subheading_docx(doc, "Plain-language check", size=11)
+        over = readability.get("sections_over_target") or []
+        _ss_para(
+            doc,
+            f"Overall reading grade {_cell(overall.get('grade_level'))} against a "
+            f"target of {_cell(readability.get('target_grade'))} "
+            f"({_cell(overall.get('words'))} words). "
+            + ("Sections above target: " + ", ".join(str(s) for s in over) + "."
+               if over else "Every graded section meets the target."),
+            size=10,
+        )
+        _ss_para(doc, _cell(readability.get("method")), italic=True, size=9)
+
+    volume = (icf.get("study_facts") or {}).get("blood_volume_check") or {}
+    if volume and not volume.get("within_ceiling", True):
+        _ss_para(
+            doc,
+            "WARNING: the total blood volume stated in this form exceeds the "
+            "conventional ceiling for the window checked. Reduce the draw volume "
+            "or the number of draws before IRB submission.",
+        )
+
+    doc.add_page_break()
+    doc.add_heading("Appendix B: 21 CFR 50.25 Element Coverage", level=1)
+    coverage = icf.get("elements_coverage") or {}
+    rows = [["21 CFR", "Tier", "Requirement", "Covered", "Section(s)"]]
+    for code, item in coverage.items():
+        rows.append([
+            str(code),
+            _cell((item or {}).get("tier")),
+            _cell((item or {}).get("requirement")),
+            _cell((item or {}).get("covered")),
+            _cell((item or {}).get("sections")) or "-",
+        ])
+    if len(rows) > 1:
+        _ss_grid_table_docx(
+            doc, rows,
+            col_widths=[Inches(0.85), Inches(0.7), Inches(3.0), Inches(0.6),
+                        Inches(1.6)],
+            font_pt=8,
+        )
+
+
+def _build_icf_pdf(protocol: Protocol, drug_inn: str, icf: dict[str, Any]) -> bytes:
+    """Assemble the Informed Consent Form as its own PDF (parity with the DOCX)."""
+    assert _RL_OK, "reportlab must be installed (pip install reportlab)"
+    ver = icf.get("version") or {}
+    icf_version = _cell(ver.get("icf_version"), "1.0")
+    icf_date = _cell(ver.get("icf_date"), "[__________]")
+
+    buf = io.BytesIO()
+    doc = _companion_pdf_doc(
+        buf,
+        title=f"Informed Consent Form - {drug_inn.title()}",
+        subject=f"ICF v{icf_version} - separate from protocol v{protocol.version}",
+    )
+    canvasmaker = _make_companion_canvas(
+        left1="Informed Consent Form",
+        left2=_cell(ver.get("protocol_number"), _protocol_code(protocol, drug_inn)),
+        right1=f"ICF Version: {icf_version}",
+        right2=f"ICF Dated: {icf_date}",
+        footer_note=("Informed Consent Form - version controlled and IRB-approved "
+                     "separately from the protocol"),
+    )
+
+    styles = _pdf_styles()
+    story: list[Any] = []
+    _companion_cover_pdf(
+        story, styles,
+        doc_type="Informed Consent Form",
+        subtitle=_cell(icf.get("title")),
+        rows=_icf_cover_rows(protocol, drug_inn, icf),
+        notices=(
+            _cell(ver.get("note")),
+            "A signed and dated copy of this form is given to the subject.",
+        ),
+    )
+    story.append(PageBreak())
+
+    idx = 0
+    for s in icf.get("sections") or []:
+        if s.get("key") == "header":
+            continue
+        idx += 1
+        story.append(Paragraph(
+            f"{idx}  {_pdf_safe(_cell(s.get('heading'), _cell(s.get('key'))))}",
+            styles["Heading1"]))
+        refs = s.get("cfr_refs") or []
+        if refs:
+            story.append(Paragraph(
+                "<i>21 CFR " + _pdf_safe("; ".join(str(r) for r in refs)) + "</i>",
+                styles["Citation"]))
+        if not s.get("applicable", True):
+            story.append(Paragraph(
+                "<i>Not applicable to this study. "
+                + _pdf_safe(_cell(s.get("applicability_note"))) + "</i>",
+                styles["Body"]))
+            continue
+        if s.get("verbatim"):
+            story.append(Paragraph(
+                "<i>The wording below is prescribed by regulation and is reproduced "
+                "exactly. It must not be simplified, shortened or reformatted.</i>",
+                styles["Citation"]))
+        for line in s.get("body") or []:
+            story.append(_safe_paragraph(_pdf_safe(str(line)), styles["Body"]))
+        for bullet in s.get("bullets") or []:
+            story.append(_safe_paragraph(
+                "- " + _pdf_safe(str(bullet)), styles["Bullet"]))
+
+    # --- signatures --------------------------------------------------------
+    sig = icf.get("signature_block") or {}
+    story.append(PageBreak())
+    story.append(Paragraph("Signatures", styles["Heading1"]))
+    for key in ("timing_rule", "copy_rule"):
+        if sig.get(key):
+            story.append(Paragraph(_pdf_safe(_cell(sig.get(key))), styles["Body"]))
+    if sig.get("regulatory_basis"):
+        story.append(Paragraph(
+            "<i>Regulatory basis: " + _pdf_safe(_cell(sig.get("regulatory_basis")))
+            + "</i>", styles["Citation"]))
+    for row in sig.get("rows") or []:
+        required = bool(row.get("required"))
+        label = _cell(row.get("role"))
+        if not required:
+            label += "  (complete only if applicable - otherwise write N/A)"
+        story.append(Paragraph(_pdf_safe(label), styles["Heading2"]))
+        if not required and row.get("required_when"):
+            story.append(Paragraph(
+                "<i>When required: " + _pdf_safe(_cell(row.get("required_when")))
+                + "</i>", styles["Citation"]))
+        if row.get("note"):
+            story.append(Paragraph(
+                "<i>" + _pdf_safe(_cell(row.get("note"))) + "</i>", styles["Citation"]))
+        fields = [str(f) for f in (row.get("fields") or [])]
+        if fields:
+            _long_table_pdf(
+                story,
+                [["Field", "Complete by hand"]]
+                + [[_pdf_safe(f), _pdf_safe(_BLANK_LINE)] for f in fields],
+                styles, col_widths=[55 * rl_mm, 105 * rl_mm], font_size=9,
+            )
+
+    _icf_readiness_pdf(story, styles, icf)
+
+    doc.build(story, canvasmaker=canvasmaker)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def _icf_readiness_pdf(story: list[Any], styles: dict[str, Any],
+                       icf: dict[str, Any]) -> None:
+    """PDF parity for _icf_readiness_docx."""
+    story.append(PageBreak())
+    story.append(Paragraph("Appendix A: IRB Submission Readiness", styles["Heading1"]))
+
+    missing = icf.get("missing_required_elements") or []
+    if missing:
+        story.append(Paragraph(
+            "BLOCKING - required basic elements of consent (21 CFR 50.25(a)) that "
+            "this form does not cover: "
+            + _pdf_safe(", ".join(str(m) for m in missing))
+            + ". A form missing a basic element is an administrative rejection.",
+            styles["Body"]))
+    else:
+        story.append(Paragraph(
+            "All basic elements of informed consent required by 21 CFR 50.25(a) "
+            "are covered by this form.", styles["Body"]))
+
+    story.append(Paragraph("Fields still to be completed", styles["Heading2"]))
+    pending = icf.get("pending_fields") or []
+    if pending:
+        _long_table_pdf(
+            story,
+            [["Field", "Why it is required"]]
+            + [[_pdf_safe(_cell(p.get("field"))), _pdf_safe(_cell(p.get("why")))]
+               for p in pending],
+            styles, col_widths=[45 * rl_mm, 115 * rl_mm], font_size=8.5,
+        )
+    else:
+        story.append(Paragraph("None - no placeholder fields remain.", styles["Body"]))
+
+    assumptions = icf.get("assumptions") or []
+    if assumptions:
+        story.append(Paragraph("Disclosed assumptions", styles["Heading2"]))
+        _long_table_pdf(
+            story,
+            [["Field", "Value", "Basis"]]
+            + [[_pdf_safe(_cell(a.get("field"))), _pdf_safe(_cell(a.get("value"))),
+                _pdf_safe(_cell(a.get("why")))] for a in assumptions],
+            styles, col_widths=[35 * rl_mm, 30 * rl_mm, 95 * rl_mm], font_size=8.5,
+        )
+
+    readability = icf.get("readability") or {}
+    overall = readability.get("overall") or {}
+    if overall:
+        over = readability.get("sections_over_target") or []
+        story.append(Paragraph("Plain-language check", styles["Heading2"]))
+        story.append(Paragraph(
+            f"Overall reading grade {_pdf_safe(_cell(overall.get('grade_level')))} "
+            f"against a target of {_pdf_safe(_cell(readability.get('target_grade')))} "
+            f"({_pdf_safe(_cell(overall.get('words')))} words). "
+            + ("Sections above target: "
+               + _pdf_safe(", ".join(str(s) for s in over)) + "."
+               if over else "Every graded section meets the target."),
+            styles["Body"]))
+
+    story.append(PageBreak())
+    story.append(Paragraph("Appendix B: 21 CFR 50.25 Element Coverage",
+                           styles["Heading1"]))
+    coverage = icf.get("elements_coverage") or {}
+    rows = [["21 CFR", "Tier", "Requirement", "Covered", "Section(s)"]]
+    for code, item in coverage.items():
+        rows.append([
+            _pdf_safe(str(code)),
+            _pdf_safe(_cell((item or {}).get("tier"))),
+            _pdf_safe(_cell((item or {}).get("requirement"))),
+            _pdf_safe(_cell((item or {}).get("covered"))),
+            _pdf_safe(_cell((item or {}).get("sections")) or "-"),
+        ])
+    if len(rows) > 1:
+        _long_table_pdf(
+            story, rows, styles,
+            col_widths=[20 * rl_mm, 16 * rl_mm, 72 * rl_mm, 16 * rl_mm, 36 * rl_mm],
+            font_size=7.5,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Randomization allocation list - RESTRICTED, UNBLINDED, signed appendix
+# ---------------------------------------------------------------------------
+# This document carries per-subject treatment assignments. It is deliberately
+# NOT reachable from _build_docx / _build_pdf: putting it inside the protocol
+# would hand every investigator the allocation and destroy the study's
+# allocation concealment (ICH E9 sect. 2.3.2). Every page is stamped, the cover
+# states the holders, and the release is signed for.
+
+# Who signs the appendix, and what their signature attests to. These are
+# protocol-package roles, not an implementation of a workflow: nothing here
+# tracks whether a signature has actually been obtained.
+_RANDOMIZATION_SIGNATORIES: tuple[tuple[str, str, str], ...] = (
+    ("Prepared by", "Unblinded randomization statistician",
+     "Generated this list from the recorded seed and verified it against the "
+     "locked design, sequence set and allocation ratio."),
+    ("Checked by", "Independent (unblinded) reviewer",
+     "Independently confirmed the sequence set, the allocation ratio and the "
+     "balance statement, and that no assignment is disclosed elsewhere."),
+    ("Released to", "Investigational pharmacy / dispensing",
+     "Received the list under restricted access, for dispensing only."),
+    ("Filed by", "Trial master file custodian",
+     "Filed as a restricted appendix; access to it is logged."),
+)
+
+
+def _randomization_cover_rows(
+    protocol: Protocol, drug_inn: str, alloc: dict[str, Any],
+) -> list[tuple[str, str]]:
+    design = alloc.get("design") or {}
+    repro = alloc.get("reproducibility") or {}
+    unblinded = alloc.get("unblinded_allocation") or {}
+    strat = alloc.get("stratification") or {}
+    return [
+        ("Protocol number", _protocol_code(protocol, drug_inn)),
+        ("Protocol version", f"{protocol.version}.0"),
+        ("Investigational product", drug_inn.title()),
+        ("Design", _cell(design.get("label"), _cell(design.get("key")))),
+        ("Sequences", _cell(design.get("sequences"))),
+        ("Allocation ratio", _cell(design.get("allocation_ratio"))),
+        ("Periods", _cell(design.get("n_periods"))),
+        ("Stratified", _cell(strat.get("applied"))),
+        ("Number of strata", _cell(strat.get("n_strata"))),
+        ("Entries in this list", _cell(unblinded.get("n_entries"))),
+        ("Confidentiality", _cell(unblinded.get("confidentiality"), "RESTRICTED")),
+        ("Randomization seed (RESTRICTED)", _cell(repro.get("seed"))),
+        ("Engine", f"{_cell(alloc.get('engine'))} "
+                   f"v{_cell(alloc.get('engine_version'))}"),
+        ("Generated", datetime.now(timezone.utc).strftime("%d-%b-%Y")),
+    ]
+
+
+def _allocation_rows(alloc: dict[str, Any]) -> list[list[str]]:
+    """The allocation table: header row plus one row per subject slot."""
+    entries = ((alloc.get("unblinded_allocation") or {}).get("entries")) or []
+    rows: list[list[str]] = [[
+        "Subject ID", "Rand. no.", "Stratum", "Block", "Pos.",
+        "Sequence", "Treatment by period", "Role",
+    ]]
+    for e in entries:
+        by_period = e.get("treatment_by_period") or {}
+        try:
+            ordered = sorted(by_period.items(), key=lambda kv: int(kv[0]))
+        except (TypeError, ValueError):
+            ordered = sorted(by_period.items())
+        stratum = e.get("stratum") or {}
+        stratum_txt = "; ".join(f"{k}={v}" for k, v in sorted(stratum.items()))
+        rows.append([
+            _cell(e.get("subject_id")),
+            _cell(e.get("randomization_number")),
+            _cell(e.get("stratum_id")) + (f" ({stratum_txt})" if stratum_txt else ""),
+            _cell(e.get("block")),
+            _cell(e.get("position_in_block")),
+            _cell(e.get("sequence")),
+            "; ".join(f"P{p}={t}" for p, t in ordered),
+            _cell(e.get("role")),
+        ])
+    return rows
+
+
+def _build_randomization_docx(
+    protocol: Protocol, drug_inn: str, alloc: dict[str, Any],
+) -> bytes:
+    """Assemble the unblinded allocation list as a restricted, signed appendix."""
+    doc = _companion_docx()
+    unblinded = alloc.get("unblinded_allocation") or {}
+    design = alloc.get("design") or {}
+    block = alloc.get("block") or {}
+    strat = alloc.get("stratification") or {}
+    balance = alloc.get("balance") or {}
+    blinding = alloc.get("blinding") or {}
+    repro = alloc.get("reproducibility") or {}
+
+    _companion_header_docx(
+        doc.sections[0],
+        "Randomization Schedule (Appendix)", f"Protocol Version: {protocol.version}.0",
+        _protocol_code(protocol, drug_inn),
+        f"Generated: {datetime.now(timezone.utc).strftime('%d-%b-%Y')}",
+        banner=_RESTRICTED_BANNER,
+    )
+    _companion_footer_docx(
+        doc.sections[0],
+        note="Restricted appendix - filed in the trial master file, not in the protocol",
+        banner=_RESTRICTED_BANNER,
+    )
+
+    _companion_cover_docx(
+        doc,
+        doc_type="Randomization Schedule - Unblinded Allocation List",
+        subtitle=f"{drug_inn.title()} - {_cell(design.get('label'))}",
+        rows=_randomization_cover_rows(protocol, drug_inn, alloc),
+        banner=_RESTRICTED_BANNER,
+    )
+
+    warn = doc.add_paragraph()
+    warn.paragraph_format.space_before = Pt(14)
+    rw = warn.add_run(_cell(
+        unblinded.get("warning"),
+        "This is the unblinded randomization list. It must NOT appear in the "
+        "protocol body, the synopsis, or any document circulated to "
+        "investigators, recruiters or the bioanalytical laboratory.",
+    ))
+    rw.bold = True
+    rw.font.name = "Times New Roman"
+    rw.font.size = Pt(10.5)
+    rw.font.color.rgb = _RESTRICTED_RGB
+
+    holders = unblinded.get("holders") or []
+    if holders:
+        _ss_para(doc, "Authorised holders of this document:")
+        for h in holders:
+            doc.add_paragraph(str(h), style="List Bullet")
+
+    # --- release / signature block ----------------------------------------
+    doc.add_heading("Release and Custody Record", level=1)
+    _ss_para(
+        doc,
+        "This appendix is released and filed under signature. Each signatory "
+        "attests to the action described below; the attestations are recorded "
+        "here so the list's chain of custody travels with the list itself.",
+    )
+    _ss_grid_table_docx(
+        doc,
+        [["Action", "Role", "Printed name", "Signature", "Date"]]
+        + [[a, r, "", "", ""] for a, r, _why in _RANDOMIZATION_SIGNATORIES],
+        col_widths=[Inches(1.0), Inches(1.85), Inches(1.5), Inches(1.5),
+                    Inches(0.9)],
+        font_pt=8.5,
+    )
+    _ss_grid_table_docx(
+        doc,
+        [["Action", "What the signature attests to"]]
+        + [[a, why] for a, _r, why in _RANDOMIZATION_SIGNATORIES],
+        col_widths=[Inches(1.2), Inches(5.55)], font_pt=8,
+    )
+
+    # --- method ------------------------------------------------------------
+    doc.add_page_break()
+    doc.add_heading("Method", level=1)
+    if alloc.get("summary"):
+        _ss_para(doc, _cell(alloc.get("summary")))
+    if design.get("rationale"):
+        _ss_para(doc, _cell(design.get("rationale")))
+    method_rows = [
+        ("Design", _cell(design.get("label"))),
+        ("Variant", _cell(design.get("variant"))),
+        ("Sequences", _cell(design.get("sequences"))),
+        ("Treatments", _cell(design.get("treatments"))),
+        ("Allocation ratio", _cell(design.get("allocation_ratio"))),
+        ("Regulatory basis", _cell(design.get("regulatory_basis"))),
+        ("Randomization method", _cell(block.get("method"))),
+        ("Block detail (RESTRICTED)", _cell(block.get("method_detail"))),
+        ("Blocks per stream", _cell(block.get("n_blocks_per_stream"))),
+        ("Stratification", _cell(strat.get("method"))),
+        ("Balance", _cell(balance.get("statement"))),
+    ]
+    _ss_kv_table_docx(doc, [(k, v) for k, v in method_rows if v])
+
+    disclosure = block.get("disclosure") or {}
+    if disclosure.get("basis"):
+        _ss_para(doc, "Why the block length is withheld from the protocol body: "
+                      + _cell(disclosure.get("basis")), italic=True, size=9)
+    if disclosure.get("protocol_body_statement"):
+        _ss_para(doc, "Wording that MAY appear in the protocol body: \""
+                      + _cell(disclosure.get("protocol_body_statement")) + "\"",
+                 italic=True, size=9)
+
+    factors = strat.get("factors") or []
+    if factors:
+        _unstyled_subheading_docx(doc, "Stratification factors", size=11)
+        _ss_grid_table_docx(
+            doc,
+            [["Factor", "Levels", "Rationale"]]
+            + [[_cell(f.get("label"), _cell(f.get("key"))), _cell(f.get("levels")),
+                _cell(f.get("rationale"))] for f in factors],
+            col_widths=[Inches(1.4), Inches(1.8), Inches(3.55)], font_pt=8,
+        )
+
+    replacement = alloc.get("replacement") or {}
+    if replacement.get("rule"):
+        _unstyled_subheading_docx(doc, "Replacement of withdrawn subjects", size=11)
+        _ss_para(doc, _cell(replacement.get("rule")), size=10)
+        if replacement.get("note"):
+            _ss_para(doc, _cell(replacement.get("note")), italic=True, size=9)
+
+    # --- blinding posture --------------------------------------------------
+    if blinding:
+        _unstyled_subheading_docx(doc, "Blinding and allocation concealment", size=11)
+        for key, title in (
+            ("allocation_concealment", "Allocation concealment"),
+            ("treatment_masking", "Treatment masking"),
+            ("bioanalytical_blinding", "Bioanalytical blinding"),
+            ("unblinding_procedure", "Code break"),
+        ):
+            block_ = blinding.get(key) or {}
+            text = _cell(block_.get("statement")) or _cell(block_.get("rationale"))
+            recommended = _cell(block_.get("recommended"))
+            if recommended:
+                text = f"Recommended posture: {recommended}. {text}"
+            if text:
+                _ss_para(doc, f"{title}: {text}", size=10)
+
+    # --- the list ----------------------------------------------------------
+    doc.add_page_break()
+    doc.add_heading("Unblinded Allocation List", level=1)
+    _ss_para(
+        doc,
+        "Every row below carries a treatment assignment. Reproduction of any row, "
+        "in whole or in part, outside the authorised holders listed on the cover "
+        "compromises the allocation concealment of this study.",
+        italic=True, size=9,
+    )
+    rows = _allocation_rows(alloc)
+    if len(rows) > 1:
+        _ss_grid_table_docx(
+            doc, rows,
+            col_widths=[Inches(1.1), Inches(0.55), Inches(1.15), Inches(0.7),
+                        Inches(0.4), Inches(0.8), Inches(1.35), Inches(0.7)],
+            font_pt=7.5,
+        )
+    else:
+        _ss_para(doc, "The stored schedule contains no allocation entries.")
+
+    # --- disclosed conventions --------------------------------------------
+    assumptions = alloc.get("assumptions") or []
+    cautions = alloc.get("cautions") or []
+    if assumptions or cautions:
+        doc.add_page_break()
+        doc.add_heading("Appendix: Disclosed Conventions and Cautions", level=1)
+    if assumptions:
+        _ss_grid_table_docx(
+            doc,
+            [["Convention", "Value", "Why"]]
+            + [[_cell(a.get("name")), _cell(a.get("value")), _cell(a.get("why"))]
+               for a in assumptions],
+            col_widths=[Inches(1.6), Inches(0.7), Inches(4.45)], font_pt=8,
+        )
+    if cautions:
+        _unstyled_subheading_docx(doc, "Cautions", size=11)
+        _ss_grid_table_docx(
+            doc,
+            [["Caution", "May be disclosed in the protocol", "Detail"]]
+            + [[_cell(c.get("key")), _cell(c.get("disclosable")), _cell(c.get("text"))]
+               for c in cautions],
+            col_widths=[Inches(1.4), Inches(1.1), Inches(4.25)], font_pt=8,
+        )
+
+    if repro.get("statement"):
+        _ss_para(doc, "Reproducibility: " + _cell(repro.get("statement")),
+                 italic=True, size=9)
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def _build_randomization_pdf(
+    protocol: Protocol, drug_inn: str, alloc: dict[str, Any],
+) -> bytes:
+    """PDF parity for the restricted allocation appendix."""
+    assert _RL_OK, "reportlab must be installed (pip install reportlab)"
+    unblinded = alloc.get("unblinded_allocation") or {}
+    design = alloc.get("design") or {}
+    block = alloc.get("block") or {}
+    strat = alloc.get("stratification") or {}
+    balance = alloc.get("balance") or {}
+    blinding = alloc.get("blinding") or {}
+    repro = alloc.get("reproducibility") or {}
+
+    buf = io.BytesIO()
+    doc = _companion_pdf_doc(
+        buf,
+        title=f"RESTRICTED - Randomization Schedule - {drug_inn.title()}",
+        subject="Unblinded allocation list - do not circulate",
+        top_mm=44.0,
+        bottom_mm=32.0,
+    )
+    canvasmaker = _make_companion_canvas(
+        left1="Randomization Schedule (Appendix)",
+        left2=_protocol_code(protocol, drug_inn),
+        right1=f"Protocol Version: {protocol.version}.0",
+        right2=f"Generated: {datetime.now(timezone.utc).strftime('%d-%b-%Y')}",
+        footer_note=("Restricted appendix - filed in the trial master file, "
+                     "not in the protocol"),
+        banner=_RESTRICTED_BANNER,
+    )
+
+    styles = _pdf_styles()
+    story: list[Any] = []
+    _companion_cover_pdf(
+        story, styles,
+        doc_type="Randomization Schedule - Unblinded Allocation List",
+        subtitle=f"{drug_inn.title()} - {_cell(design.get('label'))}",
+        rows=_randomization_cover_rows(protocol, drug_inn, alloc),
+        banner=_RESTRICTED_BANNER,
+    )
+    story.append(Paragraph(
+        f'<font color="{_RESTRICTED_HEX}"><b>'
+        + _pdf_safe(_cell(unblinded.get("warning"),
+                          "This is the unblinded randomization list. It must NOT "
+                          "appear in the protocol body or any document circulated "
+                          "to investigators."))
+        + "</b></font>", styles["Body"]))
+    for h in unblinded.get("holders") or []:
+        story.append(Paragraph("- " + _pdf_safe(str(h)), styles["Bullet"]))
+
+    story.append(Paragraph("Release and Custody Record", styles["Heading1"]))
+    _long_table_pdf(
+        story,
+        [["Action", "Role", "Printed name", "Signature", "Date"]]
+        + [[_pdf_safe(a), _pdf_safe(r), "", "", ""]
+           for a, r, _why in _RANDOMIZATION_SIGNATORIES],
+        styles,
+        col_widths=[24 * rl_mm, 44 * rl_mm, 34 * rl_mm, 34 * rl_mm, 24 * rl_mm],
+        font_size=8.5,
+    )
+    _long_table_pdf(
+        story,
+        [["Action", "What the signature attests to"]]
+        + [[_pdf_safe(a), _pdf_safe(why)] for a, _r, why in _RANDOMIZATION_SIGNATORIES],
+        styles, col_widths=[28 * rl_mm, 132 * rl_mm], font_size=8,
+    )
+
+    story.append(PageBreak())
+    story.append(Paragraph("Method", styles["Heading1"]))
+    for text in (alloc.get("summary"), design.get("rationale")):
+        if text:
+            story.append(Paragraph(_pdf_safe(_cell(text)), styles["Body"]))
+    method_rows = [
+        ("Design", _cell(design.get("label"))),
+        ("Variant", _cell(design.get("variant"))),
+        ("Sequences", _cell(design.get("sequences"))),
+        ("Treatments", _cell(design.get("treatments"))),
+        ("Allocation ratio", _cell(design.get("allocation_ratio"))),
+        ("Regulatory basis", _cell(design.get("regulatory_basis"))),
+        ("Randomization method", _cell(block.get("method"))),
+        ("Block detail (RESTRICTED)", _cell(block.get("method_detail"))),
+        ("Stratification", _cell(strat.get("method"))),
+        ("Balance", _cell(balance.get("statement"))),
+    ]
+    _long_table_pdf(
+        story,
+        [["Item", "Value"]]
+        + [[_pdf_safe(k), _pdf_safe(v)] for k, v in method_rows if v],
+        styles, col_widths=[45 * rl_mm, 115 * rl_mm], font_size=8.5,
+    )
+
+    factors = strat.get("factors") or []
+    if factors:
+        story.append(Paragraph("Stratification factors", styles["Heading2"]))
+        _long_table_pdf(
+            story,
+            [["Factor", "Levels", "Rationale"]]
+            + [[_pdf_safe(_cell(f.get("label"), _cell(f.get("key")))),
+                _pdf_safe(_cell(f.get("levels"))),
+                _pdf_safe(_cell(f.get("rationale")))] for f in factors],
+            styles, col_widths=[32 * rl_mm, 40 * rl_mm, 88 * rl_mm], font_size=8,
+        )
+
+    replacement = alloc.get("replacement") or {}
+    if replacement.get("rule"):
+        story.append(Paragraph("Replacement of withdrawn subjects", styles["Heading2"]))
+        story.append(Paragraph(_pdf_safe(_cell(replacement.get("rule"))), styles["Body"]))
+
+    if blinding:
+        story.append(Paragraph("Blinding and allocation concealment",
+                               styles["Heading2"]))
+        for key, title in (
+            ("allocation_concealment", "Allocation concealment"),
+            ("treatment_masking", "Treatment masking"),
+            ("bioanalytical_blinding", "Bioanalytical blinding"),
+            ("unblinding_procedure", "Code break"),
+        ):
+            blk = blinding.get(key) or {}
+            text = _cell(blk.get("statement")) or _cell(blk.get("rationale"))
+            recommended = _cell(blk.get("recommended"))
+            if recommended:
+                text = f"Recommended posture: {recommended}. {text}"
+            if text:
+                story.append(Paragraph(
+                    f"<b>{_pdf_safe(title)}:</b> {_pdf_safe(text)}", styles["Body"]))
+
+    story.append(PageBreak())
+    story.append(Paragraph("Unblinded Allocation List", styles["Heading1"]))
+    story.append(Paragraph(
+        "<i>Every row below carries a treatment assignment. Reproduction of any "
+        "row outside the authorised holders listed on the cover compromises the "
+        "allocation concealment of this study.</i>", styles["Citation"]))
+    rows = _allocation_rows(alloc)
+    if len(rows) > 1:
+        _long_table_pdf(
+            story, [[_pdf_safe(c) for c in row] for row in rows], styles,
+            col_widths=[27 * rl_mm, 13 * rl_mm, 27 * rl_mm, 17 * rl_mm,
+                        10 * rl_mm, 19 * rl_mm, 31 * rl_mm, 16 * rl_mm],
+            font_size=7,
+        )
+    else:
+        story.append(Paragraph("The stored schedule contains no allocation entries.",
+                               styles["Body"]))
+
+    assumptions = alloc.get("assumptions") or []
+    cautions = alloc.get("cautions") or []
+    if assumptions or cautions:
+        story.append(PageBreak())
+        story.append(Paragraph("Appendix: Disclosed Conventions and Cautions",
+                               styles["Heading1"]))
+    if assumptions:
+        _long_table_pdf(
+            story,
+            [["Convention", "Value", "Why"]]
+            + [[_pdf_safe(_cell(a.get("name"))), _pdf_safe(_cell(a.get("value"))),
+                _pdf_safe(_cell(a.get("why")))] for a in assumptions],
+            styles, col_widths=[42 * rl_mm, 18 * rl_mm, 100 * rl_mm], font_size=8,
+        )
+    if cautions:
+        story.append(Paragraph("Cautions", styles["Heading2"]))
+        _long_table_pdf(
+            story,
+            [["Caution", "Disclosable", "Detail"]]
+            + [[_pdf_safe(_cell(c.get("key"))), _pdf_safe(_cell(c.get("disclosable"))),
+                _pdf_safe(_cell(c.get("text")))] for c in cautions],
+            styles, col_widths=[34 * rl_mm, 22 * rl_mm, 104 * rl_mm], font_size=8,
+        )
+
+    if repro.get("statement"):
+        story.append(Paragraph(
+            "<i>Reproducibility: " + _pdf_safe(_cell(repro.get("statement")))
+            + "</i>", styles["Citation"]))
+
+    doc.build(story, canvasmaker=canvasmaker)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# CRF specification + Data Management Plan (operational companion document)
+# ---------------------------------------------------------------------------
+
+
+def _crf_cover_rows(
+    protocol: Protocol, drug_inn: str, spec: dict[str, Any],
+) -> list[tuple[str, str]]:
+    standards = spec.get("standards") or {}
+    dmp = spec.get("data_management_plan") or {}
+    return [
+        ("Protocol number", _protocol_code(protocol, drug_inn)),
+        ("Protocol version", f"{protocol.version}.0"),
+        ("Investigational product", drug_inn.title()),
+        ("Study type", _cell(spec.get("study_type"), protocol.study_type.value)),
+        ("Design", _cell(spec.get("design_key"))),
+        ("Periods", _cell(spec.get("periods"))),
+        ("Sequences", _cell(spec.get("sequences"))),
+        ("Planned enrolment", _cell(spec.get("n_enrolled"))),
+        ("Forms", _cell(spec.get("n_forms"))),
+        ("Fields", _cell(spec.get("n_fields"))),
+        ("Programmed edit checks", _cell(spec.get("n_edit_checks"))),
+        ("SDTM domains", _cell(spec.get("sdtm_domains"))),
+        ("Collection standard", _cell(standards.get("collection"))),
+        ("Tabulation standard", _cell(standards.get("tabulation"))),
+        ("Metadata standard", _cell(standards.get("metadata"))),
+        ("Archival retention", _cell(dmp.get("retention_years")) + " years"
+         if dmp.get("retention_years") else ""),
+    ]
+
+
+def _build_crf_dmp_docx(
+    protocol: Protocol, drug_inn: str, spec: dict[str, Any],
+) -> bytes:
+    """Assemble the CRF specification and Data Management Plan as one .docx."""
+    doc = _companion_docx()
+    _companion_header_docx(
+        doc.sections[0],
+        "CRF Specification and Data Management Plan",
+        f"Protocol Version: {protocol.version}.0",
+        _protocol_code(protocol, drug_inn),
+        f"Dated: {protocol.created_at.strftime('%d-%b-%Y')}",
+    )
+    _companion_footer_docx(
+        doc.sections[0],
+        note="Operational companion to the clinical study protocol",
+    )
+
+    _companion_cover_docx(
+        doc,
+        doc_type="Case Report Form Specification and Data Management Plan",
+        subtitle=f"{drug_inn.title()} - {_cell(spec.get('design_key'))} design",
+        rows=[(k, v) for k, v in _crf_cover_rows(protocol, drug_inn, spec) if v],
+        notices=(
+            "This document specifies what is collected and how the data are "
+            "managed. It does not replace the protocol; where the two differ, the "
+            "protocol governs and this specification must be corrected.",
+        ),
+    )
+    doc.add_page_break()
+
+    doc.add_heading("1 Summary", level=1)
+    if spec.get("summary"):
+        _ss_para(doc, _cell(spec.get("summary")))
+
+    # --- 2 forms -----------------------------------------------------------
+    forms = spec.get("forms") or []
+    doc.add_heading("2 Case Report Forms", level=1)
+    if forms:
+        _ss_grid_table_docx(
+            doc,
+            [["Form", "SDTM", "Completed at", "Repeats", "Fields", "Critical"]]
+            + [[_cell(f.get("title"), _cell(f.get("key"))),
+                _cell(f.get("sdtm_domain")),
+                _cell(f.get("completed_at")),
+                _cell(f.get("repeats")) if f.get("repeating") else "Once",
+                _cell(f.get("n_fields")),
+                _cell(f.get("critical"))] for f in forms],
+            col_widths=[Inches(1.85), Inches(0.55), Inches(2.0), Inches(0.85),
+                        Inches(0.6), Inches(0.9)],
+            font_pt=8,
+        )
+        conditional = [f for f in forms if f.get("conditional_on")]
+        if conditional:
+            _unstyled_subheading_docx(doc, "Why the conditional forms apply", size=11)
+            _ss_grid_table_docx(
+                doc,
+                [["Form", "Condition", "Rationale"]]
+                + [[_cell(f.get("title"), _cell(f.get("key"))),
+                    _cell(f.get("conditional_on")),
+                    _cell(f.get("condition_rationale"))] for f in conditional],
+                col_widths=[Inches(1.6), Inches(1.3), Inches(3.85)], font_pt=8,
+            )
+
+    # --- 3 field definitions for the critical forms ------------------------
+    doc.add_heading("3 Field Definitions (Critical Forms)", level=1)
+    _ss_para(
+        doc,
+        "Field-level definitions are given for the forms whose data drive the "
+        "primary analysis. The remaining forms follow the same conventions and "
+        "are specified in full in the electronic CRF build specification.",
+        italic=True, size=9,
+    )
+    critical = [f for f in forms if f.get("critical")]
+    for f in critical:
+        _unstyled_subheading_docx(
+            doc, _cell(f.get("title"), _cell(f.get("key")))
+            + f"  ({_cell(f.get('sdtm_domain'))})", size=11)
+        if f.get("purpose"):
+            _ss_para(doc, _cell(f.get("purpose")), italic=True, size=9)
+        fields = f.get("fields") or []
+        if not fields:
+            continue
+        _ss_grid_table_docx(
+            doc,
+            [["Field", "Label", "Type", "Units", "Permitted values", "Req.", "SDTM"]]
+            + [[_cell(fl.get("name")), _cell(fl.get("label")), _cell(fl.get("dtype")),
+                _cell(fl.get("units")),
+                _cell(fl.get("permitted")) or _cell(fl.get("codelist")),
+                _cell(fl.get("required")), _cell(fl.get("sdtm_variable"))]
+               for fl in fields],
+            col_widths=[Inches(1.05), Inches(1.4), Inches(0.65), Inches(0.55),
+                        Inches(1.85), Inches(0.45), Inches(0.8)],
+            font_pt=7.5,
+        )
+
+    # --- 4 visit schedule --------------------------------------------------
+    visits = spec.get("visit_schedule") or []
+    if visits:
+        doc.add_page_break()
+        doc.add_heading("4 Visit Structure and Forms per Visit", level=1)
+        _ss_grid_table_docx(
+            doc,
+            [["Visit", "Timing", "Epoch", "Forms"]]
+            + [[_cell(v.get("name")), _cell(v.get("timing")), _cell(v.get("epoch")),
+                _cell(v.get("forms"))] for v in visits],
+            col_widths=[Inches(1.5), Inches(1.7), Inches(1.2), Inches(2.35)],
+            font_pt=7.5,
+        )
+
+    # --- 5 PK sample log ---------------------------------------------------
+    pk_rows = spec.get("pk_sample_log_rows") or []
+    doc.add_heading("5 Pharmacokinetic Sample Log (Pre-Printed Template)", level=1)
+    if pk_rows:
+        _ss_para(
+            doc,
+            "The log is pre-printed with the locked sampling schedule so a site "
+            "selects a scheduled row rather than typing a nominal time. The actual "
+            "clock time of every draw is recorded alongside it; the elapsed time "
+            "used by the analysis is derived from the actual times, never assumed "
+            "from the nominal ones.",
+            size=10,
+        )
+        _ss_grid_table_docx(
+            doc,
+            [["#", "Nominal (h)", "Label", "Phase", "Window", "Volume (mL)",
+              "Lambda-z", "Periods"]]
+            + [[_cell(r.get("index")), _cell(r.get("nominal_time_h")),
+                _cell(r.get("label")), _cell(r.get("phase")),
+                _cell(r.get("window")), _cell(r.get("volume_ml")),
+                _cell(r.get("lambda_z_point")), _cell(r.get("repeated_in_periods"))]
+               for r in pk_rows],
+            col_widths=[Inches(0.35), Inches(0.85), Inches(1.35), Inches(0.9),
+                        Inches(1.1), Inches(0.85), Inches(0.65), Inches(0.7)],
+            font_pt=7.5,
+        )
+    else:
+        _ss_para(
+            doc,
+            "No computed sampling schedule was available, so the log could not be "
+            "pre-printed. The timepoint rows must be generated from the locked "
+            "sampling schedule before the database is built - a PK log with "
+            "free-typed timepoints is how nominal-time-only data gets created.",
+        )
+
+    # --- 6 edit checks -----------------------------------------------------
+    checks = spec.get("edit_checks") or []
+    if checks:
+        doc.add_page_break()
+        doc.add_heading("6 Programmed Edit Checks", level=1)
+        _ss_grid_table_docx(
+            doc,
+            [["Check", "Type", "Severity", "Rule", "Action"]]
+            + [[_cell(c.get("key")), _cell(c.get("check_type")),
+                _cell(c.get("severity")), _cell(c.get("rule")),
+                _cell(c.get("action"))] for c in checks],
+            col_widths=[Inches(1.15), Inches(0.8), Inches(0.65), Inches(2.5),
+                        Inches(1.65)],
+            font_pt=7.5,
+        )
+
+    # --- 7 data management plan -------------------------------------------
+    dmp = spec.get("data_management_plan") or {}
+    sections = dmp.get("sections") or []
+    doc.add_page_break()
+    doc.add_heading("7 Data Management Plan", level=1)
+    for n, s in enumerate(sections, start=1):
+        doc.add_heading(f"7.{n} {_cell(s.get('title'), _cell(s.get('key')))}", level=2)
+        if s.get("content"):
+            _ss_para(doc, _cell(s.get("content")))
+        for d in s.get("deliverables") or []:
+            doc.add_paragraph(str(d), style="List Bullet")
+        meta = "; ".join(
+            f"{k}: {_cell(s.get(k))}" for k in ("responsible", "timing", "reference")
+            if s.get(k)
+        )
+        if meta:
+            _ss_para(doc, meta, italic=True, size=9)
+
+    coding = dmp.get("coding_dictionaries") or []
+    if coding:
+        doc.add_heading("7.C Coding Dictionaries", level=2)
+        _ss_grid_table_docx(
+            doc,
+            [["Scope", "Dictionary", "Version policy", "Levels reported"]]
+            + [[_cell(c.get("scope")), _cell(c.get("dictionary")),
+                _cell(c.get("version_policy")), _cell(c.get("levels_reported"))]
+               for c in coding],
+            col_widths=[Inches(1.3), Inches(1.3), Inches(2.75), Inches(1.4)],
+            font_pt=7.5,
+        )
+
+    # --- 8 analysis coverage + disclosures ---------------------------------
+    coverage = spec.get("downstream_analysis_coverage") or {}
+    doc.add_page_break()
+    doc.add_heading("8 Downstream Analysis Coverage", level=1)
+    if coverage.get("statement"):
+        _ss_para(doc, _cell(coverage.get("statement")))
+    uncovered = coverage.get("uncovered_required_columns") or []
+    if uncovered:
+        _ss_para(
+            doc,
+            "BLOCKING - the specification does not reach every column the analysis "
+            "requires: " + ", ".join(str(c) for c in uncovered)
+            + ". A study run on this specification could not be analysed without "
+              "collecting those data some other way.",
+        )
+
+    assumptions = spec.get("assumptions") or []
+    if assumptions:
+        doc.add_heading("9 Disclosed Assumptions", level=1)
+        _ss_grid_table_docx(
+            doc,
+            [["Assumption", "Value", "Basis"]]
+            + [[_cell(a.get("name"), _cell(a.get("key"))), _cell(a.get("value")),
+                _cell(a.get("why")) or _cell(a.get("basis"))] for a in assumptions],
+            col_widths=[Inches(1.8), Inches(0.9), Inches(4.05)], font_pt=8,
+        )
+
+    flags = spec.get("flags") or []
+    if flags:
+        doc.add_heading("10 Flags Requiring Disclosure", level=1)
+        _ss_grid_table_docx(
+            doc,
+            [["Flag", "Severity", "Must surface", "Message"]]
+            + [[_cell(f.get("key")), _cell(f.get("severity")),
+                _cell(f.get("must_surface_in_protocol")), _cell(f.get("message"))]
+               for f in flags],
+            col_widths=[Inches(1.3), Inches(0.75), Inches(0.85), Inches(3.85)],
+            font_pt=8,
+        )
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def _build_crf_dmp_pdf(
+    protocol: Protocol, drug_inn: str, spec: dict[str, Any],
+) -> bytes:
+    """PDF parity for the CRF specification / Data Management Plan."""
+    assert _RL_OK, "reportlab must be installed (pip install reportlab)"
+    buf = io.BytesIO()
+    doc = _companion_pdf_doc(
+        buf,
+        title=f"CRF Specification and Data Management Plan - {drug_inn.title()}",
+        subject=f"Companion to protocol v{protocol.version}",
+    )
+    canvasmaker = _make_companion_canvas(
+        left1="CRF Specification and Data Management Plan",
+        left2=_protocol_code(protocol, drug_inn),
+        right1=f"Protocol Version: {protocol.version}.0",
+        right2=f"Dated: {protocol.created_at.strftime('%d-%b-%Y')}",
+        footer_note="Operational companion to the clinical study protocol",
+    )
+
+    styles = _pdf_styles()
+    story: list[Any] = []
+    _companion_cover_pdf(
+        story, styles,
+        doc_type="Case Report Form Specification and Data Management Plan",
+        subtitle=f"{drug_inn.title()} - {_cell(spec.get('design_key'))} design",
+        rows=[(k, v) for k, v in _crf_cover_rows(protocol, drug_inn, spec) if v],
+        notices=(
+            "This document specifies what is collected and how the data are "
+            "managed. It does not replace the protocol; where the two differ, the "
+            "protocol governs.",
+        ),
+    )
+    story.append(PageBreak())
+
+    story.append(Paragraph("1  Summary", styles["Heading1"]))
+    if spec.get("summary"):
+        story.append(Paragraph(_pdf_safe(_cell(spec.get("summary"))), styles["Body"]))
+
+    forms = spec.get("forms") or []
+    story.append(Paragraph("2  Case Report Forms", styles["Heading1"]))
+    if forms:
+        _long_table_pdf(
+            story,
+            [["Form", "SDTM", "Completed at", "Repeats", "Fields", "Critical"]]
+            + [[_pdf_safe(_cell(f.get("title"), _cell(f.get("key")))),
+                _pdf_safe(_cell(f.get("sdtm_domain"))),
+                _pdf_safe(_cell(f.get("completed_at"))),
+                _pdf_safe(_cell(f.get("repeats")) if f.get("repeating") else "Once"),
+                _pdf_safe(_cell(f.get("n_fields"))),
+                _pdf_safe(_cell(f.get("critical")))] for f in forms],
+            styles,
+            col_widths=[44 * rl_mm, 14 * rl_mm, 48 * rl_mm, 20 * rl_mm,
+                        14 * rl_mm, 20 * rl_mm],
+            font_size=7.5,
+        )
+
+    story.append(Paragraph("3  Field Definitions (Critical Forms)", styles["Heading1"]))
+    for f in [x for x in forms if x.get("critical")]:
+        story.append(Paragraph(
+            _pdf_safe(_cell(f.get("title"), _cell(f.get("key")))
+                      + f"  ({_cell(f.get('sdtm_domain'))})"), styles["Heading2"]))
+        fields = f.get("fields") or []
+        if not fields:
+            continue
+        _long_table_pdf(
+            story,
+            [["Field", "Label", "Type", "Units", "Permitted values", "Req.", "SDTM"]]
+            + [[_pdf_safe(_cell(fl.get("name"))), _pdf_safe(_cell(fl.get("label"))),
+                _pdf_safe(_cell(fl.get("dtype"))), _pdf_safe(_cell(fl.get("units"))),
+                _pdf_safe(_cell(fl.get("permitted")) or _cell(fl.get("codelist"))),
+                _pdf_safe(_cell(fl.get("required"))),
+                _pdf_safe(_cell(fl.get("sdtm_variable")))] for fl in fields],
+            styles,
+            col_widths=[25 * rl_mm, 33 * rl_mm, 15 * rl_mm, 13 * rl_mm,
+                        45 * rl_mm, 10 * rl_mm, 19 * rl_mm],
+            font_size=7,
+        )
+
+    visits = spec.get("visit_schedule") or []
+    if visits:
+        story.append(PageBreak())
+        story.append(Paragraph("4  Visit Structure and Forms per Visit",
+                               styles["Heading1"]))
+        _long_table_pdf(
+            story,
+            [["Visit", "Timing", "Epoch", "Forms"]]
+            + [[_pdf_safe(_cell(v.get("name"))), _pdf_safe(_cell(v.get("timing"))),
+                _pdf_safe(_cell(v.get("epoch"))), _pdf_safe(_cell(v.get("forms")))]
+               for v in visits],
+            styles,
+            col_widths=[34 * rl_mm, 40 * rl_mm, 28 * rl_mm, 58 * rl_mm],
+            font_size=7,
+        )
+
+    pk_rows = spec.get("pk_sample_log_rows") or []
+    story.append(Paragraph("5  Pharmacokinetic Sample Log (Pre-Printed Template)",
+                           styles["Heading1"]))
+    if pk_rows:
+        _long_table_pdf(
+            story,
+            [["#", "Nominal (h)", "Label", "Phase", "Window", "Volume (mL)",
+              "Lambda-z", "Periods"]]
+            + [[_pdf_safe(_cell(r.get("index"))),
+                _pdf_safe(_cell(r.get("nominal_time_h"))),
+                _pdf_safe(_cell(r.get("label"))), _pdf_safe(_cell(r.get("phase"))),
+                _pdf_safe(_cell(r.get("window"))),
+                _pdf_safe(_cell(r.get("volume_ml"))),
+                _pdf_safe(_cell(r.get("lambda_z_point"))),
+                _pdf_safe(_cell(r.get("repeated_in_periods")))] for r in pk_rows],
+            styles,
+            col_widths=[8 * rl_mm, 20 * rl_mm, 34 * rl_mm, 22 * rl_mm,
+                        26 * rl_mm, 20 * rl_mm, 16 * rl_mm, 14 * rl_mm],
+            font_size=7,
+        )
+    else:
+        story.append(Paragraph(
+            "No computed sampling schedule was available, so the log could not be "
+            "pre-printed. The timepoint rows must be generated from the locked "
+            "sampling schedule before the database is built.", styles["Body"]))
+
+    checks = spec.get("edit_checks") or []
+    if checks:
+        story.append(PageBreak())
+        story.append(Paragraph("6  Programmed Edit Checks", styles["Heading1"]))
+        _long_table_pdf(
+            story,
+            [["Check", "Type", "Severity", "Rule", "Action"]]
+            + [[_pdf_safe(_cell(c.get("key"))), _pdf_safe(_cell(c.get("check_type"))),
+                _pdf_safe(_cell(c.get("severity"))), _pdf_safe(_cell(c.get("rule"))),
+                _pdf_safe(_cell(c.get("action")))] for c in checks],
+            styles,
+            col_widths=[28 * rl_mm, 20 * rl_mm, 16 * rl_mm, 58 * rl_mm, 38 * rl_mm],
+            font_size=7,
+        )
+
+    dmp = spec.get("data_management_plan") or {}
+    story.append(PageBreak())
+    story.append(Paragraph("7  Data Management Plan", styles["Heading1"]))
+    for n, s in enumerate(dmp.get("sections") or [], start=1):
+        story.append(Paragraph(
+            f"7.{n}  " + _pdf_safe(_cell(s.get("title"), _cell(s.get("key")))),
+            styles["Heading2"]))
+        if s.get("content"):
+            story.append(Paragraph(_pdf_safe(_cell(s.get("content"))), styles["Body"]))
+        for d in s.get("deliverables") or []:
+            story.append(Paragraph("- " + _pdf_safe(str(d)), styles["Bullet"]))
+        meta = "; ".join(
+            f"{k}: {_cell(s.get(k))}" for k in ("responsible", "timing", "reference")
+            if s.get(k)
+        )
+        if meta:
+            story.append(Paragraph("<i>" + _pdf_safe(meta) + "</i>", styles["Citation"]))
+
+    coding = dmp.get("coding_dictionaries") or []
+    if coding:
+        story.append(Paragraph("7.C  Coding Dictionaries", styles["Heading2"]))
+        _long_table_pdf(
+            story,
+            [["Scope", "Dictionary", "Version policy", "Levels reported"]]
+            + [[_pdf_safe(_cell(c.get("scope"))), _pdf_safe(_cell(c.get("dictionary"))),
+                _pdf_safe(_cell(c.get("version_policy"))),
+                _pdf_safe(_cell(c.get("levels_reported")))] for c in coding],
+            styles,
+            col_widths=[30 * rl_mm, 30 * rl_mm, 66 * rl_mm, 34 * rl_mm],
+            font_size=7,
+        )
+
+    coverage = spec.get("downstream_analysis_coverage") or {}
+    story.append(PageBreak())
+    story.append(Paragraph("8  Downstream Analysis Coverage", styles["Heading1"]))
+    if coverage.get("statement"):
+        story.append(Paragraph(_pdf_safe(_cell(coverage.get("statement"))),
+                               styles["Body"]))
+    uncovered = coverage.get("uncovered_required_columns") or []
+    if uncovered:
+        story.append(Paragraph(
+            "BLOCKING - the specification does not reach every column the analysis "
+            "requires: " + _pdf_safe(", ".join(str(c) for c in uncovered)) + ".",
+            styles["Body"]))
+
+    assumptions = spec.get("assumptions") or []
+    if assumptions:
+        story.append(Paragraph("9  Disclosed Assumptions", styles["Heading1"]))
+        _long_table_pdf(
+            story,
+            [["Assumption", "Value", "Basis"]]
+            + [[_pdf_safe(_cell(a.get("name"), _cell(a.get("key")))),
+                _pdf_safe(_cell(a.get("value"))),
+                _pdf_safe(_cell(a.get("why")) or _cell(a.get("basis")))]
+               for a in assumptions],
+            styles, col_widths=[42 * rl_mm, 24 * rl_mm, 94 * rl_mm], font_size=7.5,
+        )
+
+    flags = spec.get("flags") or []
+    if flags:
+        story.append(Paragraph("10  Flags Requiring Disclosure", styles["Heading1"]))
+        _long_table_pdf(
+            story,
+            [["Flag", "Severity", "Must surface", "Message"]]
+            + [[_pdf_safe(_cell(f.get("key"))), _pdf_safe(_cell(f.get("severity"))),
+                _pdf_safe(_cell(f.get("must_surface_in_protocol"))),
+                _pdf_safe(_cell(f.get("message")))] for f in flags],
+            styles,
+            col_widths=[30 * rl_mm, 18 * rl_mm, 20 * rl_mm, 92 * rl_mm],
+            font_size=7.5,
+        )
+
+    doc.build(story, canvasmaker=canvasmaker)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Companion-document routes
+# ---------------------------------------------------------------------------
+# Same auth posture as the protocol export: require_user gates the route,
+# authenticate_actor resolves the caller, and get_protocol_scoped enforces the
+# org boundary before a single byte is rendered.
+
+_DOCX_MEDIA_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
+
+
+def _inn_slug(drug_inn: str) -> str:
+    return (drug_inn or "product").replace(" ", "_")
+
+
+@router.post("/icf/docx", dependencies=[Depends(require_user)])
+async def export_icf_docx(
+    payload: ExportRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Export the Informed Consent Form as its own .docx.
+
+    Separate from the protocol export on purpose: the ICF is reviewed and
+    approved by the IRB on its own cycle and carries its own version and date.
+    """
+    actor = await authenticate_actor(request, db)
+    protocol = await get_protocol_scoped(db, payload.protocol_id, actor, load_drug=True)
+    drug_inn = protocol.drug.inn
+
+    icf = _resolve_icf(protocol, drug_inn)
+    docx_bytes = _build_icf_docx(protocol, drug_inn, icf)
+
+    icf_version = _cell((icf.get("version") or {}).get("icf_version"), "1.0")
+    filename = f"icf_{_inn_slug(drug_inn)}_v{icf_version}.docx"
+
+    await _log_companion_export(
+        db, actor, payload.protocol_id, "EXPORT:icf_docx",
+        {
+            "format": "docx",
+            "document": "informed_consent_form",
+            "filename": filename,
+            "icf_version": icf_version,
+            "protocol_version": protocol.version,
+            "missing_required_elements": icf.get("missing_required_elements") or [],
+            "pending_fields": [
+                _cell(p.get("field")) for p in (icf.get("pending_fields") or [])
+            ],
+        },
+    )
+    return StreamingResponse(
+        io.BytesIO(docx_bytes),
+        media_type=_DOCX_MEDIA_TYPE,
+        headers={"Content-Disposition": _content_disposition(filename)},
+    )
+
+
+@router.post("/icf/pdf", dependencies=[Depends(require_user)])
+async def export_icf_pdf(
+    payload: ExportRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Export the Informed Consent Form as its own PDF."""
+    if not _RL_OK:
+        raise HTTPException(
+            501,
+            detail="PDF export requires the 'reportlab' package. Run: pip install reportlab",
+        )
+    actor = await authenticate_actor(request, db)
+    protocol = await get_protocol_scoped(db, payload.protocol_id, actor, load_drug=True)
+    drug_inn = protocol.drug.inn
+
+    icf = _resolve_icf(protocol, drug_inn)
+    pdf_bytes = _build_icf_pdf(protocol, drug_inn, icf)
+
+    icf_version = _cell((icf.get("version") or {}).get("icf_version"), "1.0")
+    filename = f"icf_{_inn_slug(drug_inn)}_v{icf_version}.pdf"
+
+    await _log_companion_export(
+        db, actor, payload.protocol_id, "EXPORT:icf_pdf",
+        {
+            "format": "pdf",
+            "document": "informed_consent_form",
+            "filename": filename,
+            "icf_version": icf_version,
+            "protocol_version": protocol.version,
+            "missing_required_elements": icf.get("missing_required_elements") or [],
+        },
+    )
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": _content_disposition(filename)},
+    )
+
+
+@router.post("/randomization/docx", dependencies=[Depends(require_user)])
+async def export_randomization_docx(
+    payload: ExportRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Export the UNBLINDED randomization allocation list as a restricted appendix.
+
+    This is the only route that emits per-subject treatment assignments. It is
+    intentionally a separate document with its own banner on every page: the
+    list must never be bound into the protocol, whose readers include the
+    investigators whose enrolment decisions the concealment protects.
+    """
+    actor = await authenticate_actor(request, db)
+    protocol = await get_protocol_scoped(db, payload.protocol_id, actor, load_drug=True)
+    drug_inn = protocol.drug.inn
+
+    alloc = _resolve_randomization(protocol)
+    docx_bytes = _build_randomization_docx(protocol, drug_inn, alloc)
+
+    filename = (
+        f"RESTRICTED_randomization_list_{_inn_slug(drug_inn)}_v{protocol.version}.docx"
+    )
+    await _log_companion_export(
+        db, actor, payload.protocol_id, "EXPORT:randomization_docx",
+        {
+            "format": "docx",
+            "document": "unblinded_randomization_list",
+            "confidentiality": "RESTRICTED",
+            "contains_treatment_assignments": True,
+            "filename": filename,
+            "n_entries": (alloc.get("unblinded_allocation") or {}).get("n_entries"),
+            "engine_version": alloc.get("engine_version"),
+            "protocol_version": protocol.version,
+        },
+    )
+    return StreamingResponse(
+        io.BytesIO(docx_bytes),
+        media_type=_DOCX_MEDIA_TYPE,
+        headers={"Content-Disposition": _content_disposition(filename)},
+    )
+
+
+@router.post("/randomization/pdf", dependencies=[Depends(require_user)])
+async def export_randomization_pdf(
+    payload: ExportRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Export the UNBLINDED randomization allocation list as a restricted PDF."""
+    if not _RL_OK:
+        raise HTTPException(
+            501,
+            detail="PDF export requires the 'reportlab' package. Run: pip install reportlab",
+        )
+    actor = await authenticate_actor(request, db)
+    protocol = await get_protocol_scoped(db, payload.protocol_id, actor, load_drug=True)
+    drug_inn = protocol.drug.inn
+
+    alloc = _resolve_randomization(protocol)
+    pdf_bytes = _build_randomization_pdf(protocol, drug_inn, alloc)
+
+    filename = (
+        f"RESTRICTED_randomization_list_{_inn_slug(drug_inn)}_v{protocol.version}.pdf"
+    )
+    await _log_companion_export(
+        db, actor, payload.protocol_id, "EXPORT:randomization_pdf",
+        {
+            "format": "pdf",
+            "document": "unblinded_randomization_list",
+            "confidentiality": "RESTRICTED",
+            "contains_treatment_assignments": True,
+            "filename": filename,
+            "n_entries": (alloc.get("unblinded_allocation") or {}).get("n_entries"),
+            "engine_version": alloc.get("engine_version"),
+            "protocol_version": protocol.version,
+        },
+    )
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": _content_disposition(filename)},
+    )
+
+
+@router.post("/randomization/csv", dependencies=[Depends(require_user)])
+async def export_randomization_csv(
+    payload: ExportRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Export the UNBLINDED allocation list as the engine's restricted CSV.
+
+    The machine-readable companion to the signed appendix: this is the form the
+    dispensing pharmacy loads. Its own header lines carry the RESTRICTED banner,
+    so the confidentiality survives the file being opened in a spreadsheet.
+    """
+    if not _RANDOMIZATION_ENGINE_OK:
+        raise HTTPException(
+            501,
+            detail="Randomization CSV export is unavailable "
+                   "(services/randomization.py could not be imported).",
+        )
+    actor = await authenticate_actor(request, db)
+    protocol = await get_protocol_scoped(db, payload.protocol_id, actor, load_drug=True)
+    drug_inn = protocol.drug.inn
+
+    alloc = _resolve_randomization(protocol)
+    csv_text = _format_unblinded_list(alloc) or ""
+
+    filename = (
+        f"RESTRICTED_randomization_list_{_inn_slug(drug_inn)}_v{protocol.version}.csv"
+    )
+    await _log_companion_export(
+        db, actor, payload.protocol_id, "EXPORT:randomization_csv",
+        {
+            "format": "csv",
+            "document": "unblinded_randomization_list",
+            "confidentiality": "RESTRICTED",
+            "contains_treatment_assignments": True,
+            "filename": filename,
+            "n_entries": (alloc.get("unblinded_allocation") or {}).get("n_entries"),
+            "protocol_version": protocol.version,
+        },
+    )
+    return StreamingResponse(
+        io.BytesIO(csv_text.encode("ascii", errors="replace")),
+        media_type="text/csv; charset=us-ascii",
+        headers={"Content-Disposition": _content_disposition(filename)},
+    )
+
+
+@router.post("/crf-dmp/docx", dependencies=[Depends(require_user)])
+async def export_crf_dmp_docx(
+    payload: ExportRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Export the CRF specification and Data Management Plan as its own .docx."""
+    actor = await authenticate_actor(request, db)
+    protocol = await get_protocol_scoped(db, payload.protocol_id, actor, load_drug=True)
+    drug_inn = protocol.drug.inn
+
+    spec = _resolve_crf_dmp(protocol, drug_inn)
+    docx_bytes = _build_crf_dmp_docx(protocol, drug_inn, spec)
+
+    filename = f"crf_dmp_{_inn_slug(drug_inn)}_v{protocol.version}.docx"
+    await _log_companion_export(
+        db, actor, payload.protocol_id, "EXPORT:crf_dmp_docx",
+        {
+            "format": "docx",
+            "document": "crf_specification_and_dmp",
+            "filename": filename,
+            "n_forms": spec.get("n_forms"),
+            "n_fields": spec.get("n_fields"),
+            "n_edit_checks": spec.get("n_edit_checks"),
+            "must_disclose": spec.get("must_disclose"),
+            "protocol_version": protocol.version,
+        },
+    )
+    return StreamingResponse(
+        io.BytesIO(docx_bytes),
+        media_type=_DOCX_MEDIA_TYPE,
+        headers={"Content-Disposition": _content_disposition(filename)},
+    )
+
+
+@router.post("/crf-dmp/pdf", dependencies=[Depends(require_user)])
+async def export_crf_dmp_pdf(
+    payload: ExportRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Export the CRF specification and Data Management Plan as its own PDF."""
+    if not _RL_OK:
+        raise HTTPException(
+            501,
+            detail="PDF export requires the 'reportlab' package. Run: pip install reportlab",
+        )
+    actor = await authenticate_actor(request, db)
+    protocol = await get_protocol_scoped(db, payload.protocol_id, actor, load_drug=True)
+    drug_inn = protocol.drug.inn
+
+    spec = _resolve_crf_dmp(protocol, drug_inn)
+    pdf_bytes = _build_crf_dmp_pdf(protocol, drug_inn, spec)
+
+    filename = f"crf_dmp_{_inn_slug(drug_inn)}_v{protocol.version}.pdf"
+    await _log_companion_export(
+        db, actor, payload.protocol_id, "EXPORT:crf_dmp_pdf",
+        {
+            "format": "pdf",
+            "document": "crf_specification_and_dmp",
+            "filename": filename,
+            "n_forms": spec.get("n_forms"),
+            "n_fields": spec.get("n_fields"),
+            "n_edit_checks": spec.get("n_edit_checks"),
+            "must_disclose": spec.get("must_disclose"),
+            "protocol_version": protocol.version,
+        },
+    )
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": _content_disposition(filename)},
+    )

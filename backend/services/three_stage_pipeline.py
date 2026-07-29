@@ -36,6 +36,14 @@ from services.guidelines import regulatory_directive
 from services.design_decisions import design_directive as design_directive_fn
 from services.biostatistics import recommend_sample_size
 from services.protocol_qc import QCStatus, run_qc
+from services.bioanalytical import bioanalytical_directive
+from services.crf_dmp import crf_dmp_directive
+from services.ddi_screening import ddi_directive
+from services.icf import icf_directive
+from services.randomization import randomization_directive
+from services.safety_gating import safety_gating_directive
+from services.safety_reporting import safety_reporting_directive
+from services.sampling_schedule import sampling_schedule_directive
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 OPUS_MODEL = "claude-opus-4-6"
@@ -76,6 +84,13 @@ def _default_sampling_schedule(t_half_hours: Optional[float]) -> list[float]:
     return sorted(set(core + [x for x in extra if x > 4.0]))
 
 
+# cv_source recorded when the caller hand-entered the within-subject CV. Kept
+# byte-identical to routers/protocols.py::_CV_SOURCE_OVERRIDE so the two
+# generation paths declare the same provenance for the same situation, and so
+# services/risk_scoring.py's `startswith("override")` test fires on both.
+_CV_SOURCE_OVERRIDE = "override (investigator-specified; not literature-derived)"
+
+
 def _compute_deterministic_facts(classification: dict, user_params: dict) -> dict:
     """Single source of truth for every number Stage 2 is allowed to use.
 
@@ -83,23 +98,31 @@ def _compute_deterministic_facts(classification: dict, user_params: dict) -> dic
     user-supplied overrides, then computes washout, sampling schedule, sample
     size, and TOST limits via biostatistics.py (no SciPy, exact non-central t).
 
-    ``cv_intra_pct`` is deliberately NOT overridable: the within-subject CV is
-    always the AI/literature-retrieved value so the powering figure keeps a
-    traceable provenance. (Same rule as the protocol route — see
-    routers/protocols.py::_augment_config_with_design.)
+    ``cv_intra_pct`` IS overridable, but never silently: a hand-entered CV wins
+    over whatever Stage 1 retrieved, and when it does, the recommendation's
+    ``cv_source`` records that it was investigator-specified rather than
+    literature-derived. The provenance is set in the SAME expression that
+    applies the override, so the number and its declared source cannot diverge —
+    the defect that caused this override to be removed once already. (Same rule
+    as the protocol route — see routers/protocols.py::_resolve_powering_cv.)
     """
     pk = dict(classification.get("pk_params") or {})
-    for key in ("t_half_hours", "tmax_hours", "is_nti"):
+    for key in ("cv_intra_pct", "t_half_hours", "tmax_hours", "is_nti"):
         if user_params.get(key) is not None:
             pk[key] = user_params[key]
 
     drug_type = classification.get("drug_type") or "small_molecule"
     study_type = "biosimilar_pk" if drug_type in ("biologic", "biosimilar") else "BE"
 
+    # Provenance is decided here, from the same condition that decides the
+    # value: user-supplied => override; anything else => let biostatistics label
+    # it ("literature" when a value came from Stage 1, "assumed" when none did).
+    cv_is_user_override = user_params.get("cv_intra_pct") is not None
     rec = recommend_sample_size(
         study_type=study_type,
         drug_inn=user_params.get("drug_inn", ""),
         cv_intra_pct=pk.get("cv_intra_pct"),
+        cv_source=_CV_SOURCE_OVERRIDE if cv_is_user_override else None,
         t_half_hours=pk.get("t_half_hours"),
         is_nti=pk.get("is_nti"),
     )
@@ -110,6 +133,12 @@ def _compute_deterministic_facts(classification: dict, user_params: dict) -> dic
     washout_hours = _WASHOUT_MULTIPLE * t_half_used
     washout_days = math.ceil(washout_hours / 24.0)
 
+    sample_size = rec.to_dict()
+    # Machine-readable provenance flag alongside the human-readable cv_source,
+    # so a downstream consumer never has to string-match to tell a hand-entered
+    # CV from a retrieved one.
+    sample_size["cv_is_user_override"] = cv_is_user_override
+
     return {
         "t_half_hours": t_half_used,
         "t_half_basis": t_half_basis,
@@ -117,7 +146,7 @@ def _compute_deterministic_facts(classification: dict, user_params: dict) -> dic
         "washout_days": washout_days,
         "washout_rule": f"{_WASHOUT_MULTIPLE} x terminal half-life",
         "sampling_schedule_hours": _default_sampling_schedule(t_half),
-        "sample_size": rec.to_dict(),
+        "sample_size": sample_size,
         "tost_limits": {
             "lower": rec.lower_limit,
             "upper": rec.upper_limit,
@@ -520,6 +549,71 @@ def _build_full_protocol_tool(section_order: list[str]) -> dict:
     }
 
 
+# The deterministic engines computed by routers/protocols.py and copied into the
+# generation context, paired with the directive each one ships.
+#
+# Their RAW payloads must not be pasted into this prompt. They are reference
+# data structures (form catalogues, per-subject enrolment logs, 20-section ICF
+# bodies), and together they serialise to roughly 480 KB - about 655 KB once
+# indented, which is more context than the model has, for a call that then has
+# to emit a ~40 KB document. Each engine's own directive() renders the SAME
+# locked facts as compact instruction text: ~126 KB for all eight, a 74%
+# reduction, and in the form the model is meant to consume.
+#
+# Order is the order they appear in the prompt; it follows the protocol's own
+# structure (design -> conduct -> safety -> data -> consent).
+_ENGINE_DIRECTIVES: tuple[tuple[str, Any], ...] = (
+    ("sampling_schedule", sampling_schedule_directive),
+    ("randomization", randomization_directive),
+    ("ddi", ddi_directive),
+    ("bioanalytical", bioanalytical_directive),
+    ("safety_gating", safety_gating_directive),
+    ("safety_reporting", safety_reporting_directive),
+    ("crf_dmp", crf_dmp_directive),
+    ("icf", icf_directive),
+)
+
+
+def _first_line(text: str) -> str:
+    """First non-blank line of a directive - used as its identity marker."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return ""
+
+
+def _engine_directives(context: dict, already_present: str) -> tuple[str, set[str]]:
+    """Render the computed engines' locked-fact directives for the prompt.
+
+    Returns ``(directive_text, keys_rendered)``. A directive whose header line
+    is ALREADY present in ``already_present`` is skipped: services/ai_service.py
+    may inject the same engine directives from its own locked-facts block, and
+    emitting a 40 KB directive twice wastes budget for no gain. Skipping on the
+    header rather than the whole string keeps the check cheap and stable if the
+    other block reformats the body. Either way the key is reported as rendered,
+    so its raw payload is dropped from the JSON block exactly once.
+    """
+    parts: list[str] = []
+    rendered: set[str] = set()
+    for key, fn in _ENGINE_DIRECTIVES:
+        payload = context.get(key)
+        if not payload:
+            continue
+        try:
+            text = fn(payload)
+        except Exception:  # noqa: BLE001 - a directive must never abort generation
+            continue
+        if not text or not text.strip():
+            continue
+        rendered.add(key)
+        marker = _first_line(text)
+        if marker and marker in already_present:
+            continue
+        parts.append(text)
+    return ("\n".join(parts), rendered)
+
+
 async def _stage2_generate_all_sections(
     client: anthropic.AsyncAnthropic, study_type: str, context: dict, section_order: list[str],
     *, extra_directives: str = "", stage: str = "stage2_generate",
@@ -542,7 +636,18 @@ async def _stage2_generate_all_sections(
     design_directive = _locked_design_directive(context.get("sample_size"))
     reg_directive = regulatory_directive(guideline_version or "", study_type)
     decisions_directive = design_directive_fn(context.get("design_decisions") or [])
-    context_block = json.dumps(context, indent=2, default=str)
+
+    # Computed engines travel as their own directives, not as raw JSON (see
+    # _ENGINE_DIRECTIVES), and are then dropped from the serialised context so
+    # the same facts are not carried twice in two different shapes - which is
+    # also how a model ends up reconciling two renderings of one number.
+    engine_directives, rendered = _engine_directives(
+        context, design_directive + decisions_directive + extra_directives
+    )
+    context_block = json.dumps(
+        {k: v for k, v in context.items() if k not in rendered},
+        indent=2, default=str,
+    )
 
     instructions_block = "\n\n".join(
         f"### Section: {name} ###\n"
@@ -558,6 +663,7 @@ async def _stage2_generate_all_sections(
         f"{design_directive}\n"
         f"{reg_directive}\n"
         f"{decisions_directive}\n"
+        f"{engine_directives}\n"
         f"Context:\n{context_block}\n\n"
         f"Per-section instructions:\n\n{instructions_block}\n\n"
         "For every section, write body text only - no section title, number, or "
@@ -603,12 +709,36 @@ async def _stage2_generate_all_sections(
 _REMEDIABLE_STATUSES = {QCStatus.FAIL.value, QCStatus.WARNING.value}
 
 
+# Context key -> the underscore-prefixed population_config key the same engine
+# result is stored under. run_qc is handed a population_config, so the computed
+# engines have to be mapped back to their stored names or its engine-aware
+# checks silently see nothing and pass a protocol they should have flagged.
+_QC_ENGINE_KEYS: tuple[tuple[str, str], ...] = (
+    ("sampling_schedule", "_sampling_schedule"),
+    ("stratification", "_stratification"),
+    ("ddi", "_ddi"),
+    ("safety_gating", "_safety_gating"),
+    ("bioanalytical", "_bioanalytical"),
+    ("safety_reporting", "_safety_reporting"),
+    ("crf_dmp", "_crf_dmp"),
+    ("icf", "_icf"),
+    ("design_decisions", "_design_decisions"),
+)
+
+
 def _qc_population_config(context: dict) -> dict:
     """Adapt the pipeline ``context`` to the population_config shape run_qc wants."""
     cfg: dict[str, Any] = {
         "_sample_size": context.get("sample_size") or {},
         "_label": context.get("label_data") or {},
     }
+    for ctx_key, cfg_key in _QC_ENGINE_KEYS:
+        value = context.get(ctx_key)
+        if value:
+            cfg[cfg_key] = value
+    # NOTE: the randomization result is deliberately NOT passed through. The
+    # context only ever holds its blinded view, and re-deriving anything from it
+    # here would put allocation detail into a report a blinded reader can open.
     if context.get("dose_strength"):
         cfg["dose_strength"] = context["dose_strength"]
     return cfg

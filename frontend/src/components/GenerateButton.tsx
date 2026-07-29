@@ -103,6 +103,10 @@ export default function GenerateButton({ drug, studyType, populationConfig, desi
   const [guidelines, setGuidelines] = useState<AppGuideline[]>([])
   const [guidelineId, setGuidelineId] = useState('FDA-BE-2014')
   const timerIds = useRef<ReturnType<typeof setTimeout>[]>([])
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    return () => { mountedRef.current = false }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -133,6 +137,7 @@ export default function GenerateButton({ drug, studyType, populationConfig, desi
     const MAX_ATTEMPTS = 200 // ~10 min at 3s
     const INTERVAL_MS = 3000
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      if (!mountedRef.current) throw new Error('__abandoned__')
       await new Promise(r => setTimeout(r, INTERVAL_MS))
       let p: GeneratedProtocol
       try {
@@ -173,13 +178,16 @@ export default function GenerateButton({ drug, studyType, populationConfig, desi
       if (result.generation_status === 'generating') {
         result = await pollUntilDone(result.id)
       }
+      if (!mountedRef.current) return
       clearTimers()
       setProgressStep(3)
       await new Promise(r => setTimeout(r, 450))
+      if (!mountedRef.current) return
       setProtocol(result)
       setStatus('success')
       onSuccess(result)
     } catch (err: unknown) {
+      if (!mountedRef.current) return
       clearTimers()
       setErrorMsg(err instanceof Error ? err.message : 'An unexpected error occurred')
       setStatus('error')

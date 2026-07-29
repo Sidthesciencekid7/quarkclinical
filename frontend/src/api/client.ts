@@ -1,4 +1,4 @@
-import type { AdminOrgRow, AppUser, Comment, CoverageReport, CsrInputKind, CsrQCReport, DesignPreviewResponse, Drug, GeneratedProtocol, GuidelinesResponse, Lead, LeadCreatePayload, Org, OrgMember, PopulationConfig, ProtocolCreatePayload, ProtocolSummary, QCReport, RiskScore, SectionUpdateResult, StudyReport, StudyReportSummary, StudyType } from '../types'
+import type { AdminOrgRow, AppUser, Comment, CoverageReport, CsrInputKind, CsrQCReport, DdiScreeningResult, DesignPreviewResponse, Drug, GeneratedProtocol, GuidelinesResponse, Lead, LeadCreatePayload, Org, OrgMember, PopulationConfig, ProtocolCreatePayload, ProtocolSummary, QCReport, RiskScore, SectionUpdateResult, StudyReport, StudyReportSummary, StudyType } from '../types'
 import { getActingUserId } from '../lib/actingUser'
 
 /** API origin. Empty by default so calls are same-origin `/api/...`:
@@ -31,6 +31,34 @@ async function authHeaders(): Promise<Record<string, string>> {
   return headers
 }
 
+/** An HTTP failure that kept its status code. Still a plain `Error` to every
+ *  existing `catch (e) { e instanceof Error ? e.message : ... }` caller — the
+ *  status is additive, used only where the code itself carries meaning (e.g.
+ *  telling "this route does not exist on this build" apart from a real error). */
+export class HttpError extends Error {
+  status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'HttpError'
+    this.status = status
+  }
+}
+
+/** Statuses that mean "the server has no such route", as opposed to a genuine
+ *  application error. Used to probe optional endpoints (see requestBlobAny). */
+const ROUTE_MISSING_STATUSES = new Set([404, 405])
+
+/** Read the backend's `detail` out of an error response, falling back to the
+ *  status line when the body isn't the usual FastAPI JSON envelope. */
+async function errorFrom(res: Response): Promise<HttpError> {
+  let detail = `${res.status} ${res.statusText}`
+  try {
+    const body = await res.json()
+    if (body.detail) detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)
+  } catch { /* ignore parse errors */ }
+  return new HttpError(res.status, detail)
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}/api${path}`, {
     ...init,
@@ -40,14 +68,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.headers as Record<string, string> | undefined),
     },
   })
-  if (!res.ok) {
-    let message = `${res.status} ${res.statusText}`
-    try {
-      const body = await res.json()
-      if (body.detail) message = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)
-    } catch { /* ignore parse errors */ }
-    throw new Error(message)
-  }
+  if (!res.ok) throw await errorFrom(res)
   if (res.status === 204) return undefined as T  // no body (e.g. DELETE)
   return res.json() as Promise<T>
 }
@@ -61,28 +82,42 @@ async function requestBlob(path: string, body: unknown): Promise<Blob> {
     },
     body: JSON.stringify(body),
   })
-  if (!res.ok) {
-    let detail = `${res.status} ${res.statusText}`
-    try {
-      const b = await res.json()
-      if (b.detail) detail = typeof b.detail === 'string' ? b.detail : JSON.stringify(b.detail)
-    } catch { /* ignore */ }
-    throw new Error(detail)
-  }
+  if (!res.ok) throw await errorFrom(res)
   return res.blob()
+}
+
+/** POST for a binary payload, trying each candidate path until one exists.
+ *
+ *  The standalone study-package documents (ICF, randomisation list, CRF/DMP)
+ *  are rendered by export endpoints whose exact names are owned by the backend.
+ *  Only the ICF pair is spelled out in the engine's integration notes
+ *  (POST /icf/docx, /icf/pdf under the export router); for the other two the
+ *  notes describe the payload but not the route, so both plausible spellings
+ *  are probed and the first that is registered wins. A 404/405 means "not this
+ *  name"; any other status is a real failure and is surfaced immediately.
+ *
+ *  These are sub-paths, not collection roots, so they take NO trailing slash —
+ *  same as the existing /export/docx and /export/pdf. (A trailing slash on a
+ *  route registered without one triggers a cross-origin 307 that silently drops
+ *  the Authorization header.) */
+async function requestBlobAny(paths: string[], body: unknown): Promise<Blob> {
+  let lastError: unknown
+  for (const path of paths) {
+    try {
+      return await requestBlob(path, body)
+    } catch (e) {
+      lastError = e
+      if (e instanceof HttpError && ROUTE_MISSING_STATUSES.has(e.status)) continue
+      throw e
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Export failed.')
 }
 
 /** GET a binary payload (template / export download) with auth headers. */
 async function requestBlobGet(path: string): Promise<Blob> {
   const res = await fetch(`${API_BASE}/api${path}`, { headers: { ...(await authHeaders()) } })
-  if (!res.ok) {
-    let detail = `${res.status} ${res.statusText}`
-    try {
-      const b = await res.json()
-      if (b.detail) detail = typeof b.detail === 'string' ? b.detail : JSON.stringify(b.detail)
-    } catch { /* ignore */ }
-    throw new Error(detail)
-  }
+  if (!res.ok) throw await errorFrom(res)
   return res.blob()
 }
 
@@ -152,6 +187,39 @@ export const api = {
       body: JSON.stringify({ drug_id: drugId, study_type: studyType, population_config: populationConfig }),
     }),
 
+  /** Credit-free drug-drug-interaction screening for the Population step.
+   *
+   *  The backend reads the drug's real DailyMed label, works out which
+   *  metabolic/transporter pathways actually apply, and returns the
+   *  comedication rows that belong in the exclusion criteria. This is what
+   *  replaces the frontend's old static "CYP3A4 inhibitors or inducers"
+   *  preset, which was shown for every drug regardless of its pathway.
+   *
+   *  The screening is computed server-side at protocol creation; which route
+   *  exposes it to the wizard is the backend's call, so both plausible surfaces
+   *  are supported: a dedicated /protocols/ddi-preview, or a `ddi` field
+   *  attached to the existing design-preview response. Resolves to null when
+   *  neither is available, and the caller then falls back to the drug-agnostic
+   *  criteria only — it must never invent pathway-specific ones itself. */
+  previewDdi: async (
+    drugId: string,
+    studyType: StudyType,
+    populationConfig: PopulationConfig,
+  ): Promise<DdiScreeningResult | null> => {
+    const body = JSON.stringify({
+      drug_id: drugId,
+      study_type: studyType,
+      population_config: populationConfig,
+    })
+    try {
+      return await request<DdiScreeningResult>('/protocols/ddi-preview', { method: 'POST', body })
+    } catch (e) {
+      if (!(e instanceof HttpError) || !ROUTE_MISSING_STATUSES.has(e.status)) throw e
+    }
+    const preview = await request<DesignPreviewResponse>('/protocols/design-preview', { method: 'POST', body })
+    return preview.ddi ?? null
+  },
+
   /** The caller's org's past protocols, newest first (My Reports history). */
   listProtocols: () => request<ProtocolSummary[]>('/protocols/'),
 
@@ -169,6 +237,36 @@ export const api = {
 
   exportPdf: (protocolId: string): Promise<Blob> =>
     requestBlob('/export/pdf', { protocol_id: protocolId }),
+
+  // ── Standalone study-package documents ─────────────────────────────────
+  // These are SEPARATE documents from the protocol, not sections of it:
+  //  - the ICF is an IRB submission carrying its own version and date
+  //    (21 CFR 50.25), which is the legal point of keeping it separate;
+  //  - the randomisation list is the RESTRICTED unblinded allocation and must
+  //    never be filed in the protocol body (ICH E9 allocation concealment);
+  //  - the CRF specification + Data Management Plan is the data-capture
+  //    appendix pair.
+  // Each takes the same {protocol_id} body as the protocol export endpoints.
+
+  exportIcfDocx: (protocolId: string): Promise<Blob> =>
+    requestBlobAny(['/export/icf/docx'], { protocol_id: protocolId }),
+
+  exportIcfPdf: (protocolId: string): Promise<Blob> =>
+    requestBlobAny(['/export/icf/pdf'], { protocol_id: protocolId }),
+
+  exportCrfDmpDocx: (protocolId: string): Promise<Blob> =>
+    requestBlobAny(['/export/crf/docx', '/export/crf-dmp/docx'], { protocol_id: protocolId }),
+
+  exportCrfDmpPdf: (protocolId: string): Promise<Blob> =>
+    requestBlobAny(['/export/crf/pdf', '/export/crf-dmp/pdf'], { protocol_id: protocolId }),
+
+  /** RESTRICTED: the unblinded subject-by-subject allocation, as an ASCII CSV
+   *  for a separate TMF appendix. Never part of the protocol document. */
+  exportRandomizationCsv: (protocolId: string): Promise<Blob> =>
+    requestBlobAny(
+      ['/export/randomization/csv', '/export/randomization-list/csv'],
+      { protocol_id: protocolId },
+    ),
 
   // ── Clinical Study Report (CSR) — post-study results + ICH E3 narrative ──
 
@@ -194,7 +292,7 @@ export const api = {
   uploadStudyReportDataset: async (id: string, file: File, lloq?: number | null): Promise<StudyReport> => {
     const form = new FormData()
     form.append('file', file)
-    if (lloq !== undefined && lloq !== null && !Number.isNaN(lloq)) form.append('lloq', String(lloq))
+    if (lloq !== undefined && lloq !== null && Number.isFinite(lloq) && lloq > 0) form.append('lloq', String(lloq))
     const res = await fetch(`${API_BASE}/api/study-reports/${id}/dataset`, {
       method: 'POST',
       // No Content-Type — the browser sets the multipart boundary itself.

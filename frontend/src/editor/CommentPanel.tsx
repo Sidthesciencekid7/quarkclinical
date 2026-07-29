@@ -25,6 +25,7 @@ export default function CommentPanel({ protocolId, activeSection }: Props) {
   const [newText, setNewText] = useState('')
   const [showAll, setShowAll] = useState(false)
   const [posting, setPosting] = useState(false)
+  const [pendingIds, setPendingIds] = useState<Set<string>>(new Set())
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   // Notes live server-side (org-shared, user-attributed), so load them for this
@@ -74,9 +75,11 @@ export default function CommentPanel({ protocolId, activeSection }: Props) {
   }
 
   const toggleResolved = async (id: string) => {
+    if (pendingIds.has(id)) return
     const target = comments.find(c => c.id === id)
     if (!target) return
     const next = !target.resolved
+    setPendingIds(prev => new Set(prev).add(id))
     // Optimistic: the checkbox should feel instant; revert if the server says no.
     setComments(prev => prev.map(c => (c.id === id ? { ...c, resolved: next } : c)))
     try {
@@ -84,6 +87,12 @@ export default function CommentPanel({ protocolId, activeSection }: Props) {
     } catch (e: unknown) {
       setComments(prev => prev.map(c => (c.id === id ? { ...c, resolved: !next } : c)))
       setError(e instanceof Error ? e.message : 'Could not update note')
+    } finally {
+      setPendingIds(prev => {
+        const copy = new Set(prev)
+        copy.delete(id)
+        return copy
+      })
     }
   }
 
@@ -171,12 +180,14 @@ export default function CommentPanel({ protocolId, activeSection }: Props) {
                   <span className="text-[10px] text-slate-400">{relativeTime(comment.createdAt)}</span>
                   <button
                     onClick={() => toggleResolved(comment.id)}
+                    disabled={pendingIds.has(comment.id)}
                     title={comment.resolved ? 'Reopen' : 'Resolve'}
                     className={[
                       'w-4 h-4 rounded border flex items-center justify-center transition-colors',
                       comment.resolved
                         ? 'bg-emerald-100 border-emerald-300'
                         : 'border-slate-300 hover:border-emerald-400',
+                      pendingIds.has(comment.id) ? 'opacity-40 cursor-not-allowed' : '',
                     ].join(' ')}
                   >
                     {comment.resolved && (

@@ -12,6 +12,10 @@ interface Props {
   onOpenCsr: (summary: ProtocolSummary) => void
   /** The id currently being opened, so its card can show a spinner. */
   openingId: string | null
+  /** Error message from the last failed attempt to open a report, if any. */
+  openError: string | null
+  /** Dismiss the current open-report error banner. */
+  onDismissOpenError: () => void
 }
 
 const STUDY_LABELS: Record<StudyType, string> = {
@@ -76,7 +80,7 @@ function DocIcon() {
   )
 }
 
-export default function ReportsView({ onOpen, onNew, onOpenCsr, openingId }: Props) {
+export default function ReportsView({ onOpen, onNew, onOpenCsr, openingId, openError, onDismissOpenError }: Props) {
   const [reports, setReports] = useState<ProtocolSummary[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   // Id of the protocol currently being duplicated. Doubles as the in-flight
@@ -89,7 +93,7 @@ export default function ReportsView({ onOpen, onNew, onOpenCsr, openingId }: Pro
   // identity is resolved before fetching — otherwise the request goes out with
   // no X-User-Id (and 401s) on a fresh browser where the picker hasn't set the
   // acting user yet. Re-fetch when the acting user changes.
-  const { currentUser, loading: identityLoading } = useActingUser()
+  const { currentUser, loading: identityLoading, error: identityError } = useActingUser()
 
   useEffect(() => {
     if (identityLoading) return
@@ -97,14 +101,14 @@ export default function ReportsView({ onOpen, onNew, onOpenCsr, openingId }: Pro
     setReports(null)
     setError(null)
     if (!currentUser) {
-      setError('No user available — cannot load reports.')
+      setError(identityError ?? 'No user available — cannot load reports.')
       return
     }
     api.listProtocols()
       .then(list => { if (!cancelled) setReports(list) })
       .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load reports') })
     return () => { cancelled = true }
-  }, [identityLoading, currentUser?.id])
+  }, [identityLoading, currentUser?.id, identityError])
 
   /** Duplicate a past protocol as a fresh draft, then refresh the list so the
    *  copy shows up at the top (the list is newest-first). No AI re-run happens
@@ -158,6 +162,20 @@ export default function ReportsView({ onOpen, onNew, onOpenCsr, openingId }: Pro
         {error && (
           <div className="rounded-2xl border border-red-200 bg-red-50 p-5 text-sm text-red-700">
             Couldn&apos;t load your reports: {error}
+          </div>
+        )}
+
+        {/* Opening a report failed — non-fatal, the list itself is still usable */}
+        {openError && (
+          <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 flex items-start justify-between gap-3">
+            <span>Couldn&apos;t open that report: {openError}</span>
+            <button
+              onClick={onDismissOpenError}
+              aria-label="Dismiss"
+              className="flex-shrink-0 text-red-400 hover:text-red-600 cursor-pointer font-bold leading-none"
+            >
+              ×
+            </button>
           </div>
         )}
 

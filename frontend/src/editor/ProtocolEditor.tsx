@@ -42,6 +42,7 @@ export default function ProtocolEditor({ protocol, drug, onBack }: Props) {
   )
 
   const [regenerating, setRegenerating] = useState<string | null>(null)
+  const [regenError, setRegenError] = useState<Record<string, string>>({})
   const [activeSection, setActiveSection] = useState<string>(order[0])
   const [commentsOpen, setCommentsOpen] = useState(false)
   const [qcOpen, setQcOpen] = useState(false)
@@ -69,12 +70,17 @@ export default function ProtocolEditor({ protocol, drug, onBack }: Props) {
 
   const handleRegenerate = useCallback(async (sectionName: string) => {
     setRegenerating(sectionName)
+    setRegenError(prev => {
+      const { [sectionName]: _omit, ...rest } = prev
+      return rest
+    })
     try {
       const result = await api.regenSection(protocol.id, sectionName)
       setSections(prev => ({ ...prev, [sectionName]: result.content }))
       setContentVersions(prev => ({ ...prev, [sectionName]: prev[sectionName] + 1 }))
     } catch (err) {
       console.error(`Regeneration failed for ${sectionName}:`, err)
+      setRegenError(prev => ({ ...prev, [sectionName]: err instanceof Error ? err.message : 'Regeneration failed. Please try again.' }))
     } finally {
       setRegenerating(null)
     }
@@ -208,6 +214,7 @@ export default function ProtocolEditor({ protocol, drug, onBack }: Props) {
                 onContentChange={handleContentChange}
                 isRegenerating={regenerating === name}
                 onRegenerate={() => handleRegenerate(name)}
+                regenError={regenError[name]}
               />
             ))}
             <div className="h-32" />

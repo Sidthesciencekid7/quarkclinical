@@ -53,7 +53,11 @@ export default function DrugSelector({ value, onChange }: Props) {
   const [noResults, setNoResults] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const searchIdRef = useRef(0)
   const [menuRect, setMenuRect] = useState<{ top: number; left: number; width: number } | null>(null)
+
+  const INN_PATTERN = /^[a-zA-Z][a-zA-Z\s-]{1,63}$/
+  const isValidInn = (s: string) => INN_PATTERN.test(s.trim())
 
   const menuVisible = (open && results.length > 0) || (noResults && !isLoading)
 
@@ -90,19 +94,22 @@ export default function DrugSelector({ value, onChange }: Props) {
     setNoResults(false)
     setFetchError(null)
     const t = window.setTimeout(async () => {
+      const requestId = ++searchIdRef.current
       setIsLoading(true)
       try {
         const data = await api.searchDrugs(query)
+        if (searchIdRef.current !== requestId) return
         setResults(data)
         setOpen(data.length > 0)
         setNoResults(data.length === 0)
       } catch (err) {
+        if (searchIdRef.current !== requestId) return
         setResults([])
         setOpen(false)
         setNoResults(true)
         setFetchError(err instanceof Error ? err.message : 'Could not reach backend')
       } finally {
-        setIsLoading(false)
+        if (searchIdRef.current === requestId) setIsLoading(false)
       }
     }, 300)
     return () => clearTimeout(t)
@@ -190,7 +197,7 @@ export default function DrugSelector({ value, onChange }: Props) {
             if (e.key === 'Enter') {
               e.preventDefault()
               if (results.length > 0) handleSelect(results[0])
-              else if (noResults && query.trim().length >= 2) handleAdd()
+              else if (noResults && isValidInn(query)) handleAdd()
             }
             if (e.key === 'Escape') { setOpen(false); setNoResults(false) }
           }}
@@ -244,10 +251,11 @@ export default function DrugSelector({ value, onChange }: Props) {
                 </>
               )}
               {addError && <p className="text-xs text-red-500 mt-1">{addError}</p>}
+              {!isValidInn(query) && <p className="text-xs text-amber-600 mt-1">Drug name must be 2-64 letters, spaces, or hyphens only.</p>}
               <button
                 type="button"
                 onClick={handleAdd}
-                disabled={isAdding}
+                disabled={isAdding || !isValidInn(query)}
                 className="mt-3 inline-flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-60 text-white text-sm font-semibold rounded-lg transition-colors cursor-pointer"
               >
                 {isAdding ? <SpinnerIcon color="white" /> : <PlusIcon />}

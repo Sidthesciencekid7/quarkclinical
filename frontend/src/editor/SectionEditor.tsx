@@ -15,6 +15,7 @@ interface Props {
   onContentChange: (name: string, content: string) => void
   isRegenerating: boolean
   onRegenerate: () => void
+  regenError?: string
 }
 
 type SaveStatus = 'saved' | 'saving' | 'unsaved' | 'error'
@@ -65,7 +66,7 @@ function ToolbarBtn({
 
 export default function SectionEditor({
   protocolId, sectionName, sectionTitle, number,
-  initialContent, onContentChange, isRegenerating, onRegenerate,
+  initialContent, onContentChange, isRegenerating, onRegenerate, regenError,
 }: Props) {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved')
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -83,6 +84,7 @@ export default function SectionEditor({
       onContentChange(sectionName, html)
       setSaveStatus('unsaved')
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      if (isRegenerating) return
       saveTimerRef.current = setTimeout(async () => {
         setSaveStatus('saving')
         try {
@@ -98,6 +100,14 @@ export default function SectionEditor({
   useEffect(() => {
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current) }
   }, [])
+
+  useEffect(() => {
+    if (isRegenerating && saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = null
+      setSaveStatus('saved')
+    }
+  }, [isRegenerating])
 
   const wordCount = editor?.getText().split(/\s+/).filter(Boolean).length ?? 0
 
@@ -135,6 +145,12 @@ export default function SectionEditor({
           </button>
         </div>
       </div>
+
+      {regenError && (
+        <div className="mb-3 px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-xs font-semibold text-red-600">
+          Regeneration failed: {regenError}
+        </div>
+      )}
 
       {/* Editor card */}
       <div className="section-card relative overflow-hidden">
