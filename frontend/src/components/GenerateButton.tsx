@@ -100,17 +100,63 @@ function ReviewTable({ drug, studyType, pop, guidelineLabel }: { drug: Drug; stu
  *  reports a red failure for a protocol that is still being written. */
 const STILL_RUNNING = '__still_running__'
 
+// There is no server-side progress signal — the backend runs one long PK
+// extraction call, one large single-shot generation call, and (sometimes) a QC
+// remediation pass, with no per-section reporting back to the client. So the
+// percentage below is a SHAPE, not a measurement: it exists to show visible
+// motion, not to claim a real completion fraction. This constant sets only how
+// fast that shape climbs — it is deliberately NOT surfaced anywhere as a
+// stated time remaining, because a single real timed run (metoprolol,
+// crossover BE, still generating past 15 min when checked) is nowhere near
+// enough data to promise an ETA, and a wrong ETA is worse than none.
+const EXPECTED_GENERATION_SECONDS = 20 * 60
+
+function formatDuration(ms: number): string {
+  const totalSec = Math.max(0, Math.round(ms / 1000))
+  const m = Math.floor(totalSec / 60)
+  const s = totalSec % 60
+  return `${m}:${s.toString().padStart(2, '0')}`
+}
+
+/** Asymptotic curve: quick early feedback, then slows and creeps toward a 96%
+ *  soft ceiling — it NEVER reaches 100 on its own, only the real completion
+ *  signal does that. Chosen over a linear ramp specifically because real
+ *  generations routinely run past the expected duration (confirmed on the
+ *  metoprolol run): a linear bar would either finish "early" and then sit
+ *  wrongly at 100%, or blow past 100%. This keeps visibly moving — which reads
+ *  as "still working" — no matter how long the run actually takes. */
+function estimateProgressPct(elapsedSec: number): number {
+  const tau = EXPECTED_GENERATION_SECONDS * 0.6
+  return Math.min(96, 96 * (1 - Math.exp(-elapsedSec / tau)))
+}
+
 export default function GenerateButton({ drug, studyType, populationConfig, designDecisions, onSuccess }: Props) {
   const [status, setStatus] = useState<Status>('idle')
   const [progressStep, setProgressStep] = useState(0)
+  const [elapsedMs, setElapsedMs] = useState(0)
   const [protocol, setProtocol] = useState<GeneratedProtocol | null>(null)
   const [errorMsg, setErrorMsg] = useState('')
   const [guidelines, setGuidelines] = useState<AppGuideline[]>([])
   const [guidelineId, setGuidelineId] = useState('FDA-BE-2014')
   const timerIds = useRef<ReturnType<typeof setTimeout>[]>([])
+  const tickIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const genStartRef = useRef<number>(0)
   const mountedRef = useRef(true)
   useEffect(() => {
-    return () => { mountedRef.current = false }
+    // Set true in the SETUP, not just via the useRef() initial value. React
+    // StrictMode's dev-mode double-invoke runs setup -> cleanup -> setup again
+    // on every mount to surface exactly this bug: the cleanup below sets the
+    // ref false, and without this line nothing ever sets it back to true on
+    // the second setup, so it stays permanently false for a component that is
+    // genuinely mounted. That silently broke the elapsed-time tick (blocked by
+    // the same flag) and could abandon a real poll loop on its very first
+    // check -- invisible before because nothing rendered a per-second value
+    // from it, unlike the progress clock, which made it obvious immediately.
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      if (tickIntervalRef.current) clearInterval(tickIntervalRef.current)
+    }
   }, [])
 
   useEffect(() => {
@@ -131,6 +177,10 @@ export default function GenerateButton({ drug, studyType, populationConfig, desi
   const clearTimers = () => {
     timerIds.current.forEach(clearTimeout)
     timerIds.current = []
+    if (tickIntervalRef.current) {
+      clearInterval(tickIntervalRef.current)
+      tickIntervalRef.current = null
+    }
   }
 
   // Real generation runs for minutes, so the backend returns a "generating"
@@ -180,6 +230,12 @@ export default function GenerateButton({ drug, studyType, populationConfig, desi
     setStatus('loading')
     setProgressStep(0)
     setErrorMsg('')
+    genStartRef.current = Date.now()
+    setElapsedMs(0)
+    tickIntervalRef.current = setInterval(() => {
+      if (!mountedRef.current) return
+      setElapsedMs(Date.now() - genStartRef.current)
+    }, 1000)
     timerIds.current.push(setTimeout(() => setProgressStep(p => Math.max(p, 1)), 2500))
     timerIds.current.push(setTimeout(() => setProgressStep(p => Math.max(p, 2)), 6500))
     try {
@@ -228,7 +284,8 @@ export default function GenerateButton({ drug, studyType, populationConfig, desi
     }
   }
 
-  const progressPct = status === 'success' ? 100 : [4, 28, 55, 90][progressStep] ?? 4
+  const elapsedSec = elapsedMs / 1000
+  const progressPct = status === 'success' ? 100 : Math.max(4, estimateProgressPct(elapsedSec))
 
   // ── Success ────────────────────────────────────────────────────────────────
   if (status === 'success' && protocol) {
@@ -287,14 +344,22 @@ export default function GenerateButton({ drug, studyType, populationConfig, desi
       <div className="space-y-6">
         <div>
           <h3 className="text-base font-bold text-slate-900">Generating Protocol…</h3>
-          <p className="text-sm text-slate-500 mt-1">This may take 4–8 minutes (drafting, automated QC, and AI fixes). Do not close this tab.</p>
+          <p className="text-sm text-slate-500 mt-1">Real generations often run well past 15 minutes — this is normal. Do not close this tab.</p>
         </div>
 
-        <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
-          <div
-            className="h-full bg-gradient-to-r from-cyan-500 to-cyan-400 rounded-full transition-all duration-1000 ease-out"
-            style={{ width: `${progressPct}%` }}
-          />
+        <div>
+          <div className="flex items-baseline justify-between mb-1.5">
+            <span className="text-2xl font-bold text-slate-900 tabular-nums">{Math.round(progressPct)}%</span>
+            <span className="text-xs text-slate-400 font-medium tabular-nums">
+              Elapsed {formatDuration(elapsedMs)}
+            </span>
+          </div>
+          <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-cyan-500 to-cyan-400 rounded-full transition-all duration-1000 ease-out"
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
         </div>
 
         <div className="space-y-4">
