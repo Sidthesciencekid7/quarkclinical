@@ -44,6 +44,8 @@ from services.randomization import randomization_directive
 from services.safety_gating import safety_gating_directive
 from services.safety_reporting import safety_reporting_directive
 from services.sampling_schedule import sampling_schedule_directive
+from services.stratification import stratification_directive
+from services.literature_service import regulatory_sources_directive
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 OPUS_MODEL = "claude-opus-4-6"
@@ -573,11 +575,21 @@ _ENGINE_DIRECTIVES: tuple[tuple[str, Any], ...] = (
     ("sampling_schedule", sampling_schedule_directive),
     ("randomization", randomization_directive),
     ("ddi", ddi_directive),
+    # Same locked facts services/ai_service.py wires into "population" and
+    # "treatment" for the per-section path — a whole-document generation must
+    # get the identical modality prohibition (no non-smoker/genotype criterion
+    # invented for a biologic), or this single-request path silently loses the
+    # protection the per-section path has.
+    ("stratification", stratification_directive),
     ("bioanalytical", bioanalytical_directive),
     ("safety_gating", safety_gating_directive),
     ("safety_reporting", safety_reporting_directive),
     ("crf_dmp", crf_dmp_directive),
     ("icf", icf_directive),
+    # Regulatory-assessment-report evidence (services/literature_service.py) —
+    # mirrors the ai_service.py wiring into "statistical_analysis_plan" /
+    # "study_rationale".
+    ("regulatory_sources", regulatory_sources_directive),
 )
 
 
@@ -858,6 +870,21 @@ async def _qc_remediate(
             study_type=study_type, population_config=pop_cfg,
             sections=sections, expected_sections=section_order,
         ).to_dict()
+
+    # Residual FAILs after remediation. These are the findings the QC engine
+    # still asserts about the FINAL text, so a document carrying them is one the
+    # app's own checker says is wrong - most consequentially when two sections
+    # state different sample sizes, or an assumed CV is presented as
+    # literature-derived. The protocol is still persisted (a paid generation is
+    # not thrown away and the author can fix it in the editor), but this list is
+    # what routers/export.py refuses to render a deliverable document from.
+    final_report = qc.get("qc_after") or qc.get("qc_before") or {}
+    qc["blocking_failures"] = [
+        {"section": f.get("section"), "category": f.get("category"),
+         "title": f.get("title"), "detail": f.get("detail")}
+        for f in final_report.get("findings", [])
+        if f.get("status") == QCStatus.FAIL.value
+    ]
 
     return sections, qc, log
 

@@ -682,14 +682,34 @@ def recommend_sample_size(
     rationale = " ".join(bits)
 
     # --- sensitivity table (CV x design x power) -------------------------
+    # The "CV (%)" axis is, by convention, a within-subject (crossover-basis)
+    # value that gets approximated to a between-subject value for the
+    # "parallel" comparison columns via the usual x1.5 factor — but that
+    # convention only holds when THIS recommendation's own design_key really
+    # is within-subject-based (crossover/replicate). When design_key is
+    # "parallel", cv_pct is ALREADY the between-subject basis (there is no
+    # within-subject figure to derive it from), so applying x1.5 again would
+    # double-convert; instead use the axis directly for the parallel columns
+    # and divide by 1.5 for the crossover "what-if" comparison column.
+    if design_key == "parallel":
+        cv_basis_crossover = lambda cv: cv / 1.5
+        cv_basis_parallel = lambda cv: cv
+    else:
+        cv_basis_crossover = lambda cv: cv
+        cv_basis_parallel = lambda cv: cv * 1.5
+
     sensitivity = []
     for cv in [15, 20, 25, 30, 35, 40]:
+        # sample_size_tost(..., design="parallel") returns the TOTAL across
+        # both arms (see its docstring), but this table's header/footnote
+        # state the parallel columns are per-arm — halve it to match. The
+        # internal step size is always 2, so the total is always even.
         row = {
             "cv_pct": cv,
-            "crossover_80": sample_size_tost(cv, gmr=gmr, power=0.80, lower=lower, upper=upper, design="crossover"),
-            "crossover_90": sample_size_tost(cv, gmr=gmr, power=0.90, lower=lower, upper=upper, design="crossover"),
-            "parallel_80": sample_size_tost(cv * 1.5, gmr=gmr, power=0.80, lower=lower, upper=upper, design="parallel"),
-            "parallel_90": sample_size_tost(cv * 1.5, gmr=gmr, power=0.90, lower=lower, upper=upper, design="parallel"),
+            "crossover_80": sample_size_tost(cv_basis_crossover(cv), gmr=gmr, power=0.80, lower=lower, upper=upper, design="crossover"),
+            "crossover_90": sample_size_tost(cv_basis_crossover(cv), gmr=gmr, power=0.90, lower=lower, upper=upper, design="crossover"),
+            "parallel_80": sample_size_tost(cv_basis_parallel(cv), gmr=gmr, power=0.80, lower=lower, upper=upper, design="parallel") // 2,
+            "parallel_90": sample_size_tost(cv_basis_parallel(cv), gmr=gmr, power=0.90, lower=lower, upper=upper, design="parallel") // 2,
         }
         sensitivity.append(row)
 

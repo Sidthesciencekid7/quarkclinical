@@ -16,6 +16,16 @@ REAL clinical failure rather than a cosmetic one:
 * design-awareness (a parallel study has one period and no washout) and
   label-driven applicability (a hepatotoxic drug gets a Hy's Law form) must not
   drift into a generic template.
+
+and, separately from what the engine COMPUTES, what the PROTOCOL is allowed to
+QUOTE. A practising clinical pharmacologist reviewing a generated protocol asked
+for the field-level CRF specification - the dosing log's critical fields (EX),
+the PK sample collection log's critical fields (PC), the adverse event critical
+fields (AE) and the pre-printed PK sample log rows - to come OUT of the protocol
+and live in the separate SAP/CRF-specification document. The default directive
+scope is therefore "protocol", and the tests below pin BOTH halves of that
+contract: the protocol block must not carry the tables, and the engine must
+still produce them for the document that will.
 """
 from __future__ import annotations
 
@@ -725,13 +735,15 @@ def test_output_is_pure_ascii():
     spec = build_crf_spec(design_key="crossover", sampling=_sampling(),
                           label=QT_LABEL)
     json.dumps(spec, ensure_ascii=False).encode("ascii")
+    for scope in ("protocol", "crf", "dmp", "all", "sap"):
+        crf_dmp_directive(spec, scope=scope).encode("ascii")
     crf_dmp_directive(spec).encode("ascii")
 
 
 def test_directive_locks_the_specification_for_the_prompt():
     spec = build_crf_spec(design_key="crossover", sampling=_sampling(),
                           label=HEPATOTOX_LABEL)
-    directive = crf_dmp_directive(spec)
+    directive = crf_dmp_directive(spec, scope="all")
     assert "ALREADY DETERMINED" in directive
     # Every active form must appear.
     for form in spec["forms"]:
@@ -748,10 +760,10 @@ def test_directive_locks_the_specification_for_the_prompt():
 
 
 def test_directive_scope_splits_crf_from_dmp():
-    """No single protocol section needs the whole block, so the integrator must
-    be able to inject only the half that section is about."""
+    """No single document needs the whole block, so the integrator must be able
+    to inject only the half that document is about."""
     spec = build_crf_spec(design_key="crossover", sampling=_sampling())
-    everything = crf_dmp_directive(spec)
+    everything = crf_dmp_directive(spec, scope="all")
     crf_only = crf_dmp_directive(spec, scope="crf")
     dmp_only = crf_dmp_directive(spec, scope="dmp")
 
@@ -774,14 +786,169 @@ def test_scoping_meaningfully_reduces_the_injected_block():
     the property actually being tested.
     """
     spec = build_crf_spec(design_key="crossover", sampling=_sampling())
-    everything = len(crf_dmp_directive(spec))
+    everything = len(crf_dmp_directive(spec, scope="all"))
     crf_only = len(crf_dmp_directive(spec, scope="crf"))
     dmp_only = len(crf_dmp_directive(spec, scope="dmp"))
+    protocol_only = len(crf_dmp_directive(spec, scope="protocol"))
 
     assert crf_only < 0.8 * everything
     assert dmp_only < 0.5 * everything
+    # The protocol quotes a statement, not a specification.
+    assert protocol_only < 0.3 * everything
     # Neither half may quietly grow without bound.
     assert everything < 60000
+    assert protocol_only < 12000
+
+
+# ---------------------------------------------------------------------------
+# THE PROTOCOL SCOPE - what the protocol is allowed to quote
+# ---------------------------------------------------------------------------
+# A protocol is not a case report form specification. The reviewing clinical
+# pharmacologist asked for the CRF field-level content to come out of the
+# protocol and to live in the separate SAP / CRF-specification document. These
+# tests pin that contract from both ends.
+
+
+def _protocol_directive(**kw):
+    spec = build_crf_spec(design_key="crossover", sampling=_sampling(), **kw)
+    return spec, crf_dmp_directive(spec, scope="protocol")
+
+
+def test_protocol_is_the_default_scope():
+    """A caller that just passes the result must get the PROTOCOL rendering.
+
+    services/three_stage_pipeline.py calls the directive with no scope at all,
+    so the default is what actually reaches a generated protocol.
+    """
+    spec = build_crf_spec(design_key="crossover", sampling=_sampling())
+    assert crf_dmp_directive(spec) == crf_dmp_directive(spec, scope="protocol")
+
+
+def test_unknown_scope_falls_back_to_protocol_not_to_everything():
+    """A typo must not dump the whole specification into a protocol."""
+    spec = build_crf_spec(design_key="crossover", sampling=_sampling())
+    assert (crf_dmp_directive(spec, scope="crf_dmp")
+            == crf_dmp_directive(spec, scope="protocol"))
+    assert crf_dmp_directive(spec, scope="") == crf_dmp_directive(spec,
+                                                                  scope="protocol")
+
+
+def test_protocol_scope_omits_every_field_level_specification():
+    """The three domain field lists the reviewer called out by name - the dosing
+    log (EX), the PK sample collection log (PC) and the adverse events form
+    (AE) - must not be rendered into protocol prompt text at all."""
+    spec, directive = _protocol_directive(label=HEPATOTOX_LABEL)
+
+    # Section headers that introduce the specification tables.
+    for header in ("FIELDS ON THE CRITICAL FORMS", "FORMS (title",
+                   "VISIT STRUCTURE", "PROGRAMMED EDIT CHECKS",
+                   "PK SAMPLE LOG - one pre-printed row"):
+        assert header not in directive, f"{header} leaked into the protocol scope"
+
+    # No qualified field reference from ANY form, critical or not. This is the
+    # rendering shape "<form>.<field> | type | units | permitted | required".
+    for form in spec["forms"]:
+        for field in form["fields"]:
+            assert f"{form['key']}.{field['name']}" not in directive, (
+                f"{form['key']}.{field['name']} was rendered into the protocol")
+
+    # And none of the permitted-value vocabulary that only a CRF spec carries.
+    for value in ("K2EDTA plasma", "Definitely related", "Recovered with sequelae",
+                  "Prefilled syringe"):
+        assert value not in directive
+
+
+def test_protocol_scope_omits_the_preprinted_pk_sample_log_rows():
+    """One row per timepoint per period is a form, not protocol prose. The
+    timepoints themselves are stated once, by the sampling schedule engine."""
+    spec, directive = _protocol_directive()
+    assert spec["pk_sample_log_rows"], "fixture must actually have rows"
+    for row in spec["pk_sample_log_rows"]:
+        assert f"[{row['label']}]" not in directive
+        assert f"window {row['window']}" not in directive
+        assert f"{row['index']}. {row['nominal_time_h']} h" not in directive
+
+
+def test_protocol_scope_omits_the_edit_check_catalogue():
+    spec, directive = _protocol_directive()
+    for check in spec["edit_checks"]:
+        assert check["rule"] not in directive
+        assert check["rationale"] not in directive
+
+
+def test_protocol_scope_states_the_crf_and_dmp_in_one_short_statement():
+    """What SHOULD survive: that data are captured on a CRF and managed under a
+    Data Management Plan, plus the conventions a protocol reader needs."""
+    spec, directive = _protocol_directive()
+    assert "ALREADY DETERMINED" in directive
+    assert "electronic case report forms" in directive
+    assert "Data Management Plan" in directive
+    assert "separate controlled document" in directive
+    # The actual-versus-nominal rule is the one CRF fact a protocol must state.
+    assert "actual clock time" in directive
+    assert "nominal times are used for presentation only" in directive
+    # Coding, lock, audit trail and retention are protocol-level statements.
+    assert "MedDRA" in directive and "WHODrug" in directive
+    assert "database lock" in directive.lower()
+    assert "21 CFR Part 11" in directive
+    assert f"{ARCHIVE_RETENTION_YEARS} years" in directive
+
+
+def test_protocol_scope_names_the_excluded_material_explicitly():
+    """Omitting the tables is not enough: a model handed the counts and the
+    domain list will reconstruct them unless it is told not to."""
+    spec, directive = _protocol_directive()
+    assert "DO NOT WRITE INTO THE PROTOCOL" in directive
+    for domain in ("(EX domain)", "(PC domain)", "(AE domain)"):
+        assert domain in directive, f"{domain} exclusion not stated"
+    assert "pre-printed PK Sample Log rows" in directive
+    assert "Statistical Analysis Plan" in directive
+    assert "Critical Fields" in directive
+
+
+def test_protocol_scope_keeps_the_disclosure_obligations():
+    """Trimming what is quoted must not drop what must be disclosed."""
+    spec, directive = _protocol_directive(label=HEPATOTOX_LABEL)
+    assert spec["must_disclose"] is True
+    for flag in spec["flags"]:
+        if flag["must_surface_in_protocol"]:
+            assert flag["message"] in directive
+    for assumption in spec["assumptions"]:
+        assert str(assumption["key"]) in directive
+
+
+def test_protocol_scope_does_not_leak_internal_module_names():
+    """The downstream-analysis coverage statement names this product's own
+    Python modules; that is engineering provenance, not protocol text."""
+    spec, directive = _protocol_directive()
+    assert "services/" not in directive
+    assert "dataset_ingest" not in directive
+    assert "nca.py" not in directive
+
+
+def test_the_engine_still_produces_the_full_specification_for_the_sap():
+    """This is about what the PROTOCOL quotes, not about losing the capability.
+
+    The full specification must remain on the result (the standalone CRF/DMP
+    export is built from it) and must still be renderable for the separate
+    document.
+    """
+    spec = build_crf_spec(design_key="crossover", sampling=_sampling(),
+                          label=HEPATOTOX_LABEL)
+    assert len(spec["pk_sample_log_rows"]) == len(_sampling()["timepoints"])
+    assert spec["n_edit_checks"] >= 25
+    for key in ("ex_dosing", "pc_pk_sample_log", "ae_adverse_events"):
+        form = next(f for f in spec["forms"] if f["key"] == key)
+        assert form["n_fields"] >= 8
+
+    sap = crf_dmp_directive(spec, scope="sap")
+    assert "pc_pk_sample_log.elapsed_time_h" in sap
+    assert "ex_dosing.dose_time" in sap
+    for row in spec["pk_sample_log_rows"]:
+        assert f"{row['nominal_time_h']} h" in sap
+    # "sap" is the same rendering as "crf" under the name of the document that
+    # is going to carry it.
+    assert sap == crf_dmp_directive(spec, scope="crf")
 
 
 def test_hard_check_rationale_is_kept_and_soft_check_rationale_is_dropped():

@@ -14,12 +14,24 @@ the samples are drawn.
 So the calibration range is not a free-text field a writer fills in: it is a
 consequence of the drug's own pharmacokinetics. This module derives it from the
 anticipated Cmax that the literature/label extraction already produced, and
-emits the rest of the validation package (accuracy/precision, selectivity,
+computes the rest of the validation package (accuracy/precision, selectivity,
 matrix effect, carryover, the full stability battery, incurred sample
 reanalysis, sample handling, chain of custody, lab qualification) as structured
-FACTS that the generator narrates rather than invents. Same contract as
-:mod:`services.biostatistics` (sample size) and :mod:`services.stratification`
-(covariate balance).
+FACTS. Same contract as :mod:`services.biostatistics` (sample size) and
+:mod:`services.stratification` (covariate balance).
+
+WHAT THE ENGINE COMPUTES IS NOT WHAT THE PROTOCOL SAYS
+------------------------------------------------------
+The full package is computed and stored, because downstream code depends on it:
+analyte selection and the dilution-integrity reasoning are derived from the
+calibration arithmetic, and protocol QC and the CRF/DMP engine read these keys.
+But only a narrow slice reaches the PROMPT - see ``bioanalytical_directive``.
+Method validation parameters, QC concentrations, the stability battery and the
+incurred sample reanalysis plan belong to the Bioanalytical Method Validation
+report and the Statistical Analysis Plan, which are separate, separately
+approved documents. The clinical protocol states that a validated method will
+be used, which technology and matrix, which analyte carries the conclusion, and
+where the validation evidence lives - and cross-refers for the rest.
 
 THE TWO NUMBERS THAT MATTER, AND WHY THEY ARE WHAT THEY ARE
 -----------------------------------------------------------
@@ -2066,7 +2078,7 @@ def plan_bioanalytical(
         ),
     })
 
-    summary = _summary(crit, calibration, analytes, handling, class_basis)
+    summary = _summary(crit, analytes, handling, class_basis)
 
     return {
         "assay_class": crit.key,
@@ -2093,61 +2105,94 @@ def plan_bioanalytical(
 
 def _summary(
     crit: AssayCriteria,
-    calibration: dict[str, Any],
     analytes: dict[str, Any],
     handling: dict[str, Any],
     class_basis: str,
 ) -> str:
-    """One-paragraph plain statement for the protocol narrative."""
-    lead = (
+    """One-paragraph plain statement for the protocol narrative.
+
+    Scope-limited on purpose, and for the same reason as
+    ``bioanalytical_directive``: this string travels into the prompt as part of
+    the engine's context, so anything it asserts can end up as protocol text.
+    The calibration range, the validation parameters and their acceptance
+    criteria, the QC concentrations, the stability battery and the incurred
+    sample reanalysis plan are owned by the Bioanalytical Method Validation
+    report and the Statistical Analysis Plan; the protocol cross-refers to them
+    instead of restating them. The engine still computes every one of those
+    numbers - see ``plan_bioanalytical`` - they simply are not narrated here.
+
+    (This also removes a defect. The old summary asserted the derived range as
+    "validated over X to Y ng/mL"; for a biologic whose published Cmax is
+    reported in ug/mL the 5%-of-Cmax anchor produced an LLOQ above the Cmax
+    itself, and the protocol's own QC then correctly failed the sentence the
+    app had generated.)
+    """
+    return (
         f"Study samples are analysed by a {crit.label.lower()} at a qualified bioanalytical "
         f"facility, in {handling['matrix'].lower()} collected into "
         f"{handling['collection_tube']}. "
+        "The method is fully validated in accordance with the FDA Bioanalytical Method "
+        "Validation guidance and ICH M10, and the validation report is approved, before the "
+        "first study sample is analysed. "
+        "The validation parameters and their acceptance criteria, the calibration range and "
+        "quality control concentrations, the stability battery and the incurred sample "
+        "reanalysis plan are established by the analytical laboratory and the study "
+        "statistician and are documented in the Bioanalytical Method Validation report and the "
+        "Statistical Analysis Plan, which are approved separately from this protocol. "
+        + analytes["statement"]
+        + f" Assay class basis: {class_basis}."
     )
-    if calibration.get("derived"):
-        rng = (
-            f"The method is validated over {calibration['lloq']:g} to {calibration['uloq']:g} "
-            f"ng/mL, an upper limit {calibration['uloq_margin_x']:.1f}-fold above the anticipated "
-            f"Cmax and a lower limit at {calibration['lloq_pct_of_cmax']:.1f}% of it "
-            f"({calibration['half_lives_quantifiable']:.1f} half-lives of quantifiable decline). "
-        )
-    else:
-        rng = (
-            "The calibration range is not yet established: no anticipated Cmax could be sourced, "
-            "so it must be set during method development against the stated margin rules rather "
-            "than assumed here. "
-        )
-    crit_txt = (
-        f"Accuracy and precision are accepted at +/-{crit.re_pct:.0f}% relative error and "
-        f"<= {crit.cv_pct:.0f}% CV ({crit.re_lloq_pct:.0f}% and {crit.cv_lloq_pct:.0f}% at the "
-        f"LLOQ), and incurred sample reanalysis must agree to within "
-        f"{crit.isr_window_pct:.0f}% for at least {ISR_MIN_PASS_PCT:.0f}% of repeats. "
-    )
-    return lead + rng + crit_txt + analytes["statement"] + f" Assay class basis: {class_basis}."
 
 
 def bioanalytical_directive(plan: dict[str, Any]) -> str:
-    """Render the locked bioanalytical facts as prompt text for the generator.
+    """Render the bioanalytical facts that belong in a CLINICAL PROTOCOL.
 
-    Mirrors ``stratification.stratification_directive`` and
-    ``design_decisions.design_directive``: these are settled facts to narrate,
-    never a menu to re-decide. Concentrations, temperatures, durations and
-    acceptance criteria are the ones a regulator would check, so the model is
-    told explicitly not to round or restate them.
+    SCOPE - DELIBERATELY NARROW
+    ---------------------------
+    The clinical protocol says that a validated method will be used, which assay
+    technology it is, in which matrix, which analyte carries the conclusion, and
+    where the validation evidence lives. That is all.
+
+    Everything that describes HOW the method is validated is excluded here:
+
+    * the validation parameter set - selectivity, specificity, accuracy and
+      precision, extraction recovery, matrix effect, carryover, dilution
+      integrity, dilutional linearity / parallelism;
+    * quality control samples - how many, at what levels, at what concentrations;
+    * the stability battery - bench-top, freeze-thaw, long-term frozen,
+      processed-sample / autosampler, stock solution, whole blood;
+    * the incurred sample reanalysis plan - its percentages, sample counts,
+      selection rule and acceptance criterion.
+
+    Those belong to the Bioanalytical Method Validation report and the
+    Statistical Analysis Plan. They are separate documents, authored by the
+    analytical laboratory and the study statistician and approved on their own
+    cycles. Copying their content into the protocol does not make the protocol
+    stronger - it creates a second, uncontrolled copy of numbers those documents
+    own, and every later divergence between the two becomes a protocol
+    deviation on a point the protocol had no business fixing.
+
+    This is a change to what reaches the PROMPT only. ``plan_bioanalytical``
+    still computes the whole package: it drives analyte selection and the
+    dilution-integrity reasoning, and other code (protocol QC, the CRF/DMP
+    engine) reads those keys.
     """
     if not plan:
         return ""
-    cal = plan.get("calibration") or {}
-    crit = plan.get("criteria") or {}
     lines = [
-        "BIOANALYTICAL METHOD - ALREADY DETERMINED. The assay, its calibration "
-        "range, acceptance criteria, stability battery, sample handling and "
-        "incurred-sample-reanalysis plan below are settled facts computed from "
-        "this drug's own pharmacokinetics and label. Narrate them EXACTLY; do "
-        "NOT invent, round, rescale or recalculate any concentration, "
-        "temperature, duration, percentage or acceptance criterion, and do not "
-        "add a number that does not appear here.",
-        f"Assay: {plan.get('assay_class_label', '')} (basis: {plan.get('assay_class_basis', '')}).",
+        "BIOANALYTICAL METHOD - ALREADY DETERMINED, AND DELIBERATELY BRIEF. "
+        "Write ONE SHORT PARAGRAPH covering only: that study samples will be "
+        "analysed by a fully validated method, which assay technology that is, "
+        "in which matrix the samples are collected, which analyte(s) are "
+        "measured, and that the validation evidence is held in the "
+        "Bioanalytical Method Validation report and the Statistical Analysis "
+        "Plan. Narrate the facts below EXACTLY; do NOT invent, round, rescale "
+        "or recalculate anything, and do NOT introduce a number, table or "
+        "acceptance criterion that does not appear here.",
+        f"Assay: {plan.get('assay_class_label', '')} "
+        f"(basis: {plan.get('assay_class_basis', '')}). The method is fully "
+        "validated, and the validation report approved, before the first study "
+        "sample is analysed.",
     ]
 
     handling = plan.get("sample_handling") or {}
@@ -2160,23 +2205,29 @@ def bioanalytical_directive(plan: dict[str, Any]) -> str:
             f"{handling.get('matrix_basis', '')}"
         )
 
-    if cal.get("derived"):
-        lines.append(
-            f"Calibration range: LLOQ {cal['lloq']:g} ng/mL to ULOQ {cal['uloq']:g} ng/mL, with a "
-            f"minimum of {cal.get('min_calibration_standards')} non-zero standards plus a blank "
-            f"and a zero. {cal.get('statement', '')}"
-        )
-        qc = "; ".join(
-            f"{q['label']} {q['concentration']:g} ng/mL ({q['basis']})"
-            for q in cal.get("qc_levels", [])
-        )
-        if qc:
-            lines.append(f"Quality controls: {qc}.")
-    else:
-        lines.append(
-            "Calibration range: NOT DETERMINED. " + cal.get("statement", "")
-            + " State this as to be established; do NOT state a numeric LLOQ or ULOQ."
-        )
+    # NO NUMERIC CALIBRATION RANGE IN THE PROTOCOL.
+    #
+    # The LLOQ, ULOQ and QC concentrations are set by the bioanalytical
+    # laboratory during method development and validation, and are recorded in
+    # the Bioanalytical Method Validation report - a separate, separately-approved
+    # document. They are out of scope for the clinical protocol.
+    #
+    # Deriving them here from a literature Cmax also produced a wrong answer in
+    # practice: for a biologic whose published Cmax is expressed in ug/mL, the
+    # 5%-of-Cmax anchor yielded an LLOQ ABOVE the Cmax itself, which the QC engine
+    # then correctly flagged as a FAIL. The engine still computes the range
+    # internally (it drives the analyte and dilution-integrity reasoning), but it
+    # is no longer asserted as protocol text.
+    lines.append(
+        "Calibration range: do NOT state any numeric LLOQ, ULOQ or QC concentration "
+        "anywhere in the protocol. State only that the method will be validated over a "
+        "calibration range established during method development, that the range will "
+        "span the anticipated concentrations arising from the dose studied, and that "
+        "the validated range and QC levels are documented in the Bioanalytical Method "
+        "Validation report held by the analytical laboratory. Setting those "
+        "concentrations is the laboratory's responsibility and is outside the scope of "
+        "this clinical protocol."
+    )
 
     analytes = plan.get("analytes") or {}
     if analytes:
@@ -2195,60 +2246,47 @@ def bioanalytical_directive(plan: dict[str, Any]) -> str:
                 "that an enantiomer-specific assay is required."
             )
 
-    if crit:
-        lines.append(
-            f"Acceptance criteria: accuracy +/-{crit.get('re_pct', 0):.0f}% and precision "
-            f"<= {crit.get('cv_pct', 0):.0f}% CV at low/medium/high QC; "
-            f"+/-{crit.get('re_lloq_pct', 0):.0f}% and <= {crit.get('cv_lloq_pct', 0):.0f}% at the "
-            "LLOQ. Carryover in a blank after the ULOQ standard <= 20% of the LLOQ response and "
-            "<= 5% of the internal-standard response."
-        )
-
-    dil = plan.get("dilution") or {}
-    if dil:
-        lines.append(
-            f"Dilution: a {dil.get('factor')}-fold dilution is validated. "
-            f"{dil.get('reportable_ceiling', '')}"
-        )
-
-    stability = [s for s in plan.get("stability", []) if s.get("applicable")]
-    if stability:
-        lines.append("Stability battery (all required):")
-        for s in stability:
-            line = f"  - {s['label']}: {s['condition']} Acceptance: {s['acceptance']}"
-            if s.get("note"):
-                line += f" Note: {s['note']}"
-            lines.append(line)
-
-    isr = plan.get("isr") or {}
-    if isr:
-        lines.append(
-            f"Incurred sample reanalysis: {isr.get('rule', '')} {isr.get('acceptance', '')} "
-            f"{isr.get('selection', '')} {isr.get('conduct', '')}"
-        )
-
+    # Immunogenicity is kept because ADA/NAb status is a clinical endpoint of a
+    # biosimilar PK study and its sampling happens in the clinic - but only the
+    # TIERED STRATEGY, which is protocol content. The assay's own validation
+    # elements (sensitivity floor, drug tolerance, prozone assessment) are
+    # method-validation parameters and stay in the BMV report with the rest.
     imm = plan.get("immunogenicity")
     if imm:
         tiers = " -> ".join(t["tier"] for t in imm.get("tiers", []))
         lines.append(
-            f"Immunogenicity assays (tiered): {tiers}. "
-            + " ".join(imm.get("validation_elements", []))
+            f"Immunogenicity: samples are tested using a tiered strategy ({tiers}). "
+            "State the strategy only - the assay cut points, sensitivity, drug "
+            "tolerance and other validation parameters are documented in the "
+            "immunogenicity method validation report, not in this protocol."
         )
 
     lab = plan.get("lab_qualification") or {}
     if lab:
         lines.append(
             f"Bioanalytical facility: {lab.get('facility', '')} - state it as a placeholder to be "
-            "completed; do not invent a laboratory name. Cross-validation applies when "
-            + (lab.get("cross_validation", {}) or {}).get("required_when", "")
+            "completed; do not invent a laboratory name."
         )
 
-    assumptions = plan.get("assumptions") or []
-    if assumptions:
-        lines.append(
-            "Assumptions to disclose in the text: "
-            + "; ".join(
-                f"{a['applies_to']} - {a['why']}" for a in assumptions
-            )
-        )
+    # The single most important instruction in this directive. Without an
+    # explicit prohibition the model reaches for its own training and writes the
+    # BMV tables anyway, because every protocol it has ever seen contains them.
+    lines.append(
+        "OUT OF SCOPE FOR THIS PROTOCOL - do NOT include any of the following, "
+        "in prose or in a table: (a) method validation parameters - "
+        "selectivity, specificity, accuracy and precision, extraction recovery, "
+        "matrix effect, carryover, dilution integrity, dilutional linearity or "
+        "parallelism, and their acceptance criteria; (b) quality control "
+        "samples - their number, levels or concentrations; (c) any stability "
+        "testing - bench-top / short-term, freeze-thaw, long-term frozen, "
+        "processed-sample / autosampler, stock solution or whole-blood "
+        "stability, and their conditions or acceptance criteria; (d) incurred "
+        "sample reanalysis (ISR) - its percentages, sample counts, selection "
+        "rule or acceptance criterion. These are established by the analytical "
+        "laboratory and the study statistician and are documented in the "
+        "Bioanalytical Method Validation report and the Statistical Analysis "
+        "Plan, which are approved separately from this protocol. Cross-refer to "
+        "those documents in a single sentence; do NOT reproduce their content, "
+        "and do NOT render any of it as a table."
+    )
     return "\n".join(lines)

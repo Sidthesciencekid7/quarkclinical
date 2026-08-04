@@ -17,6 +17,27 @@ CLINICAL error rather than a cosmetic one:
 * a whole-blood analyte must not be centrifuged into plasma;
 * everything must round-trip through json.dumps (it is persisted to JSONB) and
   stay pure ASCII (this repo's Windows console is cp1252).
+
+AND ONE THING THE ENGINE MUST *NOT* PUT IN THE PROTOCOL
+-------------------------------------------------------
+A practising clinical pharmacologist reviewing real generated protocols asked
+for the method-validation content to come OUT: "Exclude items related to the
+statistical analysis plan (SAP) in the protocol as they are not needed.
+Bioanalytical method is in SAP / QC samples also in SAP / Stability Battery /
+Incurred Sample Reanalysis (ISR)."
+
+That is not tidiness. The Bioanalytical Method Validation report and the SAP are
+separate documents on their own approval cycles. Fixing their numbers in the
+clinical protocol creates a second, uncontrolled copy of them: the moment the
+validated method differs from what the protocol committed to, the study has a
+protocol deviation on a point the protocol had no business deciding.
+
+So the contract is two-sided, and the tests below pin BOTH sides - the material
+is ABSENT from the prompt directive, and still PRESENT in the engine's result
+(analyte selection and dilution-integrity reasoning are derived from the
+calibration arithmetic, and services/protocol_qc.py and services/crf_dmp.py read
+those keys). Deleting the data model to pass the first half would be a
+regression, not a fix.
 """
 from __future__ import annotations
 
@@ -26,15 +47,19 @@ import re
 import pytest
 
 from services.bioanalytical import (
+    BENCHTOP_STABILITY_HOURS,
     CHROMATOGRAPHIC,
     DEFAULT_STORAGE_TEMP_C,
     DILUTION_INTEGRITY_FACTOR,
+    FREEZE_THAW_CYCLES,
     ISR_FIRST_TIER_PCT,
     ISR_FIRST_TIER_SAMPLES,
     ISR_MIN_PASS_PCT,
     ISR_SECOND_TIER_PCT,
     LIGAND_BINDING,
     LLOQ_FRACTION_OF_CMAX,
+    LONG_TERM_STABILITY_MONTHS,
+    PROCESSED_SAMPLE_STABILITY_HOURS,
     ULOQ_MARGIN_FACTOR,
     _PARAMETERS,
     _STABILITY,
@@ -707,23 +732,51 @@ def test_directive_locks_the_facts_for_the_prompt():
         pk_parameters=[_cmax(100.0)], label=PLAIN_LABEL, drug_inn="testdrug")
     directive = bioanalytical_directive(plan)
     assert "ALREADY DETERMINED" in directive
-    cal = plan["calibration"]
-    assert f"{cal['lloq']:g}" in directive and f"{cal['uloq']:g}" in directive
     assert "do NOT invent" in directive
-    for token in ("Incurred sample reanalysis", "Stability battery", "Matrix:"):
-        assert token in directive
+    assert "Matrix:" in directive
+    # Stability battery and incurred sample reanalysis are Bioanalytical Method
+    # Validation / Statistical Analysis Plan content - deliberately excluded from
+    # the clinical-protocol directive. See
+    # test_directive_never_puts_a_numeric_calibration_range_in_the_protocol.
+    for token in ("Incurred sample reanalysis", "Stability battery"):
+        assert token not in directive
     # Empty input yields no directive rather than a misleading empty header.
     assert bioanalytical_directive({}) == ""
 
 
-def test_directive_states_no_numeric_range_when_none_was_derived():
-    """The worst failure mode: the model filling a missing calibration range with
-    a plausible-looking number. The directive must forbid it explicitly."""
-    plan = plan_bioanalytical(pk_parameters=[], label=PLAIN_LABEL, drug_inn="testdrug")
-    directive = bioanalytical_directive(plan)
-    assert "NOT DETERMINED" in directive
-    assert "do NOT state a numeric LLOQ or ULOQ" in directive
-    assert "Quality controls:" not in directive
+def test_directive_never_puts_a_numeric_calibration_range_in_the_protocol():
+    """Setting the LLOQ/ULOQ is the analytical laboratory's job, recorded in the
+    Bioanalytical Method Validation report - a separate, separately-approved
+    document. It is out of scope for the clinical protocol.
+
+    This is pinned because deriving it here was also getting it WRONG: for a
+    biologic whose published Cmax is reported in ug/mL, the 5%-of-Cmax anchor
+    produced an LLOQ ABOVE the Cmax, which the protocol's own QC then flagged as
+    a FAIL. The engine still derives the range internally (it drives analyte
+    selection and dilution-integrity reasoning) - it just must not be asserted
+    as protocol text.
+    """
+    for pk in ([_cmax(100.0)], []):  # range derivable, and not derivable
+        plan = plan_bioanalytical(
+            pk_parameters=pk, label=PLAIN_LABEL, drug_inn="testdrug")
+        directive = bioanalytical_directive(plan)
+
+        assert "do NOT state any numeric LLOQ" in directive
+        assert "Bioanalytical Method Validation report" in directive
+        assert "Quality controls:" not in directive
+
+        # The derived numbers must not leak into the prompt in any form.
+        cal = plan.get("calibration") or {}
+        for key in ("lloq", "uloq"):
+            val = cal.get(key)
+            if isinstance(val, (int, float)) and val:
+                assert f"{val:g} ng/mL" not in directive, (
+                    f"{key}={val:g} ng/mL leaked into the protocol directive")
+        for q in cal.get("qc_levels") or []:
+            conc = q.get("concentration")
+            if isinstance(conc, (int, float)) and conc:
+                assert f"{conc:g} ng/mL" not in directive, (
+                    f"QC {conc:g} ng/mL leaked into the protocol directive")
 
 
 def test_summary_reads_as_protocol_prose():

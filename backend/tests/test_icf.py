@@ -261,6 +261,39 @@ def test_clinicaltrials_gov_applicability_is_reported_honestly():
     assert patient["required"] is True
 
 
+def test_the_consent_form_keeps_its_clause_while_the_protocol_drops_the_topic():
+    """The PROTOCOL no longer carries any ClinicalTrials.gov / FDAAA 801 /
+    42 CFR 11.10 paragraph (see services/safety_reporting.py). The CONSENT FORM
+    is a DIFFERENT document with a DIFFERENT legal basis - 21 CFR 50.25(c)
+    prescribes this exact sentence for the consent document - so it stays here.
+
+    This test pins both halves of that distinction so a later blanket-delete
+    cannot strip the statutory clause out of the consent form by mistake.
+    """
+    icf = build_icf(_be_context())
+
+    # (1) The consent form KEEPS the statutory clause, verbatim, in its own
+    #     section, and that section is the only place the subject reads it.
+    section = _section(icf, "clinicaltrials_gov")
+    assert section["body"] == [_STATUTORY_CT_GOV_TEXT]
+    assert section["applicable"] is True
+    assert "50.25(c)" in section["cfr_refs"]
+
+    # (2) The FDAAA 801 / 42 CFR 11.10 applicability reasoning is an INTERNAL
+    #     audit record only. It never appears in prose the subject reads.
+    body_text = _all_text(icf)
+    for internal in ("fdaaa", "42 cfr 11.10", "phase 1"):
+        assert internal not in body_text, (
+            f"'{internal}' is engine reasoning, not consent-form text")
+
+    # (3) Nor does it reach the generation prompt, where it could be narrated
+    #     back into the protocol's Ethics section.
+    directive = icf_directive(icf)
+    assert "FDAAA" not in directive
+    assert "42 CFR 11.10" not in directive
+    assert "not strictly caught" not in directive
+
+
 # ---------------------------------------------------------------------------
 # Cross-document consistency - the ICF cannot disagree with its protocol
 # ---------------------------------------------------------------------------

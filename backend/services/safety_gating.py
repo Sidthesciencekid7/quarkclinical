@@ -37,10 +37,43 @@ dangerous in both directions:
   documented joint Sponsor/Investigator review and IRB/IEC notification.
 
 The one exception to count-scaling is deliberate and is pinned by a test: a
-single Grade 4 (life-threatening) or Grade 5 (fatal) related event, a related
-SAE, or a confirmed Hy's Law case halts dosing IMMEDIATELY at any N. A fraction
-rule that would tolerate several life-threatening events before halting in a
-large study is not a safety rule, it is an arithmetic accident.
+single related serious adverse event - which by definition includes any related
+Grade 4 (life-threatening) or Grade 5 (fatal) event - or a confirmed Hy's Law
+case halts dosing IMMEDIATELY at any N. A fraction rule that would tolerate
+several life-threatening events before halting in a large study is not a safety
+rule, it is an arithmetic accident.
+
+EACH TRIGGER IS STATED ONCE, AT THE LEVEL WHERE IT ACTS
+-------------------------------------------------------
+A reviewing pharmacologist read a generated biosimilar protocol and found the
+stopping rules repetitive: the same clinical event appeared as several rules
+that differed only in wording. Repetition is not a cosmetic problem in a safety
+section - a monitor who has to reconcile three rows to make one decision at
+3 a.m. is being slowed down by the document, and a reviewer who learns that the
+rules restate each other starts skimming the ones that do not.
+
+Two mechanisms keep it out:
+
+* STRUCTURAL. Where one trigger is a strict subset of another AND the action is
+  the same, the catalogue carries a single rule whose trigger names both limbs.
+  Grade 4 IS "life-threatening" and Grade 5 IS "death", which are two of the six
+  ICH E2A seriousness criteria, so a separate "Grade 4/5" withdrawal rule and a
+  separate "serious adverse event" withdrawal rule were one rule written twice.
+  They are now one rule at each level (``ind_sae``, ``coh_related_sae``).
+
+* CONDITIONAL (``_RULE_MERGES``). Where the overlap only exists for some
+  studies, the narrower rule is dropped at assembly time IF the broader one is
+  actually present, and the drop is recorded in ``suppressed_rules`` with its
+  reason. Anaphylaxis is serious by definition, so a standalone cohort
+  anaphylaxis halt duplicates the related-SAE halt - but only in a parenteral
+  study, because in an oral study the anaphylaxis rule is not there at all.
+
+What is NEVER merged is a difference in ACTION. "This subject receives no
+further study drug" and "no further subject is dosed" are the two decisions the
+whole module exists to keep apart; two rules that share a trigger but act at
+different levels are not duplicates, they are the pair. Nor is a numeric
+threshold ever lost to a merge: the surviving rule carries every number both
+rules carried.
 
 DESIGN AWARENESS
 ----------------
@@ -348,26 +381,45 @@ class SafetyRule:
 
 
 _CORE_INDIVIDUAL: tuple[SafetyRule, ...] = (
+    # MERGED RULE. This was two catalogue entries - "Life-threatening or fatal
+    # adverse event" (ind_grade4_or_5) and "Serious adverse event"
+    # (ind_sae) - until a reviewing pharmacologist pointed out that they are one
+    # rule written twice: CTCAE Grade 4 IS "life-threatening" and Grade 5 IS
+    # "death", which are two of the six ICH E2A seriousness criteria, and both
+    # entries carried the identical action (this subject receives no further
+    # study drug). Both limbs of the trigger are named below, so nothing a
+    # monitor could act on was lost; only the second row was.
     SafetyRule(
-        key="ind_grade4_or_5",
+        key="ind_sae",
         scope="individual",
         tier=1,
-        label="Life-threatening or fatal adverse event",
+        label="Serious, life-threatening or fatal adverse event",
         trigger=(
             "The subject experiences any CTCAE v5.0 Grade 4 (life-threatening) or Grade 5 "
-            "(fatal) adverse event, irrespective of causality assessment."
+            "(fatal) adverse event, or any other event meeting an ICH E2A seriousness "
+            "criterion - death, life-threatening, inpatient hospitalisation or its "
+            "prolongation, persistent or significant disability/incapacity, congenital "
+            "anomaly, or an important medical event requiring intervention to prevent one "
+            "of these - irrespective of causality assessment."
         ),
         action=(
-            "Immediate permanent discontinuation of study drug for this subject and "
-            "immediate emergency management per the unit's standard operating procedures. "
-            "This event also independently triggers the cohort halting rule."
+            "Immediate permanent discontinuation of study drug for this subject"
+            "{redose_clause}, with immediate Investigator assessment and emergency "
+            "management per the unit's standard operating procedures. Notify the Sponsor "
+            "within 24 hours, report on an expedited basis per 21 CFR 312.32, and follow "
+            "the event until resolution, stabilisation, or a documented stable chronic "
+            "outcome. Where the event is assessed as related, the single-event cohort "
+            "halting rule applies in addition."
         ),
         rationale=(
-            "At this severity no further exposure of the individual can be justified, and "
-            "in a study without therapeutic benefit the event is by itself sufficient "
-            "evidence to stop exposing anyone else pending review."
+            "Severity and seriousness are independent axes, but Grade 4 and Grade 5 sit "
+            "inside the seriousness definition, so listing them as a separate withdrawal "
+            "rule gave a monitor two rows to reconcile for one decision. At either "
+            "boundary the subject is not re-exposed while the event is characterised, and "
+            "in a study with no prospect of therapeutic benefit there is no counterweight "
+            "that could justify a further dose."
         ),
-        evidence="CTCAE v5.0 grade definitions; ICH E6(R2) 6.4.7",
+        evidence="ICH E2A; 21 CFR 312.32; ICH E6(R2) 6.4.7; CTCAE v5.0 grade definitions",
         applies_when="Always",
     ),
     SafetyRule(
@@ -393,31 +445,6 @@ _CORE_INDIVIDUAL: tuple[SafetyRule, ...] = (
             "the separate, counted cohort rule is for."
         ),
         evidence="ICH E6(R2) 6.4.7 subject withdrawal criteria; CTCAE v5.0",
-        applies_when="Always",
-    ),
-    SafetyRule(
-        key="ind_sae",
-        scope="individual",
-        tier=1,
-        label="Serious adverse event (any causality)",
-        trigger=(
-            "The subject experiences any event meeting an ICH E2A seriousness criterion: "
-            "death, life-threatening, inpatient hospitalisation or its prolongation, "
-            "persistent or significant disability/incapacity, congenital anomaly, or an "
-            "important medical event requiring intervention to prevent one of these."
-        ),
-        action=(
-            "No further study drug for this subject{redose_clause}, immediate Investigator "
-            "assessment, notification of the Sponsor within 24 hours and expedited "
-            "regulatory reporting per 21 CFR 312.32, and follow-up until resolution, "
-            "stabilisation, or a documented stable chronic outcome."
-        ),
-        rationale=(
-            "Seriousness is an outcome classification independent of severity; a subject "
-            "who has met one of these outcomes is not re-exposed while the event is being "
-            "characterised, regardless of the grade assigned."
-        ),
-        evidence="ICH E2A; 21 CFR 312.32; ICH E6(R2) 6.4.7",
         applies_when="Always",
     ),
     SafetyRule(
@@ -1518,7 +1545,9 @@ def _redose_clause(design_key: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _discharge_criteria(route: str, design_key: str) -> dict[str, Any]:
+def _discharge_criteria(
+    route: str, design_key: str, *, omit: frozenset[str] = frozenset()
+) -> dict[str, Any]:
     """Objective conditions for releasing a dosed subject from confinement.
 
     Every line is something a nurse can verify at the bedside and record. The
@@ -1526,6 +1555,11 @@ def _discharge_criteria(route: str, design_key: str) -> dict[str, Any]:
     protocol that lists only clinical parameters lets a subject leave on a
     nurse's reading of a checklist, which is not what ICH E6 investigator
     responsibility means.
+
+    ``omit`` drops criteria by key. It exists so a discharge gate cannot outlive
+    the stopping rule it belongs to: when QT gating is suppressed for a
+    monoclonal antibody, a QTcF discharge threshold would be the only mention of
+    QT left in the protocol - a bedside check with no rule behind it.
     """
     vitals = (
         "Vital signs within the following ranges on two measurements at least "
@@ -1656,6 +1690,9 @@ def _discharge_criteria(route: str, design_key: str) -> dict[str, Any]:
             "thresholds": {"direct_observation_hours": _INJECTION_DIRECT_OBSERVATION_HOURS},
         })
 
+    if omit:
+        criteria = [c for c in criteria if c.get("key") not in omit]
+
     return {
         "criteria": criteria,
         "authorisation": (
@@ -1707,6 +1744,7 @@ def recommend_safety_gating(
     route: Optional[str] = None,
     dropout_rate: Optional[float] = None,
     healthy_volunteers: bool = True,
+    is_biologic: bool = False,
 ) -> dict[str, Any]:
     """Build the pre-specified safety gating rules for THIS study.
 
@@ -1804,8 +1842,34 @@ def recommend_safety_gating(
     rendered: dict[str, dict[str, Any]] = {}
     escalations: list[dict[str, str]] = []
 
+    # Rules that exist only because a small molecule has a hepatic metabolic
+    # burden. A therapeutic protein is catabolised to amino acids by ubiquitous
+    # proteolysis; it does not produce the reactive metabolites that drive
+    # idiosyncratic DILI, and Hy's Law was derived from - and is validated for -
+    # small-molecule hepatocellular injury. Carrying these into a biosimilar
+    # protocol pads the safety section with thresholds that will never be met and
+    # trains reviewers to skim the rules that DO matter (anaphylaxis,
+    # injection-site reactions, immunogenicity).
+    _SMALL_MOLECULE_ONLY = {
+        "ind_hys_law",
+        "coh_hys_law",
+        "ind_hepatic_discontinuation",
+        "ind_hepatic_predose_gate",
+    }
+    # QT gating exists because small molecules block the hERG potassium channel -
+    # a lipophilic-small-molecule mechanism. A monoclonal antibody is far too
+    # large to enter the channel pore, so routine QT stopping rules are dead text
+    # for a biologic. Kept only when the label itself reports a QT signal, which
+    # _detect_risk_topics will have found.
+    if is_biologic and "qt_prolongation" not in risk_topics and not is_nti:
+        _SMALL_MOLECULE_ONLY |= {"ind_qt_prolongation", "coh_qt_count", "ind_qt_predose_gate"}
+    suppressed: list[str] = []
+
     def _add(rule: SafetyRule, because: str = "") -> None:
         if rule.key in rendered:
+            return
+        if is_biologic and rule.key in _SMALL_MOLECULE_ONLY:
+            suppressed.append(rule.key)
             return
         rendered[rule.key] = _render(rule, subs, because)
 
@@ -1881,6 +1945,23 @@ def recommend_safety_gating(
                 "before any further subject is dosed; the boxed-warning hazard is covered "
                 "by the matching risk rules above and is stated explicitly in the "
                 "risk/benefit section."
+            ),
+        })
+    if is_biologic and suppressed:
+        escalations.append({
+            "key": "biologic_modality",
+            "reason": (
+                "The product is a therapeutic protein, catabolised to amino acids by "
+                "ubiquitous proteolysis rather than metabolised hepatically."
+            ),
+            "effect": (
+                "Hy's Law and the FDA DILI liver-chemistry discontinuation thresholds are "
+                "NOT applied: they were derived for small-molecule hepatocellular injury "
+                "and cannot be met by this mechanism. Liver chemistry remains part of "
+                "routine safety monitoring and any clinically significant abnormality is "
+                "still captured by the adverse-event and Investigator-judgement rules. "
+                "Gating focuses instead on hypersensitivity/anaphylaxis, injection-site "
+                "reactions and immunogenicity."
             ),
         })
     if not healthy_volunteers:
@@ -1968,8 +2049,19 @@ def recommend_safety_gating(
                 "qtcf_max_ms": _DISCHARGE_QTCF_MAX_MS,
             },
         },
-        "discharge_criteria": _discharge_criteria(detected_route, design),
+        # A discharge gate must not outlive the stopping rule it belongs to: with
+        # QT gating suppressed for a monoclonal antibody, a QTcF discharge
+        # threshold would be the only QT mention left in the document.
+        "discharge_criteria": _discharge_criteria(
+            detected_route, design,
+            omit=frozenset({"ecg"}) if "ind_qt_prolongation" in suppressed else frozenset(),
+        ),
         "escalations": escalations,
+        # Which rules were withheld and why. Exposed rather than silently dropped
+        # so a reviewer can see that (for example) Hy's Law was considered and
+        # deliberately not applied to a therapeutic protein - and so _summary can
+        # avoid describing boundaries this study does not have.
+        "suppressed_rules": suppressed,
         "label_findings": {
             "risk_topics": risk_topics,
             "boxed_warning_detected": boxed,
@@ -1985,7 +2077,14 @@ def recommend_safety_gating(
                 "prescribing information."
             ),
         },
-        "assumptions": _assumptions(withdrawal_fraction),
+        # Drop the QT halting-count assumption alongside the QT rules themselves -
+        # disclosing a convention for a boundary the protocol no longer contains
+        # is exactly the dead text the suppression exists to remove.
+        "assumptions": _assumptions(
+            withdrawal_fraction,
+            omit=frozenset({"qt_halt_subject_count"})
+            if "ind_qt_prolongation" in suppressed else frozenset(),
+        ),
         "review_and_resumption": (
             "Every halt is recorded with its trigger, the date and time, and the subjects "
             "affected. Dosing resumes only after a documented joint written review by the "
@@ -2001,14 +2100,20 @@ def recommend_safety_gating(
     return result
 
 
-def _assumptions(withdrawal_fraction: float) -> list[dict[str, Any]]:
+def _assumptions(
+    withdrawal_fraction: float, *, omit: frozenset[str] = frozenset()
+) -> list[dict[str, Any]]:
     """The values no guideline fixes, surfaced so the protocol can disclose them.
 
     A number the protocol states as if it were a regulatory requirement, when it
     is really unit practice, is the kind of thing that unravels at an inspection.
     Each entry names the value and says what it rests on.
+
+    ``omit`` drops entries by key. An assumption behind a suppressed rule must go
+    with it: disclosing a QT halting count for a monoclonal antibody that has no
+    QT rule reintroduces the dead text the suppression removed.
     """
-    return [
+    entries = [
         {
             "key": "related_grade3_halt_fraction",
             "value": f"{_HALT_RELATED_G3_FRACTION:.0%} of planned dosed subjects, "
@@ -2096,6 +2201,9 @@ def _assumptions(withdrawal_fraction: float) -> list[dict[str, Any]]:
             ),
         },
     ]
+    if omit:
+        entries = [e for e in entries if e.get("key") not in omit]
+    return entries
 
 
 def _summary(result: dict[str, Any], is_nti: Optional[bool], boxed: bool) -> str:
@@ -2114,21 +2222,38 @@ def _summary(result: dict[str, Any], is_nti: Optional[bool], boxed: bool) -> str
           "cumulative counts and no halt is lifted without documented Sponsor and "
           "Investigator review."
     )
+    # The summary must describe the rules this study ACTUALLY has. Naming a QT
+    # boundary or a Hy's Law case for a monoclonal antibody - whose QT and
+    # hepatic rules were suppressed as mechanistically inapplicable - would put
+    # back, in the one paragraph everybody reads, exactly the dead text the
+    # suppression removed.
+    suppressed_keys = set(result.get("suppressed_rules") or ())
+    qt_gated = "ind_qt_prolongation" not in suppressed_keys
+    hepatic_gated = "ind_hys_law" not in suppressed_keys
+
+    qt_clause = (
+        f"if {counts['qt_boundary_subjects_halt']} or more meet the QT boundary (QTcF > "
+        f"{_QTCF_ABSOLUTE_STOP_MS:.0f} ms or an increase > {_QTCF_DELTA_STOP_MS:.0f} ms "
+        f"from baseline), " if qt_gated else ""
+    )
     counted = (
         f" Dosing of further subjects halts if {counts['related_grade3_halt']} or more "
-        f"subjects {denom} experience a related Grade >= 3 event, if "
-        f"{counts['qt_boundary_subjects_halt']} or more meet the QT boundary (QTcF > "
-        f"{_QTCF_ABSOLUTE_STOP_MS:.0f} ms or an increase > {_QTCF_DELTA_STOP_MS:.0f} ms "
-        f"from baseline), if {counts['same_event_grade2_cluster_halt']} or more report the "
+        f"subjects {denom} experience a related Grade >= 3 event, "
+        f"{qt_clause}"
+        f"if {counts['same_event_grade2_cluster_halt']} or more report the "
         f"same related Grade >= 2 event, or if {counts['ae_withdrawal_halt']} or more are "
         "withdrawn for adverse events."
     )
-    immediate = (
-        " Independently of any count, a single related Grade 4 or Grade 5 event, a single "
-        "related serious adverse event, or a single confirmed Hy's Law case (ALT or AST >= "
+    hys_clause = (
+        ", or a single confirmed Hy's Law case (ALT or AST >= "
         f"{_HYS_LAW_AMINOTRANSFERASE_ULN_X:.0f} x ULN with total bilirubin >= "
         f"{_HYS_LAW_BILIRUBIN_ULN_X:.0f} x ULN, ALP < "
-        f"{_HYS_LAW_ALP_MAX_ULN_X:.0f} x ULN and no alternative explanation) halts dosing "
+        f"{_HYS_LAW_ALP_MAX_ULN_X:.0f} x ULN and no alternative explanation)"
+        if hepatic_gated else ""
+    )
+    immediate = (
+        " Independently of any count, a single related Grade 4 or Grade 5 event, a single "
+        f"related serious adverse event{hys_clause} halts dosing "
         "immediately at any sample size."
     )
     stakes = ""
@@ -2168,51 +2293,77 @@ def safety_gating_directive(gating: dict[str, Any]) -> str:
         return ""
 
     lines = [
-        "SAFETY GATING RULES - these are ALREADY DETERMINED. Narrate them exactly as "
-        "given; do NOT add, drop, merge, re-rank, round, or soften any of them, and do "
-        "NOT invent a threshold, count, or timeframe that is not stated here.",
+        # The instruction below used to read "narrate them exactly as given", which
+        # made the model reproduce every ~90-word trigger verbatim and turned the
+        # safety section into several pages of near-duplicate prose. What must be
+        # preserved is the SET of rules and every NUMBER in them - not the wording.
+        # A stopping rule a monitor cannot find at 2am is not a safety control.
+        "SAFETY GATING RULES - these are ALREADY DETERMINED. Reproduce every rule and "
+        "every numeric threshold, count and timeframe EXACTLY; never invent, round, "
+        "soften or omit one. But express each one CONCISELY - compress the supplied "
+        "wording into the shortest form that keeps the trigger unambiguous and the "
+        "action actionable. Do not copy the source phrasing verbatim, and do not pad "
+        "with justification: this section is operative instruction, not discussion.",
         f"Overview: {gating.get('summary', '')}",
     ]
 
     grading = gating.get("grading_scale") or {}
     if grading:
+        # CTCAE is a published, universally-available scale. Reproducing all five
+        # full definitions is padding every reviewer skips - name the scale, give
+        # the one-word grade titles, and carry only the protocol-specific
+        # consequences, which is the part that is NOT in CTCAE.
         lines.append(
-            f"AE SEVERITY GRADING - {grading.get('name', '')} "
-            f"({grading.get('citation', '')}). Present the five grades as a table with the "
-            "definition and the protocol consequence for each:"
+            f"AE SEVERITY GRADING - state in ONE sentence that adverse events are graded by "
+            f"{grading.get('name', '')} ({grading.get('citation', '')}). Do NOT reproduce the "
+            "full CTCAE definitions - it is a published scale and copying it wastes the "
+            "reader's attention. Give a compact table of Grade | Title | Protocol "
+            "consequence ONLY:"
         )
         for g in grading.get("grades", []):
             lines.append(
-                f"  Grade {g['grade']} ({g['title']}): {g['definition']} "
-                f"Protocol consequence: {g['protocol_action']}"
+                f"  Grade {g['grade']} ({g['title']}) -> {g['protocol_action']}"
             )
-        lines.append(f"  Severity vs seriousness: {grading.get('severity_vs_seriousness', '')}")
-        lines.append(f"  Causality: {grading.get('causality_basis', '')}")
+        lines.append(
+            "  Then, in no more than two sentences total, state the severity-vs-seriousness "
+            f"distinction and the causality basis: {grading.get('severity_vs_seriousness', '')} "
+            f"{grading.get('causality_basis', '')}"
+        )
 
+    # Rendered as TABLE ROWS, not prose, and WITHOUT the per-rule rationale.
+    # The rationale explains why this engine selected the rule; it is provenance
+    # for the author, not protocol content, and reproducing 19 of them turned the
+    # safety section into several pages a reviewer will skim. A stopping rule is
+    # operative text: the trigger and the action are what a site acts on.
     lines.append(
         "INDIVIDUAL SUBJECT STOPPING RULES - these withdraw ONE subject from further "
-        "dosing and never, by themselves, stop the study. Present them as their own "
-        "list, separate from the halting rules:"
+        "dosing and never, by themselves, stop the study. Render as a COMPACT HTML "
+        "<table> with columns: Rule | Trigger | Action. One row per rule, no "
+        "introductory paragraph, and do NOT add a rationale column - the trigger and "
+        "the action are the operative content. Keep every numeric threshold verbatim. "
+        "TARGET ONE SHORT SENTENCE PER CELL: state the threshold and what happens, and "
+        "stop. Where several rules share an action (for example 'no further study drug "
+        "for this subject'), state it once in the Action cell rather than re-explaining "
+        "the consequence each time:"
     )
     for i, r in enumerate(gating.get("individual_rules", []), 1):
-        line = f"  I{i}. {r['label']} - TRIGGER: {r['trigger']} ACTION: {r['action']}"
-        if r.get("rationale"):
-            line += f" Rationale: {r['rationale']}"
-        if r.get("added_because"):
-            line += f" (included because: {r['added_because']})"
-        lines.append(line)
+        lines.append(
+            f"  I{i}. {r['label']} | TRIGGER: {r['trigger']} | ACTION: {r['action']}"
+        )
 
     lines.append(
         "COHORT / STUDY HALTING RULES - these stop ANY further subject being dosed. "
-        "Present them as a SEPARATE list and never merge them with the individual rules:"
+        "Render as a SECOND compact <table> with the same three columns, kept separate "
+        "from the individual rules (the distinction is what a monitor acts on). Again "
+        "no rationale column and no preamble, and the same one-short-sentence-per-cell "
+        "target. Do NOT restate an individual rule here in different words - if a "
+        "trigger already appears in the individual table, this table states only the "
+        "cohort-level count or threshold that stops the whole study:"
     )
     for i, r in enumerate(gating.get("cohort_rules", []), 1):
-        line = f"  H{i}. {r['label']} - TRIGGER: {r['trigger']} ACTION: {r['action']}"
-        if r.get("rationale"):
-            line += f" Rationale: {r['rationale']}"
-        if r.get("added_because"):
-            line += f" (included because: {r['added_because']})"
-        lines.append(line)
+        lines.append(
+            f"  H{i}. {r['label']} | TRIGGER: {r['trigger']} | ACTION: {r['action']}"
+        )
 
     if gating.get("review_and_resumption"):
         lines.append(f"HALT REVIEW AND RESUMPTION: {gating['review_and_resumption']}")

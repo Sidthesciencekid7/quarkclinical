@@ -1143,78 +1143,41 @@ def _check_bioanalytical(add: _Add, sections: dict[str, str],
     stated_lloq = _parse_conc_ng(text, _LLOQ_LABEL)
     stated_uloq = _parse_conc_ng(text, _ULOQ_LABEL)
 
-    if not derived:
-        # The engine could not source a Cmax, so it deliberately emitted no
-        # numeric range. A number in the text was therefore invented.
-        if stated_lloq or stated_uloq:
-            add(QCFinding(id="bioanalytical_range", category="Bioanalytical",
-                title="Calibration range stated but never derived", status=QCStatus.FAIL,
-                detail=f"No anticipated Cmax could be sourced, so the engine left the "
-                       f"calibration range to be set during method development. The "
-                       f"generated text nonetheless states a numeric range "
-                       f"(LLOQ {stated_lloq or 'n/s'} ng/mL, ULOQ "
-                       f"{stated_uloq or 'n/s'} ng/mL). That figure has no source and "
-                       f"must be removed or replaced with the validated range once the "
-                       f"method exists.",
-                section="study_assessments"))
-        else:
-            add(QCFinding(id="bioanalytical_range", category="Bioanalytical",
-                title="Calibration range deferred to method development",
-                status=QCStatus.ASSUMPTION,
-                detail="No anticipated Cmax was available, so no calibration range was "
-                       "derived and none is asserted in the text. Confirm the range at "
-                       "method validation.",
-                section="study_assessments"))
+    # The calibration range is the bioanalytical laboratory's to set during
+    # method development and validation; it belongs in the BMV report, not the
+    # clinical protocol. So the check is now inverted: ANY numeric LLOQ/ULOQ in
+    # the protocol text is the defect, whether or not the engine derived one.
+    #
+    # This also removes a check that fired wrongly in practice. For a biologic
+    # with a ug/mL Cmax the 5%-of-Cmax anchor produced an LLOQ above the Cmax
+    # itself, and the old "LLOQ too high" FAIL was reporting a number the app
+    # had generated against a rule the app had also generated - noise, not a
+    # finding about the protocol.
+    if stated_lloq or stated_uloq:
+        add(QCFinding(id="bioanalytical_range", category="Bioanalytical",
+            title="Protocol states a numeric calibration range",
+            status=QCStatus.FAIL,
+            detail=f"The text states a numeric assay range (LLOQ "
+                   f"{stated_lloq or 'not stated'}, ULOQ {stated_uloq or 'not stated'} "
+                   f"ng/mL). The LLOQ, ULOQ and QC concentrations are established by the "
+                   f"analytical laboratory during method validation and are recorded in "
+                   f"the Bioanalytical Method Validation report, which is approved "
+                   f"separately from this protocol. Committing the study to a specific "
+                   f"concentration here creates a protocol deviation the moment the "
+                   f"validated method differs. State only that a validated method will "
+                   f"be used and that its range is documented in the BMV report.",
+            section="study_assessments"))
     else:
-        lo_ok = _states_number(text, lloq)
-        hi_ok = _states_number(text, uloq)
-        if lo_ok and hi_ok:
-            add(QCFinding(id="bioanalytical_range", category="Bioanalytical",
-                title="Calibration range stated as derived", status=QCStatus.PASS,
-                detail=f"The derived range {lloq:g}-{uloq:g} ng/mL appears in the "
-                       f"generated text"
-                       + (f" and brackets the anticipated Cmax of {cmax:g} ng/mL."
-                          if cmax is not None else "."),
-                section="study_assessments"))
-        else:
-            missing = []
-            if not lo_ok:
-                missing.append(f"LLOQ {lloq:g} ng/mL" if lloq is not None else "LLOQ")
-            if not hi_ok:
-                missing.append(f"ULOQ {uloq:g} ng/mL" if uloq is not None else "ULOQ")
-            add(QCFinding(id="bioanalytical_range", category="Bioanalytical",
-                title="Calibration range not stated", status=QCStatus.WARNING,
-                detail=f"The derived calibration range is not written out in the "
-                       f"generated text (missing: {', '.join(missing)}). The assay's "
-                       f"working range is a protocol commitment, not a laboratory "
-                       f"detail.",
-                section="study_assessments"))
+        add(QCFinding(id="bioanalytical_range", category="Bioanalytical",
+            title="Calibration range correctly left to method validation",
+            status=QCStatus.PASS,
+            detail="No numeric LLOQ or ULOQ is asserted in the protocol. The range is "
+                   "the analytical laboratory's to establish and is documented in the "
+                   "Bioanalytical Method Validation report.",
+            section="study_assessments"))
 
     # Consistency of whatever range the text DOES state against the exposure.
     if cmax is not None and cmax > 0:
-        bad_hi = sorted({v for v in stated_uloq if v < cmax})
-        if bad_hi:
-            add(QCFinding(id="bioanalytical_uloq_vs_cmax", category="Bioanalytical",
-                title="Stated ULOQ is below the anticipated Cmax", status=QCStatus.FAIL,
-                detail=f"The text states a ULOQ of "
-                       f"{', '.join(f'{v:g}' for v in bad_hi)} ng/mL while the "
-                       f"anticipated Cmax is {cmax:g} ng/mL. Every peak sample would "
-                       f"read above the calibration range, so Cmax - the primary "
-                       f"endpoint - could not be reported without a dilution the method "
-                       f"has not been validated for.",
-                section="study_assessments"))
-        bad_lo = sorted({v for v in stated_lloq if v > cmax * 0.05})
-        if bad_lo:
-            add(QCFinding(id="bioanalytical_lloq_vs_cmax", category="Bioanalytical",
-                title="Stated LLOQ is too high for the terminal phase",
-                status=QCStatus.FAIL,
-                detail=f"The text states an LLOQ of "
-                       f"{', '.join(f'{v:g}' for v in bad_lo)} ng/mL, i.e. "
-                       f"{max(bad_lo) / cmax * 100:.1f}% of the anticipated Cmax of "
-                       f"{cmax:g} ng/mL. Above 5% the terminal phase falls below "
-                       f"quantitation too early to estimate lambda_z, so AUC(0-inf) and "
-                       f"t1/2 become unestimable.",
-                section="study_assessments"))
         contradictions = []
         if len({round(v, 6) for v in stated_lloq}) > 1:
             contradictions.append(
@@ -1643,6 +1606,50 @@ def _check_ddi(add: _Add, sections: dict[str, str],
                    "another route. This is boilerplate carried over from another "
                    "protocol.",
             section="population"))
+    # --- Biologic-specific -------------------------------------------------
+    # A therapeutic protein is catabolised by proteolysis, so a CYP or
+    # transporter restriction can only be boilerplate; and subjects MUST be
+    # naive to the molecule, because pre-existing anti-drug antibodies both
+    # depress exposure and make treatment-emergent immunogenicity unscoreable.
+    if str(ddi.get("modality") or "").lower() == "biologic":
+        cyp_win = _windows(
+            text, ("cyp", "cytochrome", "p450", "transporter", "p-gp", "oatp"), radius=200)
+        if cyp_win and re.search(
+                r"prohibit|not permitted|must not|washout|exclu|restrict", cyp_win, re.I):
+            add(QCFinding(id="ddi_biologic_cyp", category="Interactions",
+                title="CYP or transporter restriction imposed for a biologic",
+                status=QCStatus.FAIL,
+                detail="The text imposes a cytochrome-P450 or drug-transporter "
+                       "restriction, but the study drug is a therapeutic protein. It is "
+                       "cleared by proteolytic catabolism and FcRn recycling, not by "
+                       "P450 enzymes or the transporters those clauses name, so the "
+                       "restriction cannot apply and is boilerplate carried over from a "
+                       "small-molecule protocol. Stating the drug is NOT a P450 "
+                       "substrate is correct; restricting comedications on that basis "
+                       "is not.",
+                section="population"))
+        if ddi.get("requires_naive_subjects"):
+            naive_win = _windows(
+                text, ("naive", "naïve", "prior exposure", "previously received",
+                       "previous exposure", "anti-drug antibod", "pre-existing"),
+                radius=260)
+            if not (naive_win and re.search(
+                    r"exclu|must not|prohibit|ineligible|not eligible", naive_win, re.I)):
+                add(QCFinding(id="ddi_biologic_naive", category="Population",
+                    title="Biologic-naive requirement missing from exclusion criteria",
+                    status=QCStatus.FAIL,
+                    detail="This is a biologic PK-similarity study, so subjects must be "
+                           "naive to the reference product, the proposed biosimilar and "
+                           "any other biologic against the same target - but no such "
+                           "exclusion appears. Prior exposure can leave anti-drug "
+                           "antibodies that persist for years; they accelerate clearance "
+                           "and depress exposure, biasing the Test/Reference comparison "
+                           "in whichever arm the affected subject falls, and a "
+                           "baseline-positive subject cannot be scored for "
+                           "treatment-emergent immunogenicity at all. The exclusion must "
+                           "be stated and confirmed by a baseline ADA sample.",
+                    section="population"))
+
     smoke_win = _windows(text, ("tobacco", "smok", "caffeine", "xanthine"), radius=200)
     if smoke_win and re.search(r"cyp|induc|inhibit|metaboli", smoke_win):
         if "tobacco" not in row_keys and "xanthines" not in row_keys:

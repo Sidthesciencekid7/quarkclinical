@@ -28,6 +28,8 @@ from services.randomization import randomization_directive
 from services.safety_gating import safety_gating_directive
 from services.safety_reporting import safety_reporting_directive
 from services.sampling_schedule import sampling_schedule_directive
+from services.stratification import stratification_directive
+from services.literature_service import regulatory_sources_directive, regulatory_extraction_hint
 
 from typing import Any
 
@@ -210,8 +212,12 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "blood volume here; those figures must match Study Assessments verbatim. If no "
             "sampling schedule is supplied, describe the PK sampling qualitatively without "
             "quoting specific timepoint counts or volumes. "
-            "In part 7 (Statistical Methods), whenever you quote the within-subject CV used to "
-            "power the study, its provenance MUST match the CV PROVENANCE line in the locked "
+            "In part 7 (Statistical Methods), whenever you quote the CV used to power the "
+            "study, use the correct term for the locked design: 'within-subject CV' for a "
+            "crossover or replicate design, or 'between-subject CV' for a parallel design (a "
+            "parallel design has no within-subject comparison) — read the design from the "
+            "locked design parameters and do not default to 'within-subject' unconditionally. "
+            "Its provenance MUST match the CV PROVENANCE line in the locked "
             "design parameters: if that line says the CV is INVESTIGATOR-SPECIFIED, write that "
             "it was specified by the investigator/sponsor and do NOT describe it as literature-"
             "derived, pooled from published studies, or supported by a table of prior trials; "
@@ -251,7 +257,10 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "Reference template, Section 2 — Study Rationale and Risk/Benefit Assessment "
             "(2.1 Rationale for Study, 2.2 Risk/Benefit Assessment)"
         ),
-        "context_keys": ["drug_inn", "study_type", "population_config", "pk_parameters", "label_data"],
+        "context_keys": [
+            "drug_inn", "study_type", "population_config", "pk_parameters", "label_data",
+            "regulatory_sources",
+        ],
         "instructions": (
             "Write TWO subsections using <h2> headings: "
             "1) **Rationale for Study** — why this study compares Test vs Reference using the "
@@ -259,7 +268,13 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "or pk_parameters; explain why healthy subjects are used (to avoid the variability of "
             "exposure seen in patients with underlying disease/concomitant medication); if the "
             "terminal half-life (t_half in pk_parameters) is long, state that this is WHY a "
-            "parallel-group design (no washout) was selected rather than a crossover; "
+            "parallel-group design (no washout) was selected rather than a crossover. WHEN a "
+            "`regulatory_sources` object or LOCKED FACTS - REGULATORY ASSESSMENT-REPORT EVIDENCE "
+            "block is supplied and lists a referenced source, you MAY cite it in support of the "
+            "dose/PK rationale — attributed to the PMID of the retrieved paper that reports it "
+            "(e.g. 'PMID <id> reports data from the EMA EPAR'), never phrased as though this "
+            "protocol consulted the assessment report itself. If no source is referenced, do not "
+            "mention any regulatory assessment report; "
             "2) **Risk/Benefit Assessment** — state the risk profile is expected to be consistent "
             "with the reference product given structural/biological similarity (biosimilar) or "
             "established pharmacology (small molecule); reference that safety screening "
@@ -350,8 +365,11 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "4) **End of Study** — definition of the EOS visit and its assessment window "
             "(+2 days), and that early-termination subjects undergo the same EOS procedures at "
             "their last visit. "
-            "Justify the chosen design from the drug's within-subject variability, narrow-"
-            "therapeutic-index status, and terminal half-life in pk_parameters. Explain the "
+            "Justify the chosen design from the drug's terminal half-life, narrow-therapeutic-"
+            "index status, and — for a crossover or replicate design — its within-subject "
+            "variability; for a PARALLEL design, state plainly that there is no within-subject "
+            "comparison at all and the design is instead powered on the drug's between-subject "
+            "variability, which is why it needs more subjects. Explain the "
             "trade-off explicitly: a crossover (or replicate) removes between-subject variability "
             "(each subject is their own control), so it needs FEWER subjects and is faster and "
             "more efficient and is PREFERRED when feasible; however, it requires a washout of at "
@@ -359,7 +377,8 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "(e.g. a monoclonal antibody/fusion protein with a multi-week half-life) the washout "
             "becomes impractical (often many weeks to months) and raises immunogenicity/period-"
             "effect confounding — in that case a parallel-group design is the only feasible "
-            "choice despite needing more subjects. A REPLICATE design (partial for highly-"
+            "choice despite needing more subjects, because it must instead be powered on "
+            "between-subject variability. A REPLICATE design (partial for highly-"
             "variable drugs, full for NTI drugs) is used instead of a plain 2-period crossover "
             "specifically to let the statistical analysis estimate each formulation's own within-"
             "subject variability (required for reference-scaling) — state this reason explicitly "
@@ -374,7 +393,10 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "6.3 Subject Withdrawal/Discontinuation and Replacement; 6.4 Study or Study Site "
             "Termination); ICH E6(R2) Section 4.3"
         ),
-        "context_keys": ["population_config", "sample_size", "ddi", "safety_gating"],
+        "context_keys": [
+            "population_config", "sample_size", "ddi", "safety_gating", "stratification",
+            "randomization",
+        ],
         "instructions": (
             "Write FOUR subsections using <h2> headings, in this exact order: "
             "1) **Subject Selection Criteria** — open with one sentence on the eligibility-review "
@@ -386,14 +408,29 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "population_config), BMI 18.50-29.99 kg/m^2, healthy male/female with contraception "
             "requirements for subjects of childbearing potential, normal/not-clinically-significant "
             "clinical laboratory values, negative HIV-1/2 + HBV + HCV serology, normal/NCS "
-            "physical exam + vital signs + 12-lead ECG, non-smoker status, and ability to provide "
-            "informed consent. Exclusion MUST cover: inability to consent, alcohol/drug abuse or "
+            "physical exam + vital signs + 12-lead ECG, and ability to provide "
+            "informed consent. For a SMALL-MOLECULE study (study_type 'BE' or 'food_effect'), "
+            "Inclusion MUST ALSO cover non-smoker status. For a biosimilar_pk/biologic study, do "
+            "NOT include a non-smoker requirement or any other smoking-related eligibility "
+            "criterion here — smoking status has no mechanism for a therapeutic protein and a "
+            "`stratification` object or LOCKED STRATIFICATION block, when present, states this "
+            "explicitly as a prohibition; follow it rather than defaulting to the small-molecule "
+            "template. "
+            "Exclusion MUST cover: inability to consent, alcohol/drug abuse or "
             "recent use, use of any investigational product within 30 days or 5 half-lives "
             "(whichever longer), recent prescription/OTC/herbal medication use, recent vaccination, "
             "significant acute or chronic illness, hypersensitivity to the drug class or "
             "formulation excipients, clinically significant abnormal vital signs at "
             "screening/check-in (give the specific BP/pulse/respiratory-rate/temperature bounds), "
             "difficult venipuncture history, and recent blood donation. "
+            "WHEN a `stratification` object is present in context or a LOCKED STRATIFICATION "
+            "block is supplied and it carries `suppressed_factors` (modality-excluded factors for "
+            "a biologic), do NOT derive an inclusion or exclusion criterion from any of those "
+            "excluded factors (in particular: no non-smoker requirement, no metabolizer- or "
+            "transporter-genotype screening or exclusion, no proton-pump-inhibitor/H2-blocker/"
+            "antacid restriction on absorption grounds, and no ancestry-based restriction on "
+            "pharmacogenetic grounds) — these are ALREADY DETERMINED not to apply to this "
+            "product. "
             "THEN, when a `ddi` object is present in context or a LOCKED PROHIBITED AND "
             "RESTRICTED CONCOMITANT MEDICATIONS block is supplied, the medication-related "
             "exclusion criteria MUST come from it and ONLY from it: add one exclusion "
@@ -414,8 +451,11 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "3) **Subject Withdrawal/Discontinuation and Replacement** — numbered list of "
             "withdrawal circumstances (consent withdrawal; AE/safety concern; protocol violation; "
             "non-compliance; prohibited-treatment use; lost to follow-up; death; other justifiable "
-            "reason), documentation requirements, and state the replacement policy: subjects "
-            "withdrawn after randomization/dosing are NOT replaced. "
+            "reason), documentation requirements, and state the replacement policy. WHEN a "
+            "`randomization` object is present in context or a LOCKED RANDOMIZATION AND BLINDING "
+            "block is supplied and its replacement-of-withdrawals fact states a rule, narrate "
+            "THAT rule exactly — do not restate or paraphrase a different policy. OTHERWISE, "
+            "default to: subjects withdrawn after randomization/dosing are NOT replaced. "
             "When a LOCKED SAFETY GATING RULES block is supplied, the safety-driven withdrawal "
             "circumstances in this list MUST be the engine's INDIVIDUAL SUBJECT STOPPING RULES, "
             "reproduced with their EXACT triggers and numeric thresholds, rather than a generic "
@@ -489,8 +529,11 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "dosage form and manufacturer; "
             "3) **Management of Clinical Supplies** — THREE <h3> sub-subsections "
             "'Study Drug Packaging, Labeling, and Storage' (label contents, storage temperature), "
-            "'Study Drug Preparation and Administration' (fasting requirement, dose, route, "
-            "injection/administration site and technique, post-dose fasting), "
+            "'Study Drug Preparation and Administration' (dose, route, technique, and — for an "
+            "ORAL small-molecule product only — the fasting requirement and post-dose fasting "
+            "window; for a parenteral biologic/SC or IV product, describe the injection/infusion "
+            "site, technique and post-dose observation instead, and do NOT impose a fasting "
+            "requirement, since there is no oral absorption for fasting to standardise), "
             "'Study Drug Accountability, Dispensing, and Destruction'; "
             "4) **Treatment Compliance** — confirmation and documentation of full-dose "
             "administration; "
@@ -518,8 +561,13 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "different quantities and must not be harmonised into one number. Where a "
             "post-dose restriction window is given, state it. If no such block is supplied, "
             "write this subsection generically as before; "
-            "7) **Subject Restrictions During the Study** — meal schedule, water restriction "
-            "around dosing, alcohol/recreational-drug restriction, post-dose activity restriction."
+            "7) **Subject Restrictions During the Study** — for an ORAL small-molecule product, "
+            "meal schedule and water restriction around dosing (standardising GI absorption); for "
+            "a parenteral biologic, there is no food effect or oral absorption to standardise, so "
+            "omit the meal-schedule/water-restriction language and instead state the standard meal "
+            "schedule for safety/tolerability and any injection-site care instruction (e.g. avoid "
+            "rubbing or applying pressure to the injection site); either way, cover alcohol/"
+            "recreational-drug restriction and post-dose activity restriction."
         ),
     },
     "study_assessments": {
@@ -795,7 +843,7 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
         ),
         "context_keys": [
             "pk_parameters", "study_type", "acceptance_criteria", "cv_intra",
-            "sample_size", "meta_analysis",
+            "sample_size", "meta_analysis", "regulatory_sources", "randomization",
         ],
         "instructions": (
             "Write the complete statistical analysis plan, tailored to study_type, as ELEVEN <h2> "
@@ -825,8 +873,13 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "only if a valid primary parameter can still be derived; (d) a subject who discontinues "
             "for NON-COMPLIANCE (dosing error, protocol deviation affecting PK, emesis within a "
             "pre-specified window for oral products, or lost to follow-up) is excluded from the "
-            "Per-Protocol/PK Set; (e) subjects withdrawn or discontinued after dosing are NOT "
-            "replaced; sensitivity analyses with and without excluded subjects will be reported; "
+            "Per-Protocol/PK Set; (e) state the replacement policy for subjects withdrawn or "
+            "discontinued after dosing. WHEN a `randomization` object is present in context or a "
+            "LOCKED RANDOMIZATION AND BLINDING block is supplied and its replacement-of-"
+            "withdrawals fact states a rule, narrate THAT rule exactly and do not additionally "
+            "state they are not replaced; OTHERWISE default to: subjects withdrawn or "
+            "discontinued after dosing are NOT replaced; sensitivity analyses with and without "
+            "excluded/replaced subjects will be reported; "
             "4) **Immunogenicity Analyses** — ONLY if study_type is 'biosimilar_pk': descriptive "
             "ADA/NAb incidence, titre, and an exploratory comparison of PK between ADA-positive and "
             "ADA-negative subjects. Omit entirely for non-biosimilar study types; "
@@ -835,12 +888,17 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "laboratory tests, vital signs, ECG, physical examination, and (for a biologic) "
             "injection/infusion-site reactions and concomitant medications; "
             "6) **Sample Size Determination** — FIRST read the CV PROVENANCE line in the locked "
-            "design parameters; it decides how this subsection justifies the within-subject CV, "
-            "and it overrides the default wording below. "
+            "design parameters; it decides how this subsection justifies the CV, and it "
+            "overrides the default wording below. THROUGHOUT this subsection, state the CV used "
+            "to power the study using the correct term for the locked design: 'within-subject "
+            "CV' for a crossover or replicate design, or 'between-subject CV' for a parallel "
+            "design (a parallel design has no within-subject comparison) — read the design from "
+            "the locked design parameters and do not default to 'within-subject' "
+            "unconditionally. "
             "(a) DEFAULT / LITERATURE-DERIVED CV (the CV PROVENANCE line says the CV is "
-            "literature-derived, or no such line is present): the within-subject CV used to "
+            "literature-derived, or no such line is present): the CV used to "
             "power the study is the "
-            "HIGHEST within-subject CV observed for either Cmax or AUC across published "
+            "HIGHEST CV observed for either Cmax or AUC across published "
             "single-dose PK studies IN THE SAME POPULATION THIS PROTOCOL ENROLS — read the "
             "protocol population from the META-ANALYSIS locked block and name it explicitly "
             "(healthy volunteers, or the patient population); never assume healthy volunteers. "
@@ -850,12 +908,20 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "sentence that it was reviewed and deliberately not adopted, and why. Taken as a "
             "conservative basis. If the locked design parameters include a 'cv_table' (a list of "
             "trials with their source, population, parameter, and CV%), render it as an HTML "
-            "<table> with columns Study/Source | Population | Parameter | Within-subject CV% and a "
+            "<table> with columns Study/Source | Population | Parameter | Within-subject CV% — "
+            "keep this EXACT column header regardless of THIS protocol's own design, because "
+            "every literature value in this table is a within-subject/intra-subject CV from a "
+            "crossover or replicate study — and add a "
             "final row identifying the maximum CV adopted; explicitly state which study and which "
-            "parameter (Cmax vs AUC) gave the highest CV. "
+            "parameter (Cmax vs AUC) gave the highest CV. When the locked design is PARALLEL, add "
+            "one further sentence directly beneath the table stating plainly that these "
+            "tabulated literature values are within-subject CVs from crossover/replicate "
+            "studies — informative evidence, but not on the same basis as, and not directly "
+            "comparable to, this study's own between-subject CV assumption. "
             "(b) INVESTIGATOR-SPECIFIED CV (the CV PROVENANCE line says the CV is "
             "investigator-specified / a sponsor override): state plainly, in one sentence, that "
-            "the within-subject CV used for powering was specified by the investigator/sponsor "
+            "the CV used for powering (using the correct within-/between-subject term for the "
+            "locked design) was specified by the investigator/sponsor "
             "rather than derived from the published literature, give the value, and state that "
             "its justification is the sponsor's own (for example internal or pilot data) and is "
             "held outside this protocol. In this case you MUST NOT render the 'cv_table' at "
@@ -868,7 +934,12 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "(c) ASSUMED CV (the CV is marked 'assumed' because no value was available): say so "
             "and note that values from FDA/EMA reviews, AUSPAR, and Japanese (PMDA) or Chinese "
             "(NMPA) registration studies should be sought to confirm it; do not present a "
-            "cv_table as its provenance. "
+            "cv_table as its provenance. WHEN a `regulatory_sources` object or LOCKED FACTS - "
+            "REGULATORY ASSESSMENT-REPORT EVIDENCE block is supplied, follow its SOURCE RULE "
+            "exactly: if it lists a referenced source, name it and attribute the statement to the "
+            "PMID of the retrieved paper that reports it, never as though this protocol consulted "
+            "the assessment report directly; if it reports NO referenced source, say plainly that "
+            "no such regulatory-report evidence was retrieved rather than inventing one. "
             "In every case: state the assumed GMR, target power, and "
             "significance level EXACTLY as given in the locked design parameters, the planned "
             "enrolment (with dropout allowance) and the resulting evaluable N. State simply that the "
@@ -903,7 +974,9 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "META-ANALYSIS OF PUBLISHED PK STUDIES locked block), append an <h2> subsection "
             "titled 'Appendix: Meta-Analysis of Published Pharmacokinetic Studies'. Render EVERY "
             "row of the locked table as an HTML <table> with columns "
-            "Study | Indication | AUC | Cmax | Within-subject CV%, in the locked order. "
+            "Study | Indication | AUC | Cmax | Within-subject CV%, in the locked order — keep "
+            "this EXACT column header regardless of THIS protocol's own design, because every "
+            "CV in this appendix is a within-subject/intra-subject literature value. "
             "Reproduce the values EXACTLY as supplied — do NOT recompute, round, convert units, "
             "reorder, add studies, or drop studies. Where the locked table says 'not reported', "
             "write 'Not reported' in that cell; NEVER fill an empty cell from your own knowledge, "
@@ -913,8 +986,13 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "excluded from the sample-size determination because they do not describe the "
             "population this protocol enrols. Close with one sentence naming the adopted CV, the "
             "study it came from, and the fact that it is the highest among population-matched "
-            "studies. State the search basis honestly: these are the studies retrieved by the "
-            "literature search, not a claim of exhaustive systematic review."
+            "studies. When the locked design is PARALLEL, add one further sentence stating "
+            "plainly that every CV in this appendix table is a within-subject value from "
+            "crossover or replicate literature studies, offered as informative context only — "
+            "not on the same basis as, and not directly comparable to, this protocol's own "
+            "between-subject CV assumption. State the search basis honestly: these are the "
+            "studies retrieved by the literature search, not a claim of exhaustive systematic "
+            "review."
         ),
     },
     "ethics": {
@@ -1043,7 +1121,11 @@ class AIService:
     # ------------------------------------------------------------------
 
     async def extract_pk_parameters(
-        self, literature: list[dict], drug_inn: str, label_text: str | None = None
+        self,
+        literature: list[dict],
+        drug_inn: str,
+        label_text: str | None = None,
+        regulatory_plan: dict[str, Any] | None = None,
     ) -> list[dict]:
         """Extract PK parameters from literature abstracts and the FDA label.
 
@@ -1053,6 +1135,14 @@ class AIService:
         the FDA-approved label — which reliably reports terminal half-life, Tmax
         and Cmax that PubMed abstracts often omit. This materially raises the yield
         of t_half / Tmax / CV, which drive washout, sampling and sample size.
+
+        ``regulatory_plan`` (the ``plan_regulatory_sources()`` result, when the
+        caller ran the regulatory-targeted literature query) is rendered via
+        ``regulatory_extraction_hint`` and appended to the prompt when it has
+        anything to say, so values an abstract attributes to a regulatory
+        assessment report are prioritised for extraction. Returns "" (no hint
+        appended) when no source was referenced, so this is a no-op for every
+        existing caller that does not pass it.
 
         Set MOCK_AI=1 to skip the API call and return no parameters, so the full
         pipeline (sample size via CV-assumption, sections, export) runs without
@@ -1087,7 +1177,9 @@ class AIService:
             messages=[
                 {
                     "role": "user",
-                    "content": _build_extraction_prompt(docs, drug_inn),
+                    "content": _build_extraction_prompt(
+                        docs, drug_inn, regulatory_extraction_hint(regulatory_plan)
+                    ),
                 }
             ],
         )
@@ -1194,7 +1286,9 @@ class AIService:
 # ---------------------------------------------------------------------------
 
 
-def _build_extraction_prompt(literature: list[dict], drug_inn: str) -> str:
+def _build_extraction_prompt(
+    literature: list[dict], drug_inn: str, regulatory_hint: str = ""
+) -> str:
     blocks = []
     for item in literature:
         pmid = item.get("pmid", "UNKNOWN")
@@ -1223,7 +1317,8 @@ def _build_extraction_prompt(literature: list[dict], drug_inn: str) -> str:
         "source_pmid 'DAILYMED'.\n"
         "7. Normalize time-based parameters (t_half, Tmax) to HOURS (days×24, minutes÷60) "
         "and put 'h' in `unit`.\n\n"
-        f"Literature:\n\n{joined}\n\n"
+        + (f"{regulatory_hint}\n\n" if regulatory_hint else "")
+        + f"Literature:\n\n{joined}\n\n"
         "Call record_pk_parameters with all parameters you can identify."
     )
 
@@ -1330,6 +1425,23 @@ def cv_is_user_override(ss: dict[str, Any] | None) -> bool:
     return any(marker in src for marker in _CV_OVERRIDE_MARKERS)
 
 
+def _cv_basis_label(design_key: str | None) -> str:
+    """The correct name for the CV that powers this study, given its design.
+
+    A crossover or replicate design genuinely compares each subject against
+    themselves, so the powering CV is within-subject (intra-subject). A
+    PARALLEL design has no within-subject comparison at all -- the CV that
+    powers it is a between-subject (inter-subject) quantity, and calling it
+    "within-subject" is a real, regulator-visible contradiction (confirmed in
+    a live generated document). Any unrecognised/missing design_key falls
+    back to "within-subject" to preserve behavior for callers that predate
+    this helper.
+    """
+    if design_key == "parallel":
+        return "between-subject"
+    return "within-subject"
+
+
 def _cv_provenance_lines(ss: dict[str, Any]) -> list[str]:
     """The CV PROVENANCE locked-fact line, or nothing.
 
@@ -1339,8 +1451,9 @@ def _cv_provenance_lines(ss: dict[str, Any]) -> list[str]:
     """
     if not cv_is_user_override(ss):
         return []
+    basis = _cv_basis_label(ss.get("design_key"))
     return [
-        "- CV PROVENANCE: INVESTIGATOR-SPECIFIED. The within-subject CV above was "
+        f"- CV PROVENANCE: INVESTIGATOR-SPECIFIED. The {basis} CV above was "
         "supplied by the investigator/sponsor; it was NOT derived from the "
         "published literature. State that plainly wherever the CV is quoted "
         "(Statistical Analysis Plan, synopsis). Do NOT render the literature "
@@ -1369,7 +1482,8 @@ def _locked_design_directive(ss: dict[str, Any] | None) -> str:
         f"- Acceptance limits: {ss['lower_limit']*100:.2f}-{ss['upper_limit']*100:.2f}% "
         "for the 90% CI of the Test/Reference geometric mean ratio",
         f"- Co-primary endpoints: {ss['endpoint']}",
-        f"- Assumed within-subject CV: {ss['cv_pct']}% (source: {ss['cv_source']})",
+        f"- Assumed {_cv_basis_label(ss.get('design_key'))} CV: {ss['cv_pct']}% "
+        f"(source: {ss['cv_source']})",
         *_cv_provenance_lines(ss),
         f"- True GMR assumption: {ss['gmr']:.2f}; Power: {ss['power']*100:.0f}%; "
         f"alpha: {ss['alpha']}",
@@ -1445,10 +1559,27 @@ _ENGINE_DIRECTIVE_PLAN: dict[str, tuple[tuple[str, Any], ...]] = {
     "population": (
         ("ddi", ddi_directive),
         ("safety_gating", safety_gating_directive),
+        # Eligibility criteria are written HERE, so the population section is
+        # exactly where a model would otherwise invent a non-smoker requirement
+        # or a genotype exclusion from small-molecule habit — the modality
+        # prohibition in stratification_directive() has to reach this section,
+        # not just "treatment" (see project_biologic_protocol_review finding).
+        ("stratification", stratification_directive),
+        # Subsection 6.3 "Subject Withdrawal/Discontinuation and Replacement" is
+        # written HERE. Without this, "population" would fall back to a
+        # hardcoded "not replaced" default even when the randomization engine's
+        # own replacement policy (rendered in "treatment") says otherwise — the
+        # exact contradiction found in a real generated document.
+        ("randomization", randomization_directive),
     ),
     "treatment": (
         ("randomization", randomization_directive),
         ("ddi", ddi_directive),
+        # "treatment" already renders the raw `stratification` JSON into a
+        # table per its own instructions; the directive is the authoritative,
+        # narrate-don't-invent form of the SAME facts (and, for a biologic,
+        # carries the modality-exclusion prohibition too).
+        ("stratification", stratification_directive),
     ),
     "study_assessments": (
         ("sampling_schedule", sampling_schedule_directive),
@@ -1469,6 +1600,24 @@ _ENGINE_DIRECTIVE_PLAN: dict[str, tuple[tuple[str, Any], ...]] = {
         # come from one engine call, so the appendix and the sample-size
         # justification cannot state different numbers.
         ("meta_analysis", meta_analysis_directive),
+        # This section already narrates CV%/PK-evidence provenance (the CV
+        # PROVENANCE line); the regulatory-assessment-report evidence is the
+        # same kind of provenance fact, so it belongs next to it rather than
+        # in a section with no sourcing discussion at all.
+        ("regulatory_sources", regulatory_sources_directive),
+        # Subsection 3(e) states the withdrawal-replacement policy. Without
+        # this, the SAP would fall back to a hardcoded "not replaced" default
+        # even when the randomization engine's own replacement policy says
+        # otherwise — the exact contradiction found in a real generated
+        # document (SAP said "not replaced" while treatment said "may be
+        # replaced" for the same protocol).
+        ("randomization", randomization_directive),
+    ),
+    "study_rationale": (
+        # The dose/PK rationale is exactly where a regulatory-assessment-report
+        # citation (or the honest absence of one) belongs — this section
+        # already justifies the dose from label_data/pk_parameters.
+        ("regulatory_sources", regulatory_sources_directive),
     ),
     "ethics": (
         ("safety_reporting", safety_reporting_directive),
@@ -1489,6 +1638,8 @@ _ENGINE_CONTEXT_KEYS: tuple[str, ...] = (
     "crf_dmp",
     "safety_reporting",
     "icf",
+    "stratification",
+    "regulatory_sources",
 )
 
 # Top-level engine-result fields kept in the JSON context block. Anything not
@@ -1548,6 +1699,15 @@ _ENGINE_CONTEXT_FIELDS: dict[str, tuple[str, ...]] = {
         "document_type", "title", "version", "regulatory_basis", "elements_coverage",
         "missing_required_elements", "pending_fields", "readability", "assumptions",
     ),
+    # The "treatment" section renders `factors` as its own HTML table (label,
+    # tier, magnitude, rationale, effect, note per row — kept verbatim since
+    # only top-level keys are trimmed here) and quotes `summary` in prose.
+    # `suppressed_factors`/`is_biologic` are kept too so a reviewer can see the
+    # modality exclusion reflected in the JSON block as well as the directive.
+    "stratification": ("summary", "factors", "suppressed_factors", "is_biologic"),
+    # No section renders a raw regulatory-sources table — the directive is the
+    # authoritative form — so this projection stays deliberately thin.
+    "regulatory_sources": ("summary", "search_executed", "referenced_sources"),
 }
 
 # Allocation concealment (ICH E9 s2.3.2). If the caller ever hands us the RAW

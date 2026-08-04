@@ -77,6 +77,26 @@ This is a protocol-package artifact, not an EDC system. It specifies what will
 be collected and how the data will be managed; it does not capture data, hold a
 database, transmit anything to a regulator, or run a workflow.
 
+WHAT REACHES THE PROTOCOL, AND WHAT DOES NOT
+--------------------------------------------
+A protocol and a case report form specification are two different documents. A
+protocol states THAT data are recorded on a case report form and managed under a
+Data Management Plan; it does not reproduce the collection instrument. A
+reviewing clinical pharmacologist reading a protocol should not be handed the
+dosing log's critical-field list (EX), the PK blood sample collection log's
+critical-field list (PC), the adverse event form's critical-field list (AE), or a
+pre-printed sample-log row for every timepoint in every period - that material
+belongs to the CRF specification and the Statistical Analysis Plan package.
+
+So the ENGINE still computes all of it (``build_crf_spec`` is unchanged and the
+standalone CRF/DMP export is built from it), but what the PROTOCOL prompt quotes
+is controlled by the ``scope`` argument of :func:`crf_dmp_directive`, whose
+default is now ``"protocol"``: a brief statement of data capture, coding, query
+management, lock, audit trail and retention, plus an explicit instruction NOT to
+render the field-level tables or the pre-printed sample-log rows. ``scope="crf"``
+(alias ``"sap"``), ``"dmp"`` and ``"all"`` still render the full specification for
+the separate document that is meant to carry it.
+
 REGULATORY FRAMING
 ------------------
 ICH E6(R2) GCP sections 4.9 (records), 5.5 (trial management and data handling)
@@ -3466,27 +3486,162 @@ def _summary(r: dict[str, Any]) -> str:
     )
 
 
-def crf_dmp_directive(result: dict[str, Any], scope: str = "all") -> str:
+def _protocol_scope_directive(r: dict[str, Any]) -> str:
+    """Render only the part of the specification that belongs in a PROTOCOL.
+
+    The protocol says that data are captured on a case report form and managed
+    under a Data Management Plan, and it states the handful of conventions a
+    reader has to know to interpret the study: the actual-versus-nominal time
+    rule, the coding dictionaries, the query and lock discipline, the audit
+    trail and the retention period.
+
+    Everything that makes this engine large - the per-form field tables, the
+    permitted values, the CDISC variable mapping, the pre-printed PK sample log
+    rows and the edit-check catalogue - is NOT rendered here. It is still
+    computed and still available on the result (and through ``scope="crf"`` /
+    ``"sap"``) for the separate CRF specification and Statistical Analysis Plan
+    document. The prohibition is written out explicitly rather than merely
+    omitted, because a model handed a rich context will otherwise reconstruct
+    the tables from the counts and the domain list.
+    """
+    dmp = r.get("data_management_plan") or {}
+    standards = r.get("standards") or {}
+    retention = dmp.get("retention_years") or ARCHIVE_RETENTION_YEARS
+    query_days = (dmp.get("query_response_target_days")
+                  or QUERY_RESPONSE_TARGET_DAYS)
+    sae_days = (dmp.get("sae_reconciliation_interval_days")
+                or SAE_RECONCILIATION_INTERVAL_DAYS)
+
+    lines = [
+        "CASE REPORT FORM AND DATA MANAGEMENT - PROTOCOL SCOPE. These facts are "
+        "ALREADY DETERMINED. Narrate ONLY the statements listed below. The "
+        "field-level case report form specification is a SEPARATE document and "
+        "is deliberately not supplied here.",
+        "DO NOT WRITE INTO THE PROTOCOL - the following belong to the separate "
+        "Case Report Form Specification / Statistical Analysis Plan package:",
+        "  - any 'Critical Fields' list or field-level specification for any "
+        "form, in particular Study Drug Administration (Dosing Log) (EX "
+        "domain), PK Blood Sample Collection Log (PC domain) and Adverse "
+        "Events (AE domain);",
+        "  - any per-form or per-domain table of fields, data types, units, "
+        "permitted values, codelists, CDISC variable names or required flags;",
+        "  - the pre-printed PK Sample Log rows (one row per nominal timepoint "
+        "per period) and their per-row collection windows;",
+        "  - the programmed edit-check catalogue and the form-by-visit matrix.",
+        "  Do not abridge them either: no partial table, no example row, no "
+        "'selected critical fields', no annotated form layout. The sampling "
+        "timepoints and their windows are stated ONCE, in the study "
+        "assessments section, from the locked sampling schedule; they are not "
+        "restated as a case report form log.",
+        "STATE THIS, AND NOTHING FURTHER ABOUT THE COLLECTION INSTRUMENT:",
+    ]
+    if r.get("summary"):
+        lines.append(f"  - {r['summary']}")
+    lines.extend([
+        "  - Study data are recorded by site staff on validated electronic case "
+        "report forms and are managed under a study-specific Data Management "
+        "Plan. The case report form specification, its field definitions, its "
+        "permitted values and the programmed edit checks are maintained as "
+        "separate controlled documents and are not reproduced in this protocol.",
+        "  - The actual clock time of dosing and the actual clock time of every "
+        "pharmacokinetic blood draw are recorded to the minute from a "
+        "synchronised site clock. The pharmacokinetic analysis uses the elapsed "
+        "time derived from those two times; nominal times are used for "
+        "presentation only.",
+        "  - Adverse events and medical history are coded to MedDRA, and prior "
+        "and concomitant medications to WHODrug Global, each at a single "
+        "dictionary version fixed at database build.",
+        f"  - Queries are raised from the programmed validation checks and from "
+        f"data review, with a site response target of {query_days} working "
+        f"days; a query is closed by data management after the site has "
+        f"answered it, never by the site alone.",
+        f"  - Serious adverse events are reconciled between the clinical "
+        f"database and the sponsor's safety database on receipt and at least "
+        f"every {sae_days} days, with a final reconciliation completed and "
+        f"signed before database lock.",
+        "  - The database is locked only after all case report form data are "
+        "entered and monitored, all queries are closed, external data are "
+        "received and reconciled, medical coding is approved, protocol "
+        "deviations are classified and the analysis populations are assigned "
+        "at a blinded data review. Any post-lock change requires a documented "
+        "unlock authorised jointly by the sponsor and the data manager, an "
+        "audit-trailed correction and a re-lock.",
+        "  - All electronic records carry a secure, computer-generated, "
+        "time-stamped audit trail that records the operator, the old value and "
+        "the new value and cannot be disabled, with role-based access under "
+        "unique, unshared user accounts (21 CFR Part 11).",
+        f"  - Records are retained for at least {retention} years after the end "
+        f"of the trial, or longer where a marketing application or local law "
+        f"requires it, and nothing is destroyed without prior written sponsor "
+        f"authorisation.",
+        "  - Source records remain at the site; the sponsor and its "
+        "representatives, the IRB/IEC and regulatory authorities are granted "
+        "direct access to them for verification.",
+    ])
+    if standards:
+        lines.append(
+            f"  - Data standards: {standards.get('collection', '')} for "
+            f"collection, {standards.get('tabulation', '')} for submission "
+            f"tabulation and {standards.get('metadata', '')} for metadata. The "
+            f"version in force at database lock governs and is re-confirmed "
+            f"against the regulatory data-standards catalogue current at "
+            f"submission."
+        )
+
+    titles = [s.get("title") for s in dmp.get("sections", []) if s.get("title")]
+    if titles:
+        lines.append(
+            "The Data Management Plan is a separate controlled document. Refer "
+            "to it by name; do not reproduce its content. It covers: "
+            + "; ".join(titles) + "."
+        )
+
+    # Deliberately NOT carried into the protocol: the downstream analysis
+    # coverage statement. It names this product's own internal modules, which is
+    # engineering provenance, not protocol text.
+    for a in r.get("assumptions", []):
+        lines.append(
+            f"ASSUMPTION to disclose as a pre-specified convention, not as a "
+            f"regulatory requirement - {a['key']} = {a['value']}: {a['basis']}"
+        )
+    for f in r.get("flags", []):
+        if f.get("must_surface_in_protocol"):
+            lines.append(
+                f"MUST STATE IN THE PROTOCOL ({f['severity']}): {f['message']}")
+    return "\n".join(lines)
+
+
+def crf_dmp_directive(result: dict[str, Any], scope: str = "protocol") -> str:
     """Render the locked CRF/DMP facts as prompt text for the generator.
 
     Mirrors ``stratification.stratification_directive`` and
     ``sampling_schedule.sampling_schedule_directive``: the model narrates these
-    facts into the data-handling and study-assessments sections and may not add
-    a form, drop a field, invent a codelist value, or soften an edit check.
+    facts and may not add a form, drop a field, invent a codelist value, or
+    soften an edit check.
 
     ``scope`` exists because this engine emits far more locked content than the
-    other engines do, and no single protocol section needs all of it:
+    other engines do, and because most of that content belongs to a document
+    that is NOT the protocol:
 
-      * ``"crf"``  - forms, field definitions, the pre-printed PK log, the visit
-        structure and the edit checks. What ``study_assessments`` needs.
+      * ``"protocol"`` - the default. A brief statement that data are captured
+        on a case report form and managed under a Data Management Plan, plus the
+        conventions a protocol reader needs (actual-versus-nominal times, coding
+        dictionaries, query and lock discipline, audit trail, retention), plus an
+        explicit instruction not to render the field-level tables or the
+        pre-printed sample-log rows. This is what the protocol quotes.
+      * ``"crf"`` (alias ``"sap"``) - forms, field definitions, the pre-printed
+        PK log, the visit structure and the edit checks: the full collection
+        instrument, for the separate CRF specification / SAP document.
       * ``"dmp"``  - the Data Management Plan sections and the coding
-        dictionaries. What ``data_handling`` needs.
-      * ``"all"``  - both (the default, so a caller that just passes the result
-        still gets everything).
+        dictionaries in full.
+      * ``"all"``  - both halves in full.
 
-    Field-level detail is limited to the CRITICAL forms, and edit-check
-    rationale to the hard-severity checks, so the block stays proportionate to
-    the section it is injected into.
+    An unrecognised scope falls back to ``"protocol"``: a typo must not silently
+    dump the whole specification into a protocol.
+
+    In the non-protocol scopes, field-level detail is limited to the CRITICAL
+    forms and edit-check rationale to the hard-severity checks, so the block
+    stays proportionate to the document it is injected into.
     """
     if not result:
         return ""
@@ -3494,8 +3649,18 @@ def crf_dmp_directive(result: dict[str, Any], scope: str = "all") -> str:
     r = result.get("crf") if isinstance(result.get("crf"), dict) else result
     if not r or not r.get("forms"):
         return ""
-    want_crf = scope in ("all", "crf")
-    want_dmp = scope in ("all", "dmp")
+    key = (scope or "").strip().lower()
+    if key == "sap":
+        # The SAP/CRF-specification document is exactly the collection
+        # instrument, so it is the same rendering under the name the reviewing
+        # pharmacologist used for the destination document.
+        key = "crf"
+    if key not in ("protocol", "crf", "dmp", "all"):
+        key = "protocol"
+    if key == "protocol":
+        return _protocol_scope_directive(r)
+    want_crf = key in ("all", "crf")
+    want_dmp = key in ("all", "dmp")
 
     lines = [
         "CASE REPORT FORM SPECIFICATION AND DATA MANAGEMENT PLAN - these are "

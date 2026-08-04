@@ -904,6 +904,29 @@ def _ind_regime(
 # healthy-volunteer PK studies fall in that excluded class, so FDAAA 801
 # registration and results submission are usually NOT triggered - stating them
 # as mandatory would be as wrong as omitting them when they do apply.
+#
+# WHAT THE PROTOCOL GETS, AND WHAT IT DOES NOT
+# --------------------------------------------
+# When the study IS an applicable clinical trial the registration and results
+# duties are real obligations of this protocol, so they are stated with their
+# deadlines like any other duty.
+#
+# When it is NOT, the protocol gets NOTHING. Earlier versions emitted a
+# paragraph explaining that phase 1 investigations of drug products are
+# excluded from the 42 CFR 11.10 definition and that FDAAA 801 registration is
+# therefore not required. A reviewing clinical pharmacologist struck it: a
+# protocol does not carry a paragraph explaining why a regulation it is not
+# subject to does not apply to it. That is noise, and it invites the narration
+# layer to expand it. The determination is still made and still recorded in the
+# machine-readable fields (`is_applicable_clinical_trial`, `determined_by`), so
+# it remains auditable - there is simply no sentence for the model to lift into
+# the document, and `state_in_protocol` says so explicitly.
+#
+# THIS IS ABOUT THE PROTOCOL ONLY. The INFORMED CONSENT FORM is a separate
+# document with a separate legal basis: 21 CFR 50.25(c) prescribes a
+# ClinicalTrials.gov clause for the ICF, in wording that may not be reworded.
+# services/icf.py still carries that clause verbatim, and must keep doing so -
+# see icf.CLINICALTRIALS_GOV_STATEMENT and icf._clinicaltrials_gov().
 
 
 def _ctgov_obligation(
@@ -931,6 +954,11 @@ def _ctgov_obligation(
             "to FDA regulation that is not a phase 1 investigation, so it is an "
             "applicable clinical trial under FDAAA 801 (42 U.S.C. 282(j)) and 42 "
             "CFR part 11."
+        )
+        voluntary_note = (
+            "Registration is a regulatory obligation here, not a voluntary act; "
+            "the IRB, the sponsor's own policy, or ICMJE journal policy may "
+            "impose further conditions."
         )
         duties = [
             {
@@ -965,26 +993,27 @@ def _ctgov_obligation(
             },
         ]
     else:
-        rationale = (
-            "Phase 1 investigations of drug products - which include "
-            "bioavailability, bioequivalence and healthy-volunteer PK-similarity "
-            "studies - are excluded from the definition of an applicable "
-            "clinical trial in 42 CFR 11.10, so FDAAA 801 registration and "
-            "results submission are not required for this study."
-        )
+        # NOT an applicable clinical trial - so there is no obligation, and
+        # therefore nothing for the protocol to say. Both prose fields are
+        # deliberately EMPTY rather than carrying an explanation of why part 11
+        # does not reach this study: the reasoning belongs in the module comment
+        # above, not in a generated document. Leaving a sentence here is what
+        # put "FDAAA 801 registration and results submission are not required
+        # for this study" into real protocols.
+        rationale = ""
+        voluntary_note = ""
         duties = []
 
     return {
         "is_applicable_clinical_trial": is_act,
         "determined_by": determined_by,
+        # The single gate every renderer checks. False means: emit nothing about
+        # ClinicalTrials.gov, FDAAA 801 or 42 CFR part 11 into the protocol -
+        # not even a sentence saying it does not apply.
+        "state_in_protocol": is_act,
         "rationale": rationale,
         "duties": duties,
-        "voluntary_note": (
-            "Voluntary registration remains permitted (42 CFR 11.60) and may be "
-            "required independently by the IRB, by the sponsor's own policy, or "
-            "by ICMJE journal policy as a condition of later publication; the "
-            "protocol should state which applies."
-        ),
+        "voluntary_note": voluntary_note,
     }
 
 
@@ -1923,15 +1952,17 @@ def _summary(plan: dict[str, Any], *, blinded: bool) -> str:
             f"expectedness assessment and the monitoring plan: {names}."
         )
     ct = plan["clinicaltrials_gov"]
+    # Only a real obligation earns a sentence. When the study is not an
+    # applicable clinical trial the tail is EMPTY - the summary is the line the
+    # generation prompt narrates, so a sentence here becomes a sentence in the
+    # protocol, and "registration is not required" is exactly the noise a
+    # reviewing pharmacologist struck. See _ctgov_obligation().
     ct_tail = (
         " The study is an applicable clinical trial, so it is registered on "
         f"ClinicalTrials.gov within {CTGOV_REGISTRATION_DAYS} days of first "
         "enrolment and results are submitted within one year of the primary "
         "completion date."
-        if ct["is_applicable_clinical_trial"] else
-        " The study is not an applicable clinical trial under FDAAA 801, so "
-        "ClinicalTrials.gov registration and results submission are not "
-        "required."
+        if ct.get("state_in_protocol") else ""
     )
     blind_tail = (
         " A case requiring an expedited report is unblinded for that subject "
@@ -2014,14 +2045,31 @@ def safety_reporting_directive(plan: dict[str, Any]) -> str:
             # open-label study).
             lines.append(f"  - {duty['label']}: {duty['applies_when']}")
 
+    # ClinicalTrials.gov reaches the prompt ONLY when registration is a real
+    # obligation of this study. When it is not, the directive says nothing about
+    # it except a suppression instruction - a protocol does not explain why a
+    # regulation it is not subject to does not apply. The suppression line is
+    # needed because the model will otherwise reach for the boilerplate on its
+    # own; it is an instruction, not text to render.
     ct = plan.get("clinicaltrials_gov", {})
     lines.append("")
-    lines.append(f"ClinicalTrials.gov: {ct.get('rationale', '')}")
-    for duty in ct.get("duties", []):
+    if ct.get("state_in_protocol"):
+        lines.append(f"ClinicalTrials.gov: {ct.get('rationale', '')}")
+        for duty in ct.get("duties", []):
+            lines.append(
+                f"  - {duty['requirement']}: within {duty['deadline_value']} "
+                f"{duty['deadline_unit']} of {duty['clock_start']} "
+                f"[{duty['regulation_ref']}]"
+            )
+    else:
         lines.append(
-            f"  - {duty['requirement']}: within {duty['deadline_value']} "
-            f"{duty['deadline_unit']} of {duty['clock_start']} "
-            f"[{duty['regulation_ref']}]"
+            "PUBLIC TRIAL REGISTRY - WRITE NOTHING: this study carries no "
+            "ClinicalTrials.gov registration or results-submission obligation. "
+            "Do NOT mention ClinicalTrials.gov, FDAAA 801, 42 CFR part 11, the "
+            "phrase 'applicable clinical trial', or trial registration anywhere "
+            "in the protocol - not even a sentence stating that they do not "
+            "apply. (The separate INFORMED CONSENT FORM keeps its own 21 CFR "
+            "50.25(c) clause; that is a different document and is unaffected.)"
         )
 
     expect = plan.get("expectedness_reference", {})

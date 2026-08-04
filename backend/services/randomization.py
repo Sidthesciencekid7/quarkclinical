@@ -43,6 +43,13 @@ THE THREE THINGS THAT MAKE THIS CORRECT
    randomization statistician and pharmacy, and a blinded, subject-ID-only
    enrolment log that is safe to place in the protocol body.
 
+   Masking itself is not binary either. Four postures are supported (see
+   ``_MASKING_POSTURES``): open-label dosing with blinded bioanalysis, an
+   assessor-blind posture where the pharmacology stops the subject being masked,
+   a subject- and assessor-blind posture operated through an UNBLINDED
+   pharmacist for an injectable whose presentations cannot be matched, and a
+   full double-blind. Concealment is mandatory in all four.
+
 DESIGN VOCABULARY
 -----------------
 ``design_key`` is the same three-valued vocabulary the sample-size engine emits
@@ -585,14 +592,174 @@ _BLINDING_CUES: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# Masking postures. The default for a single-dose BE study with PK endpoints is
-# open-label DOSING with a blinded bioanalytical laboratory: the primary
-# endpoint is an instrument reading, not a judgement, so subject masking buys
-# little, while analyst masking is essential. A validated PD co-primary changes
-# that - a PD measurement can be shaped by expectation - so it forces a
-# double-blind.
+# ---------------------------------------------------------------------------
+# Masking postures - four, not two
+# ---------------------------------------------------------------------------
+# The default for a single-dose BE study with PK endpoints is open-label DOSING
+# with a blinded bioanalytical laboratory: the primary endpoint is an instrument
+# reading, not a judgement, so subject masking buys little, while analyst
+# masking is essential. That convention is correct and is preserved.
+#
+# It is not, however, the only case. Two things make a binary open/double-blind
+# choice wrong:
+#
+# 1. PK primaries are not always the only endpoints that decide the study. In a
+#    biosimilar or other biologic comparison, anti-drug antibody incidence is a
+#    co-endpoint and the hypersensitivity, infusion and INJECTION-SITE reactions
+#    read alongside it are elicited and GRADED by a clinician. Observer grading
+#    of a local reaction by someone who knows which product was injected is a
+#    recognised source of bias. That warrants masking the subject and the
+#    assessor even where the PK primaries would not.
+#
+# 2. A full identical-presentation double-blind is frequently undeliverable for
+#    an injectable: test and reference containers, fill volumes and solution
+#    appearance differ and cannot be matched. Claiming "double-blind" there
+#    would be a claim the conduct cannot honour. The practical posture - and the
+#    one the `parenteral_presentation` mitigation text has always described - is
+#    an UNBLINDED pharmacist or administrator who prepares and gives every dose
+#    and takes no part in assessment or bioanalysis, with the subject and every
+#    assessor blinded. That is a distinct posture and it is now representable.
+#
+# A fourth posture exists for honesty rather than ambition: where the label
+# evidence shows the subject can perceive which product was given (chromaturia,
+# a distinctive taste, sedation, hypoglycaemia), subject masking is NOT
+# claimable, and the engine drops to assessor-blind rather than assert masking
+# the pharmacology defeats.
 _MASKING_OPEN = "open_label_dosing_with_blinded_bioanalysis"
+_MASKING_ASSESSOR = "assessor_blind_dosing_subject_unblinded"
+_MASKING_SUBJECT_ASSESSOR = "subject_and_assessor_blind_unblinded_administrator"
 _MASKING_DOUBLE = "double_blind"
+
+
+@dataclass(frozen=True)
+class MaskingPosture:
+    """One masking posture, with who it actually blinds and how it is operated.
+
+    ``blinded_roles`` / ``unblinded_roles`` exist so that no downstream reader
+    has to infer from a posture NAME who is masked. The randomization
+    statistician is unblinded in every posture by construction - somebody has to
+    hold the list - and that is stated rather than left implicit.
+    """
+
+    key: str
+    label: str
+    dosing_masked: bool
+    blinded_roles: tuple[str, ...]
+    unblinded_roles: tuple[str, ...]
+    operational_statement: str
+
+
+_MASKING_POSTURES: dict[str, MaskingPosture] = {
+    _MASKING_OPEN: MaskingPosture(
+        key=_MASKING_OPEN,
+        label="Open-label dosing with a blinded bioanalytical laboratory",
+        dosing_masked=False,
+        blinded_roles=("bioanalytical_laboratory",),
+        unblinded_roles=(
+            "subject",
+            "investigator_and_assessor",
+            "dose_administrator",
+            "randomization_statistician",
+        ),
+        operational_statement=(
+            "Dosing is open-label. Bioanalytical samples carry the subject number, "
+            "period and nominal time only, and the analytical laboratory is blinded "
+            "to treatment assignment. The randomization list itself remains concealed "
+            "from everyone who influences whether a candidate is enrolled."
+        ),
+    ),
+    _MASKING_ASSESSOR: MaskingPosture(
+        key=_MASKING_ASSESSOR,
+        label=(
+            "Assessor-blind dosing with an unblinded administrator; subject masking "
+            "not claimed"
+        ),
+        dosing_masked=True,
+        blinded_roles=("investigator_and_assessor", "bioanalytical_laboratory"),
+        unblinded_roles=(
+            "subject",
+            "dose_administrator",
+            "randomization_statistician",
+        ),
+        operational_statement=(
+            "The investigational product is prepared and administered by an unblinded "
+            "pharmacist or dosing administrator who takes no part in safety "
+            "assessment, tolerability or injection-site grading, endpoint "
+            "adjudication or bioanalysis. The investigator and every assessor who "
+            "grades an adverse event, an injection-site reaction or any other "
+            "subjective observation remain blinded, as do the bioanalytical and "
+            "immunogenicity laboratories. Subject masking is NOT claimed and must "
+            "not be described as achieved anywhere in the protocol; the residual "
+            "risk of subject expectation is recorded as a limitation."
+        ),
+    ),
+    _MASKING_SUBJECT_ASSESSOR: MaskingPosture(
+        key=_MASKING_SUBJECT_ASSESSOR,
+        label=(
+            "Subject- and assessor-blind dosing with an unblinded pharmacist or "
+            "administrator"
+        ),
+        dosing_masked=True,
+        blinded_roles=(
+            "subject",
+            "investigator_and_assessor",
+            "bioanalytical_laboratory",
+        ),
+        unblinded_roles=("dose_administrator", "randomization_statistician"),
+        operational_statement=(
+            "The investigational product is prepared and administered by an unblinded "
+            "pharmacist or dosing administrator who takes no part in assessment, "
+            "adverse-event or injection-site grading, or bioanalysis. The syringe, "
+            "infusion line and injection site are screened from the subject's view at "
+            "administration where the presentation allows. The subject, the "
+            "investigator and every assessor who grades an adverse event or an "
+            "injection-site reaction remain blinded, as do the bioanalytical and "
+            "immunogenicity laboratories. An identical-presentation double-blind is "
+            "NOT claimed: where test and reference containers, fill volumes or "
+            "solution appearance differ they cannot be matched, and this is the level "
+            "of masking such a presentation can actually deliver."
+        ),
+    ),
+    _MASKING_DOUBLE: MaskingPosture(
+        key=_MASKING_DOUBLE,
+        label="Double-blind, identical presentations",
+        dosing_masked=True,
+        blinded_roles=(
+            "subject",
+            "investigator_and_assessor",
+            "dose_administrator",
+            "bioanalytical_laboratory",
+        ),
+        unblinded_roles=("randomization_statistician",),
+        operational_statement=(
+            "Test and reference are presented identically - matched over-encapsulation "
+            "or a double-dummy - so that neither the subject, the person administering "
+            "the dose, nor any assessor can identify the treatment. Where "
+            "over-encapsulation is used to achieve this it must be supported by "
+            "comparative dissolution data, because it can itself alter dissolution and "
+            "therefore the bioequivalence result. The bioanalytical laboratory is "
+            "blinded regardless."
+        ),
+    ),
+}
+
+# Route strings arrive from the Review Design step as short free text. The
+# values services/design_decisions.py actually emits are "Oral",
+# "Intravitreal", "IV infusion" and "SC <device> <site>", so all four must be
+# classified correctly here. Long forms are matched as substrings; the
+# two-letter abbreviations are matched as whole tokens only, because "sc" and
+# "im" occur inside ordinary words.
+#
+# The intra-* routes are listed explicitly rather than left to the "inject" cue:
+# an intravitreal or intrathecal product is administered by injection but its
+# route string never contains the word, so without them a local-injection
+# biologic would lose its injection-site-grading driver.
+_PARENTERAL_ROUTE_WORDS = (
+    "subcutaneous", "intravenous", "intramuscular", "intradermal",
+    "intravitreal", "intrathecal", "intra-articular", "intraperitoneal",
+    "infusion", "inject", "parenteral",
+)
+_PARENTERAL_ROUTE_TOKENS = frozenset({"sc", "sq", "subq", "iv", "im", "id"})
 
 
 def _label_text(label: Optional[dict[str, str]], sections: Iterable[str]) -> str:
@@ -628,21 +795,146 @@ def _detect_blinding_signals(label: Optional[dict[str, str]]) -> list[dict[str, 
     return found
 
 
+def _is_parenteral_route(route: Optional[str]) -> bool:
+    """Whether a free-text route string describes an injection or infusion."""
+    if not route:
+        return False
+    text = str(route).strip().lower()
+    if any(word in text for word in _PARENTERAL_ROUTE_WORDS):
+        return True
+    tokens = set(re.split(r"[^a-z]+", text))
+    return bool(tokens & _PARENTERAL_ROUTE_TOKENS)
+
+
+# Drivers that argue for masking DOSING. Each carries the reason in the same
+# voice as the signal catalogue: what the bias mechanism actually is, not an
+# assertion that masking is "best practice".
+_MASKING_DRIVERS: dict[str, str] = {
+    "pd_coprimary": (
+        "A validated pharmacodynamic endpoint is co-primary. Unlike a plasma "
+        "concentration, a PD measurement can be influenced by the expectations of "
+        "the subject and the assessor."
+    ),
+    "immunogenicity_coendpoint": (
+        "Anti-drug antibody incidence is assessed as a co-endpoint. The ADA assay "
+        "itself is objective and is blinded like any other laboratory measurement, "
+        "but the hypersensitivity and infusion reactions read alongside it are "
+        "elicited by questioning and attributed by a clinician, and an unblinded "
+        "clinician's threshold for recording and attributing them is not "
+        "independent of which product was given."
+    ),
+    "injection_site_reaction_grading": (
+        "The product is administered by injection or infusion, and injection-site "
+        "reactions are graded by an observer against a severity scale (erythema, "
+        "induration, swelling, pain). Observer grading of a local reaction is a "
+        "recognised source of bias when the observer knows which product was "
+        "injected, and it is not rescued by blinding the laboratory."
+    ),
+    "subjective_safety_reporting": (
+        "Adverse events and tolerability in a biologic comparison are elicited by "
+        "questioning and graded by judgement rather than measured by an "
+        "instrument. That judgement can be shaped by knowing which product the "
+        "subject received, in a way a chromatographic peak area cannot be."
+    ),
+}
+
+
 def assess_blinding(
     label: Optional[dict[str, str]] = None,
     *,
     pd_coprimary: Optional[bool] = None,
+    is_biologic: Optional[bool] = None,
+    study_type: Optional[str] = None,
+    route: Optional[str] = None,
+    immunogenicity_assessed: Optional[bool] = None,
 ) -> dict[str, Any]:
     """Decide the masking posture and separate it from allocation concealment.
 
-    The two are routinely conflated and they are not the same thing. Allocation
-    concealment - keeping the NEXT assignment unknowable to anyone who
-    influences who gets enrolled - is mandatory in every randomised study,
-    including an open-label one. Treatment masking is a design choice that
-    depends on how subjective the endpoint is.
+    Allocation concealment and treatment masking are routinely conflated and
+    they are not the same thing. Allocation concealment - keeping the NEXT
+    assignment unknowable to anyone who influences who gets enrolled - is
+    mandatory in every randomised study, including an open-label one, and this
+    function asserts it in every posture without exception. Treatment masking is
+    a design choice that depends on how subjective the endpoints are.
+
+    How the posture is chosen
+    -------------------------
+    * ``pd_coprimary`` -> ``double_blind``. A PD measurement can be shaped by
+      expectation, so both the subject and the assessor must be masked and the
+      products must be presented identically.
+    * a BIOLOGIC comparison (``is_biologic``, ``study_type='biosimilar_pk'``, or
+      an explicit ``immunogenicity_assessed=True``) -> blinded DOSING. The PK
+      primaries are objective, but immunogenicity is a co-endpoint, and the
+      reactions read alongside it - including injection-site grading where the
+      product is injected - are clinician judgements. The posture chosen is
+      subject- and assessor-blind with an UNBLINDED pharmacist or administrator,
+      because that is what an injectable presentation can actually deliver; a
+      full identical-presentation double-blind is not claimed on its behalf.
+    * that same case, where the label shows the subject can PERCEIVE which
+      product was given -> ``assessor_blind_dosing_subject_unblinded``. Subject
+      masking is dropped rather than claimed falsely; the assessor and the
+      laboratories stay blinded, which is where the bias would otherwise enter.
+    * everything else - notably a single-dose small-molecule BE study with PK
+      endpoints only, including a small-molecule INJECTABLE - stays open-label
+      with blinded bioanalysis. That convention is deliberate, not an oversight:
+      the endpoint is an instrument reading.
+
+    Parameters
+    ----------
+    label:
+        DailyMed SPL sections; grounds the signal detection.
+    pd_coprimary:
+        A validated PD endpoint is co-primary.
+    is_biologic:
+        The comparison is of a biologic / biosimilar product.
+    study_type:
+        ``'BE' | 'biosimilar_pk' | 'food_effect'``; ``'biosimilar_pk'`` implies
+        a biologic even if ``is_biologic`` was not passed.
+    route:
+        Free-text route from the design decisions ("subcutaneous", "SC",
+        "oral"). Used to establish that dosing is by injection.
+    immunogenicity_assessed:
+        Explicit override. ``None`` derives it (true for a biologic). Setting it
+        ``True`` for a non-biologic also warrants blinded dosing; setting it
+        ``False`` for a biologic removes that driver but leaves the others.
     """
     signals = _detect_blinding_signals(label)
     keys = {s["key"] for s in signals}
+
+    biologic = bool(is_biologic) or str(study_type or "").strip().lower() == (
+        "biosimilar_pk")
+    immunogenicity = (
+        bool(immunogenicity_assessed) if immunogenicity_assessed is not None
+        else biologic
+    )
+    parenteral = _is_parenteral_route(route) or "parenteral_presentation" in keys
+    # The subject cannot be masked against pharmacology they can feel or see.
+    # This is a DELIVERABILITY fact, not a preference, and it can only ever
+    # weaken a claim - never strengthen one.
+    subject_masking_defeated = bool(
+        keys & {"visible_pharmacological_cue", "perceptible_systemic_effect"}
+    )
+
+    drivers: list[dict[str, str]] = []
+
+    def _add(key: str) -> None:
+        drivers.append({"key": key, "statement": _MASKING_DRIVERS[key]})
+
+    if pd_coprimary:
+        _add("pd_coprimary")
+    if immunogenicity:
+        _add("immunogenicity_coendpoint")
+    if parenteral and (biologic or immunogenicity):
+        _add("injection_site_reaction_grading")
+    if biologic:
+        _add("subjective_safety_reporting")
+
+    # A reason to mask DOSING that the PK primaries alone would not supply.
+    # A biologic qualifies on its own: even with immunogenicity sampling
+    # explicitly switched off, adverse-event elicitation and grading remain
+    # clinician judgements. A small-molecule injectable does NOT qualify - the
+    # route alone is not a bias mechanism when the only endpoints are PK.
+    dosing_masking_warranted = bool(biologic or immunogenicity)
 
     if pd_coprimary:
         masking = _MASKING_DOUBLE
@@ -652,6 +944,56 @@ def assess_blinding(
             "the subject and the assessor, so subject and assessor masking is "
             "required and the products must be presented identically."
         )
+        if biologic:
+            rationale += (
+                " Immunogenicity and the clinician-graded reactions read alongside it "
+                "reinforce that requirement rather than replace it."
+            )
+        if subject_masking_defeated:
+            rationale += (
+                " NOTE: the label evidence below shows the subject may nonetheless "
+                "perceive which product was given. Masking is still required, but the "
+                "protocol must record that residual limitation rather than assert a "
+                "masking the pharmacology defeats."
+            )
+        if parenteral:
+            rationale += (
+                " Where the presentations cannot be matched, the double-blind is "
+                "operated through an unblinded pharmacist or administrator who takes "
+                "no part in assessment."
+            )
+    elif dosing_masking_warranted:
+        reasons = " ".join(d["statement"] for d in drivers)
+        if subject_masking_defeated:
+            masking = _MASKING_ASSESSOR
+            rationale = (
+                "The pharmacokinetic primaries are instrument readings and would not "
+                "on their own require masked dosing, but they are not the only "
+                "endpoints that decide this study. " + reasons + " Masked dosing is "
+                "therefore warranted. Subject masking, however, is not deliverable "
+                "here: the label evidence below shows the subject can perceive which "
+                "product was given, so claiming it would be untrue. The investigator "
+                "and every assessor, and the bioanalytical and immunogenicity "
+                "laboratories, are blinded - which is where the bias that matters "
+                "would otherwise enter - and the residual risk of subject expectation "
+                "is recorded rather than concealed."
+            )
+        else:
+            masking = _MASKING_SUBJECT_ASSESSOR
+            rationale = (
+                "The pharmacokinetic primaries are instrument readings and would not "
+                "on their own require masked dosing, but they are not the only "
+                "endpoints that decide this study. " + reasons + " Those assessments "
+                "are judgements rather than instrument readings, so the subject and "
+                "every assessor are blinded even though the PK primaries do not "
+                "demand it. A full identical-presentation double-blind is NOT claimed: "
+                "test and reference containers, fill volumes and solution appearance "
+                "generally differ between originator and proposed biosimilar and "
+                "cannot be matched. The masking is delivered instead by an unblinded "
+                "pharmacist or administrator who prepares and gives every dose and "
+                "takes no part in assessment or bioanalysis, which is the level this "
+                "presentation can honestly support."
+            )
     else:
         masking = _MASKING_OPEN
         rationale = (
@@ -668,6 +1010,8 @@ def assess_blinding(
                 "be achieved even if it were attempted, so claiming a double-blind "
                 "would be unsupportable."
             )
+
+    posture = _MASKING_POSTURES[masking]
 
     return {
         "allocation_concealment": {
@@ -687,7 +1031,27 @@ def assess_blinding(
         },
         "treatment_masking": {
             "recommended": masking,
+            "label": posture.label,
             "rationale": rationale,
+            # Explicit, so no downstream reader has to infer masking from a
+            # posture NAME. "Dosing is blinded" and "the subject is blinded" are
+            # different claims and only one of them holds in some postures.
+            "dosing_masked": posture.dosing_masked,
+            "subject_masked": "subject" in posture.blinded_roles,
+            "assessor_masked": "investigator_and_assessor" in posture.blinded_roles,
+            "who_is_blinded": list(posture.blinded_roles),
+            "who_is_unblinded": list(posture.unblinded_roles),
+            "operational_statement": posture.operational_statement,
+            "drivers": drivers,
+            "inputs_considered": {
+                "pd_coprimary": bool(pd_coprimary),
+                "biologic": biologic,
+                "immunogenicity_assessed": immunogenicity,
+                "parenteral_administration": parenteral,
+                "study_type": (str(study_type).strip() if study_type else None),
+                "route": (str(route).strip() if route else None),
+                "subject_masking_deliverable": not subject_masking_defeated,
+            },
             "signals": signals,
             "signals_detected": sorted(keys),
         },
@@ -698,6 +1062,12 @@ def assess_blinding(
                 "and nominal time only. The analytical laboratory is blinded to "
                 "treatment assignment, and the analytical run order does not follow "
                 "the treatment sequence."
+                + (
+                    " The immunogenicity (anti-drug antibody) laboratory is blinded on "
+                    "the same basis, and confirmatory and titre testing is performed "
+                    "without knowledge of treatment."
+                    if immunogenicity else ""
+                )
             ),
         },
         "unblinding_procedure": {
@@ -946,6 +1316,10 @@ def generate_allocation(
     subject_id_prefix: str = "S",
     pd_coprimary: Optional[bool] = None,
     label: Optional[dict[str, str]] = None,
+    is_biologic: Optional[bool] = None,
+    study_type: Optional[str] = None,
+    route: Optional[str] = None,
+    immunogenicity_assessed: Optional[bool] = None,
 ) -> dict[str, Any]:
     """Generate the study's randomization list.
 
@@ -974,6 +1348,15 @@ def generate_allocation(
     is_nti / pd_coprimary / label:
         NTI status selects the fully replicated variant; a PD co-primary forces
         a double-blind; the DailyMed label text grounds the masking assessment.
+    is_biologic / study_type / route / immunogenicity_assessed:
+        Passed straight to :func:`assess_blinding`, which uses them to decide
+        whether DOSING is masked and at what level. All default to ``None``, and
+        with all four omitted the masking decision is exactly what it was before
+        they existed - a small-molecule PK-only BE study stays open-label. A
+        biologic / biosimilar comparison instead gets subject- and assessor-blind
+        dosing with an unblinded administrator, because immunogenicity is a
+        co-endpoint and injection-site and adverse-event grading are clinician
+        judgements. See :func:`assess_blinding` for the full decision table.
 
     Returns
     -------
@@ -1286,7 +1669,14 @@ def generate_allocation(
             ),
         },
         "balance": balance,
-        "blinding": assess_blinding(label, pd_coprimary=pd_coprimary),
+        "blinding": assess_blinding(
+            label,
+            pd_coprimary=pd_coprimary,
+            is_biologic=is_biologic,
+            study_type=study_type,
+            route=route,
+            immunogenicity_assessed=immunogenicity_assessed,
+        ),
         "unblinded_allocation": {
             "confidentiality": "RESTRICTED",
             "contains_treatment_assignments": True,
@@ -1719,6 +2109,31 @@ def randomization_directive(alloc: dict[str, Any]) -> str:
             "- Treatment masking: %s. %s"
             % (masking["recommended"].replace("_", " "), masking.get("rationale", ""))
         )
+    # WHO is masked is a separate fact from the posture's name, and the two are
+    # easy to conflate in prose. Stating both, and forbidding any wider claim,
+    # is what stops the model writing "double-blind" over an assessor-blind
+    # study or "the subject was blinded" where the pharmacology defeats it.
+    if masking.get("who_is_blinded"):
+        lines.append(
+            "- Blinded to treatment: %s. NOT blinded: %s. Describe exactly these "
+            "parties as blinded - do not widen the claim, and do not use the phrase "
+            "\"double-blind\" unless the posture above is double blind."
+            % (
+                ", ".join(
+                    str(r).replace("_", " ") for r in masking.get("who_is_blinded", [])
+                ),
+                ", ".join(
+                    str(r).replace("_", " ") for r in masking.get("who_is_unblinded", [])
+                ) or "no one",
+            )
+        )
+    if masking.get("operational_statement"):
+        lines.append(
+            "- How the masking is operated: %s" % (masking["operational_statement"],)
+        )
+    for drv in masking.get("drivers", []):
+        if drv.get("statement"):
+            lines.append("  - Why masking is at this level: %s" % (drv["statement"],))
     for sig in masking.get("signals", []):
         lines.append(
             "  - Masking signal from the product label: %s. %s Mitigation: %s"

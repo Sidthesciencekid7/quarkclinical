@@ -72,7 +72,7 @@ from services.ddi_screening import screen_interactions
 from services.guideline_coverage import compute_coverage
 from services.guidelines import GUIDELINES, is_supported
 from services.icf import build_icf
-from services.literature_service import LiteratureService
+from services.literature_service import LiteratureService, plan_regulatory_sources
 from services.meta_analysis import build_meta_analysis
 from services.protocol_qc import run_qc
 from services.randomization import blinded_view, generate_allocation
@@ -588,6 +588,7 @@ def _augment_config_with_design(
     guideline_version: str = "",
     design_decisions: list[dict[str, Any]] | None = None,
     protocol_id: uuid.UUID | None = None,
+    regulatory_sources: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run every deterministic engine ONCE and bake the results into the config.
 
@@ -655,6 +656,16 @@ def _augment_config_with_design(
         label=label,
         is_nti=cfg.get("is_nti"),
         cv_intra_pct=ss.get("cv_pct"),
+        healthy_volunteers=healthy_volunteers,
+        # BUG FIX: this was previously omitted, so recommend_stratification()
+        # always ran with its is_biologic=False default — the entire
+        # modality-suppression gate in services/stratification.py (dropping
+        # CYP/transporter/smoking/NAT2/gastric-pH factors and the
+        # non-smoker-status leak they cause) never actually fired for a real
+        # biosimilar_pk protocol, even though is_biologic is computed above and
+        # every OTHER engine call in this function (sampling schedule, DDI
+        # screen, safety gating, bioanalytical, CRF spec) already receives it.
+        is_biologic=is_biologic,
     )
 
     # --- 3. The five locked clinical design decisions ----------------------
@@ -709,6 +720,7 @@ def _augment_config_with_design(
         design_key=design_key,
         is_nti=cfg.get("is_nti"),
         healthy_volunteers=healthy_volunteers,
+        is_biologic=is_biologic,
     )
 
     # --- 6. Safety gating (stopping / halting rules, discharge criteria) ----
@@ -727,6 +739,7 @@ def _augment_config_with_design(
         route=decision_values.get("route") or None,
         dropout_rate=ss.get("dropout_rate"),
         healthy_volunteers=healthy_volunteers,
+        is_biologic=is_biologic,
     )
 
     # --- 7. Bioanalytical method validation package ------------------------
@@ -844,6 +857,8 @@ def _augment_config_with_design(
 
     if label:
         cfg["_label"] = label
+    if regulatory_sources:
+        cfg["_regulatory_sources"] = regulatory_sources
     return cfg
 
 
@@ -881,6 +896,12 @@ def _build_context(
     strat = population_config.get("_stratification")
     if strat:
         ctx["stratification"] = strat
+    # Regulatory-assessment-report evidence (services/literature_service.py) —
+    # the SAP/study-rationale sections narrate what was actually referenced by
+    # retrieved literature; they never claim a report this system did not read.
+    reg_sources = population_config.get("_regulatory_sources")
+    if reg_sources:
+        ctx["regulatory_sources"] = reg_sources
     # Population-matched meta-analysis: the per-study table the appendix prints,
     # and the source of the powering CV. Locked, so the SAP narrates it rather
     # than re-deriving a different number.
@@ -1212,6 +1233,20 @@ async def _run_generation_pipeline(
     pubmed_records = await lit_svc.fetch_pubmed(drug.inn)
     label = await _fetch_label_safe(lit_svc, drug.inn)
 
+    # Deterministic plan of which regulatory assessment-report programmes
+    # (FDA/EMA/TGA/PMDA/NMPA) are actually referenced by the literature just
+    # retrieved. Built even when the regulatory-targeted second query did not
+    # run (lit_svc.last_regulatory_status records why) so the SAP/study-
+    # rationale sections can state honestly that no such evidence was
+    # retrieved, rather than saying nothing at all.
+    regulatory_plan = plan_regulatory_sources(
+        drug_inn=drug.inn,
+        records=pubmed_records,
+        search_status=lit_svc.last_regulatory_status,
+        query=lit_svc.last_regulatory_query,
+        regulatory_query_pmids=lit_svc.last_regulatory_pmids,
+    )
+
     ai_svc = AIService()
     # Mine the FDA label's PK text too (reliably reports t_half/Tmax/Cmax that
     # PubMed abstracts often omit), tagged with source "DAILYMED".
@@ -1232,6 +1267,7 @@ async def _run_generation_pipeline(
             ],
             drug_inn=drug.inn,
             label_text=label_pk_text,
+            regulatory_plan=regulatory_plan,
         )
     except Exception as exc:  # noqa: BLE001
         if _is_fatal_api_error(exc):
@@ -1298,6 +1334,7 @@ async def _run_generation_pipeline(
             # run there have to agree with them.
             design_decisions=design_decisions,
             protocol_id=protocol_id,
+            regulatory_sources=regulatory_plan,
         ),
         limiter=_DESIGN_THREAD_LIMITER,
     )

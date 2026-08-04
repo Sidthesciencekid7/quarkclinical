@@ -383,6 +383,16 @@ BASIC_ELEMENT_CODES: tuple[str, ...] = tuple(e.code for e in _ELEMENTS if e.tier
 # 21 CFR 50.25(c), reproduced exactly. This text is prescribed by regulation and
 # must not be reworded, shortened, or "plain-languaged" - it is deliberately
 # excluded from the readability guard for that reason.
+#
+# THIS CLAUSE BELONGS TO THE CONSENT FORM, NOT TO THE PROTOCOL. The PROTOCOL no
+# longer says anything about ClinicalTrials.gov, FDAAA 801 or 42 CFR part 11
+# when the study is not an applicable clinical trial: a protocol does not carry
+# a paragraph explaining why a regulation it is not subject to does not apply
+# (see services/safety_reporting.py::_ctgov_obligation, where that paragraph was
+# removed). The ICF is a DIFFERENT DOCUMENT with a DIFFERENT legal basis - 21
+# CFR 50.25(c) prescribes this exact sentence for the consent document itself,
+# in wording that may not lawfully be simplified - so it stays here, verbatim,
+# and the two changes must not be confused with one another.
 CLINICALTRIALS_GOV_STATEMENT = (
     "A description of this clinical trial will be available on "
     "http://www.ClinicalTrials.gov, as required by U.S. Law. This Web site will "
@@ -1961,6 +1971,25 @@ def _clinicaltrials_gov(context: dict[str, Any], healthy: bool) -> dict[str, Any
     strictly caught by 50.25(c). Many IRBs expect the clause anyway, and
     including it can never be a deficiency, so it is ALWAYS included and its
     status is reported rather than the clause being silently dropped.
+
+    CONSENT FORM ONLY - AND WHY THAT IS NOT INCONSISTENT
+    ---------------------------------------------------
+    The PROTOCOL deliberately says nothing about ClinicalTrials.gov when the
+    study is not an applicable clinical trial: a protocol does not need a
+    paragraph explaining why a regulation does not apply to it, and that
+    paragraph has been removed from the protocol path (see
+    services/safety_reporting.py::_ctgov_obligation). This function is the
+    CONSENT FORM path, which is governed by a different rule - 21 CFR 50.25(c)
+    prescribes a specific ClinicalTrials.gov sentence for the consent document
+    itself. Keeping it here while removing it from the protocol is the correct
+    distinction, not a leftover.
+
+    ``basis`` below is an INTERNAL audit record of how the determination was
+    made. It is not narrated into the protocol (ai_service does not project it,
+    and icf_directive does not render it) and it is not printed in the consent
+    document either: the exporter renders ``applicability_note`` only for
+    sections marked NOT applicable, and this section is always applicable. What
+    the subject actually reads is ``statement``, verbatim - nothing else.
     """
     override = _ctx(context, "clinicaltrials_gov_required")
     if isinstance(override, bool):

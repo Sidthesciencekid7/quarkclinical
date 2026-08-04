@@ -423,27 +423,101 @@ def test_open_label_be_study_has_no_unblinding_step():
 
 
 def test_be_study_is_not_an_applicable_clinical_trial():
+    """The determination is still MADE and still auditable - it just carries no
+    prose, because a protocol does not explain why a regulation it is not
+    subject to does not apply to it."""
     ct = build_safety_reporting_plan("BE")["clinicaltrials_gov"]
     assert ct["is_applicable_clinical_trial"] is False
     assert ct["duties"] == []
-    assert "phase 1" in ct["rationale"].lower()
-    assert ct["voluntary_note"]
+    assert ct["determined_by"], "the determination must stay auditable"
+    # No sentence for the narration layer to lift into the document.
+    assert ct["state_in_protocol"] is False
+    assert ct["rationale"] == ""
+    assert ct["voluntary_note"] == ""
+
+
+def test_non_applicable_trial_emits_no_ctgov_text_anywhere_in_the_plan():
+    """The exact passage a reviewing clinical pharmacologist struck:
+
+        "Phase 1 investigations of drug products ... are excluded from the
+         definition of an applicable clinical trial in 42 CFR 11.10, so FDAAA
+         801 registration and results submission are not required for this
+         study."
+
+    It reached the protocol twice - once through the plan summary and once
+    through the directive's ClinicalTrials.gov line. Neither may carry it now,
+    and no substitute sentence may take its place.
+    """
+    for study_type in ("BE", "food_effect", "biosimilar_pk"):
+        plan = build_safety_reporting_plan(study_type, healthy_volunteers=True)
+        assert plan["clinicaltrials_gov"]["state_in_protocol"] is False
+
+        summary = plan["summary"].lower()
+        for banned in ("clinicaltrials", "fdaaa", "42 cfr 11",
+                       "applicable clinical trial", "registration"):
+            assert banned not in summary, (
+                f"{study_type}: summary still mentions '{banned}' - the summary "
+                "is narrated verbatim into the protocol")
+
+        # The rendered plan itself must not carry the paragraph either: it is
+        # serialised into the prompt as JSON alongside the directive.
+        blob = json.dumps(plan["clinicaltrials_gov"]).lower()
+        assert "42 cfr 11.10" not in blob
+        assert "not required" not in blob
+
+
+def test_directive_suppresses_ctgov_instead_of_explaining_the_exclusion():
+    directive = safety_reporting_directive(build_safety_reporting_plan("BE"))
+    # The model is told, in the prompt, to write nothing about it. That line is
+    # an INSTRUCTION, so it is the only place these terms may still appear.
+    assert "PUBLIC TRIAL REGISTRY - WRITE NOTHING" in directive
+    assert "not even a sentence" in directive
+    suppression = next(
+        line for line in directive.splitlines()
+        if "PUBLIC TRIAL REGISTRY" in line
+    )
+    rest = directive.replace(suppression, "")
+
+    # Nothing narratable is left anywhere else in the directive.
+    for banned in ("ClinicalTrials.gov", "FDAAA", "42 CFR 11", "42 CFR part 11",
+                   "applicable clinical trial", "registration"):
+        assert banned not in rest, f"directive still offers '{banned}' to narrate"
+    # And the struck sentence itself is gone in every wording.
+    assert "excluded from the definition" not in directive
+    assert "are not required for this study" not in directive
 
 
 def test_patient_biosimilar_study_is_an_applicable_clinical_trial():
     ct = build_safety_reporting_plan(
         "biosimilar_pk", healthy_volunteers=False)["clinicaltrials_gov"]
     assert ct["is_applicable_clinical_trial"] is True
+    assert ct["state_in_protocol"] is True
     reg = next(d for d in ct["duties"] if d["key"] == "ctgov_registration")
     assert reg["deadline_value"] == CTGOV_REGISTRATION_DAYS == 21
     results = next(d for d in ct["duties"] if d["key"] == "ctgov_results")
     assert results["deadline_value"] == 365
 
 
+def test_a_real_registration_obligation_still_reaches_the_protocol():
+    """Removing the noise must not remove the signal: where registration IS
+    required it is a duty of this protocol and must be stated with its clock."""
+    plan = build_safety_reporting_plan(
+        "biosimilar_pk", healthy_volunteers=False)
+    assert "applicable clinical trial" in plan["summary"].lower()
+    assert f"{CTGOV_REGISTRATION_DAYS} days" in plan["summary"]
+
+    directive = safety_reporting_directive(plan)
+    assert "ClinicalTrials.gov:" in directive
+    assert "Register the trial on ClinicalTrials.gov" in directive
+    assert "42 CFR 11.24(a)" in directive
+    assert "WRITE NOTHING" not in directive
+
+
 def test_ctgov_override_is_respected():
     ct = build_safety_reporting_plan(
         "BE", is_applicable_clinical_trial=True)["clinicaltrials_gov"]
     assert ct["is_applicable_clinical_trial"] is True
+    assert ct["state_in_protocol"] is True
     assert ct["determined_by"] == "caller override"
 
 

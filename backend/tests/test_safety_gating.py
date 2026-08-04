@@ -679,8 +679,31 @@ def test_directive_contains_no_unrendered_placeholders():
 
 
 def test_directive_tells_the_model_not_to_soften_the_numbers():
+    """Numbers and the rule SET are inviolable; the WORDING is not.
+
+    Asserted by intent rather than by exact phrasing, because the directive
+    deliberately changed: it used to say "narrate them exactly as given", which
+    made the model reproduce every ~90-word trigger verbatim and turned the
+    safety section into pages of near-duplicate prose. What must never change is
+    that no threshold is invented, rounded or dropped.
+    """
     directive = safety_gating_directive(
         recommend_safety_gating(study_type="BE", n_enrolled=24))
     lowered = directive.lower()
-    assert "do not add, drop, merge, re-rank, round, or soften" in lowered
+    for demand in ("exactly", "never invent", "round", "omit"):
+        assert demand in lowered, f"directive no longer forbids: {demand}"
     assert "assumption" in lowered, "unit conventions must be disclosed as such"
+
+
+def test_directive_demands_concise_rendering():
+    """The reviewer's finding was that the AE and stopping-criteria sections are
+    far too long. The directive must actively ask for compression - an engine
+    that tells the model to reproduce its source wording verbatim is the cause
+    of the verbosity, not a neutral party to it."""
+    directive = safety_gating_directive(
+        recommend_safety_gating(study_type="BE", n_enrolled=24))
+    lowered = directive.lower()
+    assert "concisely" in lowered
+    assert "one short sentence per cell" in lowered
+    # CTCAE is a published scale; copying all five definitions is pure padding.
+    assert "do not reproduce the full ctcae definitions" in lowered

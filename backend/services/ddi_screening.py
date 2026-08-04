@@ -1318,6 +1318,7 @@ def screen_interactions(
     design_key: Optional[str] = None,
     is_nti: Optional[bool] = None,
     healthy_volunteers: bool = True,
+    is_biologic: bool = False,
 ) -> dict[str, Any]:
     """Build the drug-specific concomitant-medication rules for THIS study.
 
@@ -1360,6 +1361,21 @@ def screen_interactions(
     prohibited: list[dict[str, Any]] = []
     restricted: list[dict[str, Any]] = []
     unresolved: list[str] = []
+
+    # A therapeutic protein is cleared by proteolytic catabolism and FcRn-mediated
+    # recycling, NOT by cytochrome P450 or by the drug transporters in _CATALOGUE.
+    # Emitting CYP/transporter prohibitions - or the grapefruit rule that rides on
+    # CYP3A4 - for a monoclonal antibody is a category error, and the pan-pathway
+    # fallback below is worse still: it prints a confident-sounding restriction
+    # for a mechanism that cannot apply. Biologics therefore skip the small-
+    # molecule catalogue entirely and get the interactions that DO matter for
+    # them: immunomodulation and vaccine timing, both of which act on the immune
+    # response that the ADA assay and the PK comparison depend on.
+    if is_biologic:
+        return _biologic_screen(
+            design=design, nti=nti, sections=sections,
+            pk_parameters=pk_parameters, healthy_volunteers=healthy_volunteers,
+        )
 
     for pw in _CATALOGUE:
         hits = detected.get(pw.key)
@@ -1507,6 +1523,193 @@ def screen_interactions(
     }
 
 
+# --------------------------------------------------------------------------
+# Biologics
+#
+# For a therapeutic protein the interaction question is immunological, not
+# metabolic. What can invalidate a PK-similarity comparison is anything that
+# perturbs the immune response: prior exposure to the same molecule or a
+# biosimilar of it (pre-existing anti-drug antibodies), concurrent
+# immunosuppression (blunts ADA formation and alters clearance), another
+# monoclonal antibody (assay interference plus overlapping FcRn competition),
+# and live vaccines (a safety issue under immunomodulation, and a confounder of
+# the immunogenicity endpoint).
+#
+# BIOLOGIC_NAIVE_WASHOUT_DAYS is deliberately not a washout at all - prior
+# exposure is a PERMANENT exclusion, because ADA can persist for years and a
+# subject who already has them is not interpretable at any interval.
+# --------------------------------------------------------------------------
+
+IMMUNOSUPPRESSANT_WASHOUT_DAYS = 90.0
+OTHER_BIOLOGIC_WASHOUT_DAYS = 90.0
+LIVE_VACCINE_WASHOUT_DAYS = 84.0        # 12 weeks
+INACTIVATED_VACCINE_WASHOUT_DAYS = 28.0
+
+_BIOLOGIC_EVIDENCE = {
+    "source": "Biosimilar PK-similarity study convention (FDA/EMA biosimilar guidance)",
+    "cue": "",
+    "quote": "",
+}
+
+
+def _biologic_screen(
+    *,
+    design: str,
+    nti: bool,
+    sections: dict[str, str],
+    pk_parameters: Optional[list[Any]],
+    healthy_volunteers: bool,
+) -> dict[str, Any]:
+    """Concomitant-medication rules for a therapeutic protein.
+
+    Contains NO CYP or transporter rule by construction: a monoclonal antibody
+    is not a P450 substrate, so such a rule could only ever be boilerplate.
+    """
+    prohibited: list[dict[str, Any]] = []
+
+    prohibited.append(_entry(
+        key="prior_exposure_naive",
+        label=(
+            "Prior exposure to the reference product, the proposed biosimilar, or any "
+            "other biologic directed at the same target"
+        ),
+        status=PROHIBITED,
+        washout_days=None,  # permanent exclusion, not a washout
+        basis=(
+            "Not a washout: this is a permanent exclusion. Anti-drug antibodies can "
+            "persist for years after a single exposure, so no interval makes a "
+            "previously-exposed subject interpretable."
+        ),
+        rationale=(
+            "Subjects must be naive to the molecule. Pre-existing anti-drug antibodies "
+            "accelerate clearance and depress exposure, which biases the Test/Reference "
+            "comparison in a direction that depends on which arm the affected subject "
+            "was randomised to. It also makes treatment-emergent immunogenicity - a "
+            "co-primary consideration in a biosimilar programme - uninterpretable, "
+            "because a baseline-positive subject cannot be scored as newly positive."
+        ),
+        evidence=_BIOLOGIC_EVIDENCE,
+        conditions=(
+            "Confirm by medical history at screening AND by a baseline anti-drug "
+            "antibody sample drawn before the first dose; a baseline-positive result "
+            "is exclusionary even where the history is negative."
+        ),
+    ))
+    prohibited.append(_entry(
+        key="immunosuppressants",
+        label="Systemic immunosuppressants and immunomodulators",
+        status=PROHIBITED,
+        washout_days=IMMUNOSUPPRESSANT_WASHOUT_DAYS,
+        basis=(
+            f"{IMMUNOSUPPRESSANT_WASHOUT_DAYS:.0f} days covers the recovery of humoral "
+            "immune competence after conventional immunosuppressive therapy."
+        ),
+        rationale=(
+            "Immunosuppression blunts anti-drug antibody formation, which would make the "
+            "immunogenicity endpoint falsely reassuring, and can itself alter the "
+            "clearance of a therapeutic protein."
+        ),
+        examples=[
+            "corticosteroids (systemic, above physiological replacement)",
+            "methotrexate", "azathioprine", "ciclosporin", "tacrolimus",
+            "mycophenolate", "cyclophosphamide",
+        ],
+        evidence=_BIOLOGIC_EVIDENCE,
+    ))
+    prohibited.append(_entry(
+        key="other_biologics",
+        label="Any other monoclonal antibody or Fc-fusion protein",
+        status=PROHIBITED,
+        washout_days=OTHER_BIOLOGIC_WASHOUT_DAYS,
+        basis=(
+            f"{OTHER_BIOLOGIC_WASHOUT_DAYS:.0f} days, or 5 terminal half-lives of the "
+            "prior agent, whichever is longer - IgG half-lives are typically 2-4 weeks."
+        ),
+        rationale=(
+            "A circulating therapeutic antibody can interfere with the ligand-binding "
+            "assay used to measure the study drug, and competes for the same FcRn "
+            "recycling pathway that determines its half-life."
+        ),
+        evidence=_BIOLOGIC_EVIDENCE,
+    ))
+    prohibited.append(_entry(
+        key="live_vaccines",
+        label="Live or live-attenuated vaccines",
+        status=PROHIBITED,
+        washout_days=LIVE_VACCINE_WASHOUT_DAYS,
+        basis=f"{LIVE_VACCINE_WASHOUT_DAYS / 7:.0f} weeks before dosing and for the study duration.",
+        rationale=(
+            "Under immunomodulation a live vaccine carries a risk of disseminated "
+            "infection, and the vaccine response confounds the immunogenicity assessment."
+        ),
+        evidence=_BIOLOGIC_EVIDENCE,
+    ))
+
+    restricted = [_entry(
+        key="inactivated_vaccines",
+        label="Inactivated, subunit or mRNA vaccines",
+        status=RESTRICTED,
+        washout_days=INACTIVATED_VACCINE_WASHOUT_DAYS,
+        basis=f"{INACTIVATED_VACCINE_WASHOUT_DAYS:.0f} days before the first dose.",
+        rationale=(
+            "No infection risk, but a concurrent immune response can cross-react in the "
+            "anti-drug antibody assay and confound the immunogenicity endpoint."
+        ),
+        evidence=_BIOLOGIC_EVIDENCE,
+    )]
+
+    permitted = [_entry(
+        key="paracetamol_rescue",
+        label="Paracetamol (acetaminophen) as rescue analgesia",
+        status=PERMITTED,
+        washout_days=None,
+        basis="",
+        rationale=(
+            "Cleared by hepatic conjugation, which is unrelated to the proteolytic "
+            "catabolism of a therapeutic protein; it cannot perturb the exposure "
+            "comparison."
+        ),
+        conditions="Single doses up to 2 g/day, recorded on the concomitant-medication CRF.",
+        evidence=_BIOLOGIC_EVIDENCE,
+    )]
+
+    victim_t_half = _t_half_hours(pk_parameters)
+    all_rows = prohibited + restricted
+    max_washout = max((r["washout_days"] or 0.0) for r in all_rows) if all_rows else 0.0
+
+    summary = (
+        "This product is a therapeutic protein, cleared by proteolytic catabolism and "
+        "FcRn-mediated recycling rather than by cytochrome P450 enzymes or drug "
+        "transporters. No CYP or transporter restriction is therefore applicable, and "
+        "none is imposed. The concomitant-medication rules instead control the "
+        "immunological factors that can invalidate a pharmacokinetic-similarity "
+        "comparison: subjects must be NAIVE to the reference product, the proposed "
+        "biosimilar and any other biologic against the same target (a permanent "
+        "exclusion, since anti-drug antibodies persist), and systemic "
+        "immunosuppressants, other monoclonal antibodies and live vaccines are "
+        "prohibited with the washout windows tabulated."
+    )
+
+    return {
+        "modality": "biologic",
+        "design_key": design,
+        "pathways": [],
+        "pathway_keys": [],
+        "prohibited": prohibited,
+        "restricted": restricted,
+        "permitted": permitted,
+        "max_washout_days": float(max_washout),
+        "screening_history_window_days": float(max_washout),
+        "history_exclusion_agents": [],
+        "study_drug_t_half_hours": victim_t_half,
+        "post_dose_restriction_hours": None,
+        "unresolved": [],
+        "assumptions": [],
+        "requires_naive_subjects": True,
+        "summary": summary,
+    }
+
+
 def _assumptions_used(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The engine's own conventions, surfaced so the protocol DISCLOSES them.
 
@@ -1631,6 +1834,34 @@ def ddi_directive(result: dict[str, Any]) -> str:
         "inducers' clause unless CYP3A4 appears in the list below.",
         f"Basis: {result.get('summary', '')}",
     ]
+
+    if str(result.get("modality") or "").lower() == "biologic":
+        lines.append(
+            "MODALITY - THERAPEUTIC PROTEIN. This drug is cleared by proteolytic "
+            "catabolism and FcRn recycling. It is NOT a cytochrome-P450 substrate and "
+            "NOT a substrate of the drug transporters. You must NOT write any CYP, "
+            "P450, P-gp, OATP, BCRP or 'metabolic enzyme inducer/inhibitor' "
+            "restriction, and must NOT restrict grapefruit, Seville orange or "
+            "pomelo - those act on intestinal CYP3A4 and are irrelevant here. Stating "
+            "in Clinical Pharmacology that the drug is not P450-metabolised is correct "
+            "and should be kept; imposing a comedication restriction on that basis is "
+            "not. The interactions that matter for this study are immunological and "
+            "are listed below."
+        )
+    if result.get("requires_naive_subjects"):
+        lines.append(
+            "MANDATORY EXCLUSION - BIOLOGIC-NAIVE. The exclusion criteria MUST state "
+            "that subjects who have previously received the reference product, the "
+            "proposed biosimilar, or any other biologic directed at the same target are "
+            "excluded, and that this is confirmed by medical history AND a baseline "
+            "anti-drug antibody sample drawn before the first dose, with a "
+            "baseline-positive result exclusionary. Present it as a permanent exclusion, "
+            "NOT as a washout period - anti-drug antibodies persist for years, so no "
+            "interval makes a previously-exposed subject eligible. State the reason: "
+            "pre-existing ADA accelerate clearance and depress exposure, biasing the "
+            "Test/Reference comparison, and make treatment-emergent immunogenicity "
+            "unscoreable."
+        )
 
     pathways = result.get("pathways") or []
     if pathways:
