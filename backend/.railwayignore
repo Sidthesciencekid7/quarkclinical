@@ -22,3 +22,10 @@ ENV/
 htmlcov/
 *.sqlite3
 *.log
+
+# Debug/scratch artifacts from local development — not imported by any
+# runtime path (main.py, Procfile), so excluding them changes nothing at
+# runtime; they were previously baked into the deployed image unnoticed.
+_real_generate.py
+prompt_system.txt
+prompt_user.txt

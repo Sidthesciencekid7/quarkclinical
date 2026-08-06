@@ -12,3 +12,9 @@ _rlib/
 .env
 tests/
 evals/
+
+# Debug/scratch artifacts from local development — not imported by any
+# runtime path (main.py, Procfile).
+_real_generate.py
+prompt_system.txt
+prompt_user.txt
