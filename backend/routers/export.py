@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from docx import Document
+from docx.enum.table import WD_ALIGN_VERTICAL
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -2780,38 +2781,55 @@ def _ss_para(doc: Document, text: str, *, italic: bool = False, size: float = 10
     r.italic = italic
 
 
-def _design_stage_labels(rec: dict) -> list[str]:
-    """Shared stage list for the study-design schematic (PDF + DOCX)."""
+def _design_schematic_stages(rec: dict) -> list[dict[str, Any]]:
+    """Shared stage list for the study-design schematic (PDF + DOCX).
+
+    Each stage is either shared ({"label": str, "arms": None}, drawn as one
+    box spanning the full height of the figure) or an arm split
+    ({"label": None, "arms": [top, bottom]}, drawn as two boxes in separate,
+    visually parallel lanes). Only a design with genuinely concurrent
+    treatment arms (parallel) branches: a crossover subject moves through the
+    same periods sequentially, not alongside another arm, so it stays a
+    single row. The arms stay in their own lane through every stage they are
+    actually in (treatment AND its assessments), converging back to one lane
+    only at End of Study - a momentary split-then-immediate-merge would
+    understate that the two arms run concurrently for the bulk of the study.
+    """
     design_key = rec.get("design_key") or "crossover"
     n_enr = rec.get("n_enrolled")
     n_arm = rec.get("n_per_group") or (n_enr // 2 if isinstance(n_enr, int) else None)
     n_txt = f"N={n_enr}" if n_enr else "N"
     arm_txt = f"n={n_arm}" if n_arm else "n"
     if design_key == "parallel":
+        assessment = "PK Sampling & Safety / Immunogenicity"
         return [
-            "Screening (Day -28 to -1)",
-            f"Randomize 1:1 ({n_txt})",
-            f"Test Product ({arm_txt})  /  Reference ({arm_txt})",
-            "PK Sampling & Safety / Immunogenicity",
-            "End of Study (EOS)",
+            {"label": "Screening (Day -28 to -1)", "arms": None},
+            {"label": f"Randomize 1:1 ({n_txt})", "arms": None},
+            {"label": None, "arms": [f"Test Product ({arm_txt})", f"Reference ({arm_txt})"]},
+            {"label": None, "arms": [assessment, assessment]},
+            {"label": "End of Study (EOS)", "arms": None},
         ]
     return [
-        "Screening",
-        f"Randomize sequence ({n_txt})",
-        "Period 1 (Test or Reference)",
-        "Washout (>=5-7 x t1/2)",
-        "Period 2 (crossover)",
-        "End of Study (EOS)",
+        {"label": "Screening", "arms": None},
+        {"label": f"Randomize sequence ({n_txt})", "arms": None},
+        {"label": "Period 1 (Test or Reference)", "arms": None},
+        {"label": "Washout (>=5-7 x t1/2)", "arms": None},
+        {"label": "Period 2 (crossover)", "arms": None},
+        {"label": "End of Study (EOS)", "arms": None},
     ]
 
 
 def _add_study_design_schematic_docx(doc: Document, protocol: Protocol) -> None:
-    """Deterministic study-design schematic for DOCX — a shaded one-row flow of
-    stage boxes separated by arrows (parity with the PDF Figure 1)."""
+    """Deterministic study-design schematic for DOCX — a shaded box-and-arrow
+    flow (parity with the PDF Figure 1). For a parallel design the two
+    treatment arms run as two visually separate, parallel rows from the
+    randomisation split to the point they converge again at End of Study,
+    rather than naming both arms inside a single box."""
     rec = (protocol.population_config or {}).get("_sample_size")
     if not rec:
         return
-    stages = _design_stage_labels(rec)
+    stages = _design_schematic_stages(rec)
+    branched = any(s["arms"] for s in stages)
 
     cap = doc.add_paragraph()
     cr = cap.add_run(f"Figure 1. Study design schematic — {rec.get('design', '')}.")
@@ -2819,37 +2837,61 @@ def _add_study_design_schematic_docx(doc: Document, protocol: Protocol) -> None:
     cr.font.name = "Times New Roman"
     cr.font.size = Pt(9)
 
-    # One row, with arrow columns interleaved between stage columns.
-    n_cols = len(stages) * 2 - 1
-    tbl = doc.add_table(rows=1, cols=n_cols)
-    tbl.autofit = True
-    row = tbl.rows[0]
-    for i, label in enumerate(stages):
-        cell = row.cells[i * 2]
-        cell.text = ""
-        para = cell.paragraphs[0]
-        para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        para.paragraph_format.space_after = Pt(0)
-        rn = para.add_run(label)
-        rn.bold = True
-        rn.font.name = "Times New Roman"
-        rn.font.size = Pt(7.5)
-        rn.font.color.rgb = RGBColor(0x1E, 0x29, 0x3B)
-        fill = "FDF3E3" if (rec.get("design_key") == "parallel" and i == 2) else "EAF2FB"
+    def _shade(cell, fill: str) -> None:
         shd = OxmlElement("w:shd")
         shd.set(qn("w:val"), "clear")
         shd.set(qn("w:color"), "auto")
         shd.set(qn("w:fill"), fill)
         cell._tc.get_or_add_tcPr().append(shd)
-        # arrow cell
-        if i * 2 + 1 < n_cols:
-            acell = row.cells[i * 2 + 1]
-            acell.text = ""
-            apara = acell.paragraphs[0]
-            apara.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            ar = apara.add_run("→")
-            ar.font.name = "Times New Roman"
-            ar.font.size = Pt(11)
+
+    def _fill_cell(cell, text: str, *, arrow: bool = False, fill: str | None = None) -> None:
+        cell.text = ""
+        cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+        para = cell.paragraphs[0]
+        para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        para.paragraph_format.space_after = Pt(0)
+        run = para.add_run(text)
+        run.font.name = "Times New Roman"
+        if arrow:
+            run.font.size = Pt(11)
+        else:
+            run.bold = True
+            run.font.size = Pt(7.5)
+            run.font.color.rgb = RGBColor(0x1E, 0x29, 0x3B)
+        if fill:
+            _shade(cell, fill)
+
+    # Stage columns interleaved with arrow columns; two rows only when the
+    # design actually branches, so a crossover keeps the original single row.
+    n_cols = len(stages) * 2 - 1
+    n_rows = 2 if branched else 1
+    tbl = doc.add_table(rows=n_rows, cols=n_cols)
+    tbl.autofit = True
+
+    for i, stage in enumerate(stages):
+        col = i * 2
+        if stage["arms"]:
+            _fill_cell(tbl.cell(0, col), stage["arms"][0], fill="FDF3E3")
+            _fill_cell(tbl.cell(1, col), stage["arms"][1], fill="FDF3E3")
+        else:
+            cell = tbl.cell(0, col)
+            if branched:
+                cell = cell.merge(tbl.cell(1, col))
+            _fill_cell(cell, stage["label"], fill="EAF2FB")
+
+        if col + 1 >= n_cols:
+            continue
+        acol = col + 1
+        # A branch or convergence point: arrows appear in both rows rather
+        # than being merged, so the split/join is visible at a glance.
+        if branched and (stage["arms"] or stages[i + 1]["arms"]):
+            _fill_cell(tbl.cell(0, acol), "→", arrow=True)
+            _fill_cell(tbl.cell(1, acol), "→", arrow=True)
+        else:
+            acell = tbl.cell(0, acol)
+            if branched:
+                acell = acell.merge(tbl.cell(1, acol))
+            _fill_cell(acell, "→", arrow=True)
     doc.add_paragraph()
 
 
@@ -3089,50 +3131,37 @@ def _wrap_label(text: str, width: int = 16) -> list[str]:
 
 def _add_study_design_schematic_pdf(story, protocol, styles, section_idx) -> None:
     """Render a deterministic study-design schematic (Figure 1) from the locked
-    design — a horizontal box-and-arrow flow that adapts to parallel vs crossover.
+    design — a horizontal box-and-arrow flow that adapts to parallel vs
+    crossover. For a parallel design the two treatment arms run as two
+    visually separate, parallel lanes from the randomisation split to the
+    point they converge again at End of Study, rather than a single box
+    naming both arms or a momentary split that immediately re-merges.
 
     Drawn with reportlab graphics (not AI) so it is always present and always
     matches the computed design, N, and arms.
     """
     if not _RL_OK:
         return
-    from reportlab.graphics.shapes import Drawing, Group, Line, Polygon, Rect, String
+    from reportlab.graphics.shapes import Drawing, Line, Polygon, Rect, String
 
     rec = (protocol.population_config or {}).get("_sample_size") or {}
     design_key = rec.get("design_key") or "crossover"
-    n_enr = rec.get("n_enrolled")
-    n_arm = rec.get("n_per_group") or (n_enr // 2 if isinstance(n_enr, int) else None)
-    n_txt = f"N={n_enr}" if n_enr else "N"
-    arm_txt = f"n={n_arm}" if n_arm else "n"
-
-    # Stage list: each is (label, optional split=[toplabel, bottomlabel]).
-    if design_key == "parallel":
-        stages = [
-            ("Screening (Day -28 to -1)", None),
-            (f"Randomize 1:1 ({n_txt})", None),
-            ("", [f"Test Product ({arm_txt})", f"Reference ({arm_txt})"]),
-            ("PK Sampling & Safety / Immunogenicity", None),
-            ("End of Study (EOS)", None),
-        ]
-    elif design_key in ("crossover", "replicate"):
-        stages = [
-            ("Screening", None),
-            (f"Randomize sequence ({n_txt})", None),
-            ("Period 1 (Test or Reference)", None),
-            ("Washout (>=5-7 x t1/2)", None),
-            ("Period 2 (crossover)", None),
-            ("End of Study (EOS)", None),
-        ]
-    else:
+    if design_key not in ("parallel", "crossover", "replicate"):
         return
+    stages = _design_schematic_stages(rec)
+    branched = any(s["arms"] for s in stages)
 
     width = 425.0
     n_col = len(stages)
     gap = 14.0
     bw = (width - (n_col - 1) * gap) / n_col
-    H = 96.0
+    H = 104.0 if branched else 96.0
     cy = H / 2.0
     bh = 34.0
+    lane_offset = 16.0             # distance of each arm's lane from centre
+    top_lane = cy + lane_offset
+    bot_lane = cy - lane_offset
+    arm_bh = 26.0
     border = rl_colors.HexColor("#2F5C9E")
     fill = rl_colors.HexColor("#EAF2FB")
     arm_fill = rl_colors.HexColor("#FDF3E3")
@@ -3151,30 +3180,52 @@ def _add_study_design_schematic_pdf(story, protocol, styles, section_idx) -> Non
                          fillColor=dark, textAnchor="middle"))
 
     def _arrow(x0, x1, y):
+        """Straight horizontal arrow — the common case, and also the final
+        approach segment of a branch/converge connector, so every arrowhead
+        stays perfectly horizontal even where the line leading into it was
+        diagonal."""
         d.add(Line(x0, y, x1 - 4, y, strokeColor=border, strokeWidth=0.9))
         d.add(Polygon([x1, y, x1 - 5, y + 2.6, x1 - 5, y - 2.6],
                       fillColor=border, strokeColor=border))
 
+    def _branch_arrow(x0, y0, x1, y1):
+        """Connector between a shared lane and an arm's own lane: a plain
+        diagonal for the first stretch (no arrowhead - rotating one to match
+        an arbitrary angle is more trouble than it is worth here), then a
+        horizontal arrow for the final approach into the box, at y1."""
+        x_mid = x0 + (x1 - x0) * 0.45
+        d.add(Line(x0, y0, x_mid, y1, strokeColor=border, strokeWidth=0.9))
+        _arrow(x_mid, x1, y1)
+
     x = 0.0
-    centers: list[float] = []
-    for label, split in stages:
-        if split:
-            top_cy = cy + 16
-            bot_cy = cy - 16
-            _box(x, top_cy, bw, 26, split[0], arm_fill)
-            _box(x, bot_cy, bw, 26, split[1], arm_fill)
+    col_x: list[float] = []
+    for stage in stages:
+        col_x.append(x)
+        if stage["arms"]:
+            _box(x, top_lane, bw, arm_bh, stage["arms"][0], arm_fill)
+            _box(x, bot_lane, bw, arm_bh, stage["arms"][1], arm_fill)
         else:
-            _box(x, cy, bw, bh, label, fill)
-        centers.append(x + bw / 2.0)
+            _box(x, cy, bw, bh, stage["label"], fill)
         x += bw + gap
 
-    # arrows between consecutive column edges, at vertical centre
-    x = 0.0
     for i in range(n_col - 1):
-        right_edge = x + bw
-        x_next = x + bw + gap
-        _arrow(right_edge, x_next, cy)
-        x = x_next
+        left, right = stages[i], stages[i + 1]
+        x0 = col_x[i] + bw
+        x1 = col_x[i + 1]
+        if left["arms"] and right["arms"]:
+            # both sides already in their own lane - two parallel arrows
+            _arrow(x0, x1, top_lane)
+            _arrow(x0, x1, bot_lane)
+        elif right["arms"]:
+            # branch point: the single upstream lane splits into two
+            _branch_arrow(x0, cy, x1, top_lane)
+            _branch_arrow(x0, cy, x1, bot_lane)
+        elif left["arms"]:
+            # convergence point: the two arm lanes rejoin a single lane
+            _branch_arrow(x0, top_lane, x1, cy)
+            _branch_arrow(x0, bot_lane, x1, cy)
+        else:
+            _arrow(x0, x1, cy)
 
     story.append(Spacer(1, 2 * rl_mm))
     story.append(Paragraph(
