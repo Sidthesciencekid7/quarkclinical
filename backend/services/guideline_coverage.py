@@ -57,8 +57,20 @@ _REQUIREMENTS: tuple[Requirement, ...] = (
                 ("study_design",), ("crossover", "parallel", "replicate", "randomi")),
     Requirement("randomization", "Randomization & blinding", "ICH E6(R2) §6.4",
                 ("treatment", "study_design"), ("randomi", "blind", "sequence")),
+    # Reference-product identification is split by study type: "Reference Listed
+    # Drug" is ANDA (505(j)) terminology and does not exist on the 351(k)
+    # biosimilar pathway, where the comparator is the US-licensed reference
+    # product — so a biosimilar report must not be checked against, or cite,
+    # generic-drug wording. Same requirement id: the study_types filter means
+    # exactly one of the two is ever emitted.
     Requirement("reference_product", "Reference & test product identification", "FDA BE 2014 §III",
-                ("treatment", "study_design"), ("reference", "test product", "rld", "listed drug", "batch", "lot")),
+                ("treatment", "study_design"), ("reference", "test product", "rld", "listed drug", "batch", "lot"),
+                study_types=("BE", "food_effect")),
+    Requirement("reference_product", "Reference & test product identification",
+                "FDA Biosimilarity 2015; PHS Act 351(k)",
+                ("treatment", "study_design"),
+                ("reference product", "us-licensed", "test product", "reference", "batch", "lot"),
+                study_types=("biosimilar_pk",)),
     Requirement("eligibility", "Eligibility (inclusion/exclusion)", "FDA BE 2014 §IV; ICH E6(R2) §6.5",
                 ("population",), ("inclusion", "exclusion", "eligib")),
     Requirement("restrictions", "Subject restrictions (food/fluid/posture)", "FDA BE 2014 §IV",

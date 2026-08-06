@@ -26,6 +26,14 @@ async def list_guidelines() -> dict:
                 "region": p.region,
                 "citation": p.citation,
                 "is_current": p.is_current,
+                # Study-type-dependent framing, so the selector can show a
+                # biosimilar user the biosimilar citation/pathway instead of the
+                # generic-drug (ANDA) one the small-molecule fields carry.
+                # "" => this body grants no marketing authorisation (ICH) or has
+                # no distinct biosimilar wording; the caller shows nothing.
+                "submission_pathway": p.submission_pathway,
+                "biosimilar_pathway": p.biosimilar_pathway,
+                "biosimilar_citation": p.biosimilar_citation,
             }
             for p in ordered
         ],

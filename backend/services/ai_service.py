@@ -11,7 +11,12 @@ import math
 import os
 
 from services.biostatistics import WASHOUT_HALF_LIVES
-from services.guidelines import get_profile, regulatory_directive
+from services.guidelines import (
+    get_profile,
+    governing_citation,
+    reference_product_term,
+    regulatory_directive,
+)
 from services.design_decisions import design_directive as _design_decisions_directive
 
 # Deterministic engines. Every number a regulator could challenge is computed in
@@ -1375,20 +1380,40 @@ def _expertise_for(study_type: str, guideline_version: str | None = None) -> tup
 
     ``guideline_version`` (when given) swaps the regulator/region framing so an
     EMA or ICH M13 protocol is written to the right authority instead of a
-    hardcoded FDA voice. The biosimilar path stays FDA-351(k)-specific because
-    this app's biosimilar immunogenicity pathway is modeled on FDA guidance.
+    hardcoded FDA voice. The biosimilar path defaults to FDA 351(k) - this app's
+    biosimilar immunogenicity pathway is modeled on FDA guidance, and a blank or
+    unknown guideline resolves to the FDA profile - but a biosimilar under a
+    NON-FDA guideline gets that regulator's own framing: 351(k)/BPCIA is a US
+    statute, and asserting it over an EMA protocol would also contradict the
+    regulatory-framework directive (services/guidelines.py).
     """
     if study_type == "biosimilar_pk":
-        expertise = (
-            "You are a senior clinical pharmacologist and regulatory writer specializing in "
-            "FDA biosimilar development under the 351(k) pathway (Biologics Price Competition "
-            "and Innovation Act), FDA Biosimilar Guidance (2019), ICH E6(R2) GCP, and "
-            "21 CFR Part 11. You have deep expertise in immunogenicity assessment, ligand "
-            "binding assays, and PK similarity evaluation for biological products. "
-            "You produce audit-ready, regulatory-submission-quality text. "
-            "Write in formal third-person scientific language suitable for FDA biosimilar review. "
-            "Output only the section body — no headings, numbering, or meta-commentary."
-        )
+        prof = get_profile(guideline_version or "")
+        if prof.regulator == "FDA":
+            expertise = (
+                "You are a senior clinical pharmacologist and regulatory writer specializing in "
+                "FDA biosimilar development under the 351(k) pathway (Biologics Price Competition "
+                "and Innovation Act), FDA Biosimilar Guidance (2019), ICH E6(R2) GCP, and "
+                "21 CFR Part 11. You have deep expertise in immunogenicity assessment, ligand "
+                "binding assays, and PK similarity evaluation for biological products. "
+                "You produce audit-ready, regulatory-submission-quality text. "
+                "Write in formal third-person scientific language suitable for FDA biosimilar review. "
+                "Output only the section body — no headings, numbering, or meta-commentary."
+            )
+        else:
+            expertise = (
+                f"You are a senior clinical pharmacologist and regulatory writer specializing in "
+                f"biosimilar development for the {prof.regulator} ({prof.region}), working to "
+                f"{governing_citation(guideline_version or '', study_type)}, ICH E6(R2) GCP, and "
+                f"the applicable electronic-records requirements. You have deep expertise in "
+                f"immunogenicity assessment, ligand binding assays, and PK similarity evaluation "
+                f"for biological products. You produce audit-ready, regulatory-submission-quality "
+                f"text. Refer to the comparator as the "
+                f"{reference_product_term(guideline_version or '', study_type)}. "
+                f"Write in formal third-person scientific language suitable for {prof.regulator} "
+                f"biosimilar review. Output only the section body — no headings, numbering, or "
+                f"meta-commentary."
+            )
         return expertise, "biosimilar PK similarity"
 
     prof = get_profile(guideline_version or "")

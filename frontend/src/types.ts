@@ -163,6 +163,16 @@ export interface AppGuideline {
   region: string
   citation: string
   is_current: boolean
+  /** Submission pathway for a small-molecule (BE / food-effect) study, e.g. the
+   *  FDA ANDA 505(j) pathway. '' when the body grants no marketing
+   *  authorisation (ICH). */
+  submission_pathway?: string
+  /** Submission pathway for a biosimilar PK-similarity study, e.g. FDA 351(k)
+   *  (BPCIA). Different statute from the generic pathway above. */
+  biosimilar_pathway?: string
+  /** Governing citation for a biosimilar study; overrides `citation`, which is
+   *  written in generic-drug terms. '' when the profile has no override. */
+  biosimilar_citation?: string
 }
 
 export interface GuidelinesResponse {

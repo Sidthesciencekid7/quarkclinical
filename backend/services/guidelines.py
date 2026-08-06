@@ -8,9 +8,17 @@ differs per guideline is the **framing**: the regulator and citation, the
 reference-product terminology, the highly-variable-drug and NTI handling, and
 the fasting/fed convention.
 
+The framing also differs by STUDY TYPE, not only by guideline: a generic small
+molecule and a biosimilar are submitted under different statutes even to the
+same regulator (US: an ANDA under FD&C Act 505(j) vs a 351(k) application under
+the Public Health Service Act/BPCIA; EU: Directive 2001/83/EC Article 10(1) vs
+Article 10(4)), and the comparator is named differently in each (Reference
+Listed Drug vs US-licensed reference product). The ``biosimilar_*`` profile
+fields below carry that split.
+
 This module is the single source of truth for those differences. It drives:
-  - the AI generation directive (services/ai_service._regulatory_directive),
-    injected into both the per-section and the three-stage-pipeline prompts, so
+  - the AI generation directive (regulatory_directive, below), injected into
+    both the per-section and the three-stage-pipeline prompts, so
     an EMA protocol says "EU reference medicinal product" and cites the EMA
     guideline instead of the FDA ANDA guidance;
   - the frontend guideline selector (GET /api/guidelines);
@@ -46,6 +54,48 @@ class GuidelineProfile:
     study_types: tuple[str, ...] = ("BE", "biosimilar_pk", "food_effect")
     structural_note: str = ""     # protocol-structure guidance (ICH M11); appended to the directive only when set
 
+    # --- Submission pathway (study-type dependent) -------------------------
+    # ``submission_pathway`` is the marketing application a small-molecule
+    # BE / food-effect study supports; ``biosimilar_pathway`` is the (different)
+    # one a biosimilar PK-similarity study supports. The ``biosimilar_*``
+    # override fields apply ONLY when study_type == "biosimilar_pk", and only
+    # where the biosimilar wording genuinely differs - an empty override falls
+    # back to the generic field, so EMA (whose comparator is the EU reference
+    # medicinal product either way) does not have to repeat itself.
+    #
+    # IMPORTANT: 351(k)/ANDA are US statutory constructs and Article 10(4) is an
+    # EU one. Each profile states only its OWN regulator's pathway, and an empty
+    # string means "this body does not grant marketing authorisations" (ICH) -
+    # regulatory_directive() then OMITS the pathway line rather than asserting a
+    # pathway that does not apply to the selected regulator.
+    submission_pathway: str = ""
+    biosimilar_pathway: str = ""
+    biosimilar_citation: str = ""
+    biosimilar_reference_product_term: str = ""
+
+
+# The FDA biosimilar framing is shared by every FDA profile: which small-molecule
+# BE guidance a protocol is locked to (the 2014 ANDA guidance or the superseded
+# 2003 one) has no bearing on the statutory pathway a BIOLOGIC follows, which is
+# 351(k) either way.
+_FDA_ANDA_PATHWAY = (
+    "FDA Abbreviated New Drug Application (ANDA) under section 505(j) of the Federal "
+    "Food, Drug, and Cosmetic Act (generic drug pathway)"
+)
+_FDA_351K_PATHWAY = (
+    "FDA 351(k) biosimilar biologics license application under section 351(k) of the "
+    "Public Health Service Act, as established by the Biologics Price Competition and "
+    "Innovation Act (BPCIA) - a biologics licensure pathway, not a generic-drug pathway"
+)
+_FDA_BIOSIMILAR_CITATION = (
+    "FDA Guidance for Industry: Scientific Considerations in Demonstrating Biosimilarity "
+    "to a Reference Product (2015); FDA Guidance for Industry: Development of Therapeutic "
+    "Protein Biosimilars - Comparative Analytical Assessment and Other Quality-Related "
+    "Considerations (2019); FDA Guidance for Industry: Immunogenicity Testing of "
+    "Therapeutic Protein Products (2019); Public Health Service Act section 351(k) (BPCIA)"
+)
+_FDA_BIOSIMILAR_REFERENCE_TERM = "US-licensed reference product"
+
 
 GUIDELINES: dict[str, GuidelineProfile] = {
     "FDA-BE-2014": GuidelineProfile(
@@ -75,6 +125,10 @@ GUIDELINES: dict[str, GuidelineProfile] = {
         food_convention=(
             "Fasting and, where indicated by the RLD labeling, fed bioequivalence studies."
         ),
+        submission_pathway=_FDA_ANDA_PATHWAY,
+        biosimilar_pathway=_FDA_351K_PATHWAY,
+        biosimilar_citation=_FDA_BIOSIMILAR_CITATION,
+        biosimilar_reference_product_term=_FDA_BIOSIMILAR_REFERENCE_TERM,
     ),
     "EMA-BE-2010": GuidelineProfile(
         id="EMA-BE-2010",
@@ -104,6 +158,22 @@ GUIDELINES: dict[str, GuidelineProfile] = {
             "Generally conducted under fasting conditions unless the SmPC recommends intake "
             "with food, in which case fed conditions apply."
         ),
+        submission_pathway=(
+            "European Union generic medicinal product application under Article 10(1) of "
+            "Directive 2001/83/EC"
+        ),
+        biosimilar_pathway=(
+            "European Union similar biological medicinal product (biosimilar) application "
+            "under Article 10(4) of Directive 2001/83/EC"
+        ),
+        biosimilar_citation=(
+            "EMA/CHMP Guideline on similar biological medicinal products, CHMP/437/04 Rev 1; "
+            "EMA/CHMP Guideline on similar biological medicinal products containing "
+            "biotechnology-derived proteins as active substance: non-clinical and clinical "
+            "issues, EMEA/CHMP/BMWP/42832/2005 Rev. 1; Directive 2001/83/EC Article 10(4)"
+        ),
+        # No comparator override: the EU reference medicinal product is the
+        # comparator for both a generic and a biosimilar application.
     ),
     "ICH-M13A-2024": GuidelineProfile(
         id="ICH-M13A-2024",
@@ -131,6 +201,20 @@ GUIDELINES: dict[str, GuidelineProfile] = {
         food_convention=(
             "Fasting and/or fed studies per the harmonised M13A recommendations for the "
             "dosage form and the comparator's labeling."
+        ),
+        # ICH harmonises requirements; it does not grant marketing authorisations,
+        # so no submission pathway is asserted (the line is omitted) - the pathway
+        # belongs to whichever ICH region the sponsor actually files in.
+        #
+        # M13A is scoped to immediate-release SOLID ORAL dosage forms, i.e. small
+        # molecules: citing it as the governing guideline for a biologic would be
+        # wrong, so the biosimilar citation redirects instead of asserting it.
+        # Phrased as a noun phrase so it reads correctly wherever a citation is
+        # interpolated ("Governing guideline: ...", "working to ...").
+        biosimilar_citation=(
+            "the biosimilar guidance of the regulatory region of submission (ICH M13A "
+            "itself covers bioequivalence for immediate-release solid oral dosage forms "
+            "and does not govern biosimilar development)"
         ),
     ),
     "ICH-M11-2025": GuidelineProfile(
@@ -165,6 +249,10 @@ GUIDELINES: dict[str, GuidelineProfile] = {
             "dosage form and the comparator's labeling, described within the ICH M11 template "
             "structure."
         ),
+        # ICH M11 is a modality-agnostic protocol TEMPLATE standard, so its
+        # citation is correct for a biosimilar as well and needs no override.
+        # As with M13A, no submission pathway is asserted: ICH does not license
+        # products.
         structural_note=(
             "This protocol targets the ICH M11 harmonised clinical trial protocol template: "
             "align the section headings, section ordering, and terminology with the ICH M11 "
@@ -194,6 +282,13 @@ GUIDELINES: dict[str, GuidelineProfile] = {
         nti_approach="Superseded guidance; use the current FDA NTI approach for new studies.",
         food_convention="Fasting and fed studies per the (superseded) 2003 recommendations.",
         is_current=False,
+        # Same FDA statutory framing as the 2014 profile: superseding a BE
+        # guidance does not change which statute a generic or a biologic is
+        # filed under.
+        submission_pathway=_FDA_ANDA_PATHWAY,
+        biosimilar_pathway=_FDA_351K_PATHWAY,
+        biosimilar_citation=_FDA_BIOSIMILAR_CITATION,
+        biosimilar_reference_product_term=_FDA_BIOSIMILAR_REFERENCE_TERM,
     ),
 }
 
@@ -221,22 +316,83 @@ def is_current(version: str) -> bool:
     return bool(prof and prof.is_current)
 
 
+def is_biosimilar_study(study_type: str) -> bool:
+    """Single normalised check for the biosimilar branch, so every study-type
+    split in this module keys off the same test."""
+    return (study_type or "").strip().lower() == "biosimilar_pk"
+
+
+def submission_pathway(version: str, study_type: str = "BE") -> str:
+    """The marketing application this protocol is written to support.
+
+    Empty string when the selected body does not grant marketing authorisations
+    (ICH) - callers must then omit the pathway rather than substitute one.
+    """
+    p = get_profile(version)
+    return p.biosimilar_pathway if is_biosimilar_study(study_type) else p.submission_pathway
+
+
+def governing_citation(version: str, study_type: str = "BE") -> str:
+    """The citation to write the protocol against - the biosimilar override when
+    the study is a biosimilar PK-similarity study and the profile defines one."""
+    p = get_profile(version)
+    if is_biosimilar_study(study_type) and p.biosimilar_citation:
+        return p.biosimilar_citation
+    return p.citation
+
+
+def reference_product_term(version: str, study_type: str = "BE") -> str:
+    """What the comparator must be called. A biosimilar's comparator is the
+    (US-licensed / EU) reference product - never a Reference Listed Drug, which
+    is generic-drug (ANDA) terminology."""
+    p = get_profile(version)
+    if is_biosimilar_study(study_type) and p.biosimilar_reference_product_term:
+        return p.biosimilar_reference_product_term
+    return p.reference_product_term
+
+
 def regulatory_directive(version: str, study_type: str = "BE") -> str:
     """A concise, authoritative regulatory-framework block injected into every
     section-generation prompt so the drafted text reflects the SELECTED
     guideline's regulator, terminology, citations, and acceptance framing -
-    not a hardcoded FDA default."""
+    not a hardcoded FDA default.
+
+    Study-type aware: a biosimilar PK-similarity study is framed to the
+    biosimilar pathway (FDA 351(k)/BPCIA, EU Article 10(4)) with a reference
+    PRODUCT comparator, and the generic-drug (ANDA/RLD) wording - including the
+    RLD-labeling food convention and the small-molecule HVD/NTI approaches - is
+    kept out of the prompt entirely.
+    """
     p = get_profile(version)
+    biosimilar = is_biosimilar_study(study_type)
+    header = (
+        "terminology and cite it. This is a BIOLOGIC (biosimilar) programme: use only the "
+        "submission pathway and comparator terminology named below, never generic "
+        "small-molecule submission wording, and cite no other jurisdiction's statute:"
+        if biosimilar else
+        "terminology and cite it (do not default to FDA/ANDA language unless this IS FDA):"
+    )
     lines = [
         "\nREGULATORY FRAMEWORK - write the protocol to satisfy THIS guideline; use its",
-        "terminology and cite it (do not default to FDA/ANDA language unless this IS FDA):",
-        f"- Governing guideline: {p.citation}",
+        header,
+        f"- Governing guideline: {governing_citation(version, study_type)}",
         f"- Regulator / region: {p.regulator} ({p.region})",
-        f"- Reference/comparator product: refer to it as the {p.reference_product_term}",
-        f"- Bioequivalence acceptance criteria: {p.acceptance_summary}",
-        f"- Food conditions: {p.food_convention}",
     ]
-    if study_type != "biosimilar_pk":
+    pathway = submission_pathway(version, study_type)
+    if pathway:
+        lines.append(f"- Submission pathway: {pathway}")
+    lines.append(
+        "- Reference/comparator product: refer to it as the "
+        f"{reference_product_term(version, study_type)}"
+    )
+    if biosimilar:
+        lines.append(f"- PK similarity acceptance criteria: {p.acceptance_summary}")
+    else:
+        lines.append(f"- Bioequivalence acceptance criteria: {p.acceptance_summary}")
+        # Food conditions / HVD / NTI are small-molecule oral-BE concepts (and the
+        # FDA food convention is phrased in RLD terms), so they stay out of a
+        # biosimilar prompt.
+        lines.append(f"- Food conditions: {p.food_convention}")
         lines.append(f"- Highly variable drugs: {p.hvd_approach}")
         lines.append(f"- Narrow therapeutic index: {p.nti_approach}")
     if p.structural_note:

@@ -173,6 +173,16 @@ export default function GenerateButton({ drug, studyType, populationConfig, desi
   const guidelineLabel = selectedGuideline
     ? `${selectedGuideline.display_name} · ${selectedGuideline.region}`
     : guidelineId
+  // A biosimilar is a different submission from a generic: the FDA profile's
+  // headline citation/pathway is ANDA (505(j)) wording that does not apply to a
+  // 351(k) programme, so show the biosimilar framing when that is the study.
+  const isBiosimilar = studyType === 'biosimilar_pk'
+  const guidelineCitation = selectedGuideline
+    ? (isBiosimilar && selectedGuideline.biosimilar_citation) || selectedGuideline.citation
+    : ''
+  const guidelinePathway = selectedGuideline
+    ? (isBiosimilar ? selectedGuideline.biosimilar_pathway : selectedGuideline.submission_pathway) || ''
+    : ''
 
   const clearTimers = () => {
     timerIds.current.forEach(clearTimeout)
@@ -429,7 +439,12 @@ export default function GenerateButton({ drug, studyType, populationConfig, desi
           </svg>
         </div>
         {selectedGuideline && (
-          <p className="mt-1.5 text-[11px] text-slate-400 leading-snug">{selectedGuideline.citation}</p>
+          <p className="mt-1.5 text-[11px] text-slate-400 leading-snug">{guidelineCitation}</p>
+        )}
+        {guidelinePathway && (
+          <p className="mt-1 text-[11px] text-slate-500 leading-snug">
+            <span className="font-semibold">Submission pathway:</span> {guidelinePathway}
+          </p>
         )}
       </div>
 
