@@ -434,6 +434,59 @@ def _strip_html(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Informed consent: body -> appendix relocation
+# ---------------------------------------------------------------------------
+# The consent process is written by the generator as one <h2> block inside the
+# Ethics section (see services/ai_service.py's "ethics" instructions). It is
+# moved OUT of the numbered body and rendered as a protocol appendix instead:
+# the body keeps the ethical-standards, IRB and confidentiality material a
+# reviewer reads inline, and the consent process travels with the document as
+# an annex - the same treatment the Informed Consent Form itself already gets
+# as a standalone deliverable (/export/icf/docx).
+#
+# This is a RENDER-TIME relocation on purpose. The generator still writes the
+# subsection where it has the `icf` locked facts in context, and the stored
+# sections payload is untouched, so nothing is regenerated, no new AI section
+# exists, and the in-app editor keeps one coherent Ethics section to edit.
+# Matching is on the heading TEXT rather than position, so a generator that
+# reorders the four subsections still relocates the right one.
+
+_ICF_HEADING_RE = re.compile(
+    r"<h2[^>]*>(?P<title>.*?)</h2>", re.IGNORECASE | re.DOTALL
+)
+
+
+def _split_informed_consent(html: str) -> tuple[str, str]:
+    """Split an Ethics section into (body_without_consent, consent_block).
+
+    ``consent_block`` is "" when no consent subsection is present, in which
+    case the body is returned unchanged - so a protocol whose generator did
+    not emit the subsection, or a legacy protocol predating it, renders
+    exactly as before and no empty appendix appears.
+    """
+    if not html or not html.strip():
+        return html, ""
+
+    matches = list(_ICF_HEADING_RE.finditer(html))
+    if not matches:
+        return html, ""
+
+    for i, m in enumerate(matches):
+        title = _strip_html(m.group("title")).lower()
+        if "informed consent" not in title and "consent process" not in title:
+            continue
+        start = m.start()
+        # Runs to the next <h2> (a sibling subsection) or the end of the
+        # section, so the heading and every paragraph under it travel together.
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(html)
+        block = html[start:end].strip()
+        remaining = (html[:start] + html[end:]).strip()
+        return remaining, block
+
+    return html, ""
+
+
+# ---------------------------------------------------------------------------
 # PK-parameter notation normalization
 # ---------------------------------------------------------------------------
 # The AI generates PK parameters with inconsistent notation across sections
@@ -578,10 +631,15 @@ def _build_docx(
     # appears; the Schedule of Activities is spliced in as its own numbered
     # section right after "treatment" (template Section 8).
     idx = 0
+    consent_block = ""
     for section_name in SECTION_ORDER:
         if section_name in ("title", "synopsis"):
             continue
         raw_text = _normalize_pk_notation(_strip_tost_dump((protocol.sections.get(section_name) or "").strip()))
+        # The consent process leaves the numbered body and is rendered as an
+        # appendix below — see _split_informed_consent.
+        if section_name == "ethics":
+            raw_text, consent_block = _split_informed_consent(raw_text)
         plain = _strip_html(raw_text)
         if not plain:
             continue
@@ -611,6 +669,9 @@ def _build_docx(
             idx += 1
             _add_schedule_of_activities_docx(doc, protocol, idx, _SOA_HEADING)
 
+    # Appendix: informed consent process, relocated out of the Ethics section.
+    _add_informed_consent_appendix_docx(doc, consent_block)
+
     # Appendix: protocol amendment history (only when amended).
     _add_amendment_appendix_docx(doc, protocol, amendments or [])
 
@@ -638,6 +699,35 @@ def _qc_report_for(protocol: Protocol) -> dict:
         expected_sections=SECTION_ORDER,
         section_labels=SECTION_TITLES,
     ).to_dict()
+
+
+def _add_informed_consent_appendix_docx(doc: Document, consent_html: str) -> None:
+    """Render the relocated informed-consent process as a protocol appendix.
+
+    ``consent_html`` still carries its own <h2> heading from the generated
+    Ethics section, so it is stripped here and replaced by the appendix
+    heading — otherwise the appendix would open with two stacked titles.
+    Rendered unnumbered: an appendix sits outside the ICH E6(R2) N.M
+    subsection numbering the body uses.
+    """
+    if not consent_html or not _strip_html(consent_html):
+        return
+    body = _ICF_HEADING_RE.sub("", consent_html, count=1).strip()
+    if not _strip_html(body):
+        return
+
+    doc.add_page_break()
+    doc.add_heading("Appendix: Informed Consent Process", level=1)
+    intro = doc.add_paragraph()
+    ir = intro.add_run(
+        "The Informed Consent Form itself is a separate, standalone document "
+        "carrying its own version number and date, submitted to the IRB/IEC "
+        "together with this protocol."
+    )
+    ir.italic = True
+    ir.font.name = "Times New Roman"
+    ir.font.size = Pt(9)
+    _add_section_content_docx(doc, body, 0, numbered=False)
 
 
 def _add_amendment_appendix_docx(doc: Document, protocol: Protocol,
@@ -1425,10 +1515,15 @@ def _build_pdf_once(
     # template). The Schedule of Activities is spliced in as its own numbered
     # section right after "treatment" (template Section 8).
     idx = 0
+    consent_block = ""
     for section_name in SECTION_ORDER:
         if section_name in ("title", "synopsis"):
             continue
         raw = _normalize_pk_notation(_strip_tost_dump((protocol.sections.get(section_name) or "").strip()))
+        # The consent process leaves the numbered body and is rendered as an
+        # appendix below — see _split_informed_consent.
+        if section_name == "ethics":
+            raw, consent_block = _split_informed_consent(raw)
         if not _strip_html(raw):
             continue
         idx += 1
@@ -1458,6 +1553,9 @@ def _build_pdf_once(
         if section_name == _SOA_AFTER_SECTION:
             idx += 1
             _add_schedule_of_activities_pdf(story, protocol, styles, idx, _SOA_HEADING)
+
+    # Appendix: informed consent process, relocated out of the Ethics section.
+    _add_informed_consent_appendix_pdf(story, consent_block, styles)
 
     # Appendix: protocol amendment history (only when the protocol has been amended).
     _add_amendment_appendix_pdf(story, protocol, amendments or [], styles, page_map)
@@ -1560,6 +1658,31 @@ def _section_ref(
     # Section not in the current document (e.g. removed in this amendment).
     pretty = SECTION_TITLES.get(section_key, section_key.replace("_", " ").title())
     return f"{pretty} (not in current version)"
+
+
+def _add_informed_consent_appendix_pdf(story: list, consent_html: str,
+                                       styles: dict) -> None:
+    """Informed-consent appendix for the PDF (parity with the DOCX export).
+
+    Same contract as ``_add_informed_consent_appendix_docx``: the block's own
+    <h2> is dropped in favour of the appendix heading, and nothing is emitted
+    when there is no consent subsection to relocate.
+    """
+    if not consent_html or not _strip_html(consent_html):
+        return
+    body = _ICF_HEADING_RE.sub("", consent_html, count=1).strip()
+    if not _strip_html(body):
+        return
+
+    story.append(PageBreak())
+    story.append(Paragraph("Appendix: Informed Consent Process", styles["Heading1"]))
+    story.append(Paragraph(
+        "<i>The Informed Consent Form itself is a separate, standalone document "
+        "carrying its own version number and date, submitted to the IRB/IEC "
+        "together with this protocol.</i>",
+        styles["Citation"],
+    ))
+    _add_section_content_pdf(story, body, styles, 0, numbered=False)
 
 
 def _add_amendment_appendix_pdf(
