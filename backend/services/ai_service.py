@@ -1003,7 +1003,11 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "21 CFR Part 50; 21 CFR Part 56; Declaration of Helsinki (2013 revision); "
             "21 CFR Part 11"
         ),
-        "context_keys": ["org_name", "irb_info", "study_type", "icf", "safety_reporting"],
+        # NOTE: "icf" is deliberately absent. The consent FORM's document
+        # control (version, regulatory basis, element coverage, pending
+        # site-specific fields) belongs to the form, which is a separate
+        # deliverable on its own approval cycle — see _ENGINE_DIRECTIVE_PLAN.
+        "context_keys": ["org_name", "irb_info", "study_type", "safety_reporting"],
         "instructions": (
             "Write FOUR subsections using <h2> headings, in this exact order: "
             "1) **Ethical principles, laws, and regulations** — conduct per the Declaration of "
@@ -1022,22 +1026,22 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "applicable clinical trial for public registry purposes, state that conclusion and "
             "its basis rather than asserting a registration obligation the plan does not "
             "support; "
-            "3) **Informed Consent Process** — written consent per 21 CFR 50.25 required elements, "
-            "obtained before any study procedure, in language the subject understands, with a "
-            "copy provided to the subject, who may withdraw at any time. When an `icf` object "
-            "is present in context (equivalently, when a LOCKED STANDALONE INFORMED CONSENT "
-            "FORM block is supplied), reference it CORRECTLY: the Informed Consent Form is a "
-            "SEPARATE, standalone document accompanying this protocol, carrying its OWN version "
-            "number and date distinct from the protocol's, and submitted to the IRB with the "
-            "protocol. Do NOT reproduce the consent form, its sections, its plain-language text "
-            "or its signature block inside this protocol section — state only that it exists, "
-            "cite its title and its version/date identifiers exactly as locked (or state that "
-            "they are to be assigned where the locked facts leave them pending), and confirm "
-            "which regulatory basis it is written against and that it covers the required "
-            "elements of informed consent. Where the locked facts report missing required "
-            "elements or pending site-specific fields (contacts, compensation, site and "
-            "investigator identification, IRB details), state honestly that those must be "
-            "completed before IRB submission rather than implying the form is final; "
+            "3) **Informed Consent Process** — describe only the PROCESS by which consent is "
+            "obtained: written consent per the 21 CFR 50.25 required elements, obtained before "
+            "any study procedure (including screening), in language the subject understands, by "
+            "a qualified delegated team member, with adequate time to read and ask questions, a "
+            "copy provided to the subject, and the subject free to withdraw at any time without "
+            "prejudice. Note that consent is documented per 21 CFR 50.27 and that a procedure "
+            "performed before consent is signed is a protocol deviation. "
+            "Say NOTHING about the Informed Consent Form as a document. The consent form is a "
+            "separate deliverable on its own approval cycle, and its document control belongs "
+            "to it, not to this protocol: do NOT state or cite its title, its version number or "
+            "date, the regulatory basis it is written against, which required elements it does "
+            "or does not cover, or any missing element or pending site-specific field "
+            "(investigator/site identification, contacts, compensation, IRB details). Do NOT "
+            "reproduce the form, its sections, its plain-language text or its signature block. "
+            "A single clause noting that the consent form is submitted to the IRB/IEC together "
+            "with this protocol is permitted, and nothing further about the form itself; "
             "4) **Participant and Data Confidentiality** — coded subject identifiers, no PHI in "
             "data transmissions, sponsor/monitor/IRB access to records for quality assurance, and "
             "21 CFR Part 11 compliance for electronic records and signatures (audit-trailed, "
@@ -1621,10 +1625,17 @@ _ENGINE_DIRECTIVE_PLAN: dict[str, tuple[tuple[str, Any], ...]] = {
     ),
     "ethics": (
         ("safety_reporting", safety_reporting_directive),
-        # The ICF is a SEPARATE document, not a protocol section. Its directive is
-        # injected here only so the Ethics section references it with the right
-        # title, version identity and pending fields instead of inventing them.
-        ("icf", icf_directive),
+        # NO ("icf", icf_directive) HERE, DELIBERATELY. The consent form is a
+        # separate deliverable (services/icf.py, exported via /export/icf/docx)
+        # on its own approval cycle, and its document control — version, date,
+        # regulatory basis, which 21 CFR 50.25 elements it covers, which
+        # site-specific fields are still pending — belongs to that document.
+        # Injecting the directive here made the protocol assert all of it, so
+        # the protocol carried a second, uncontrolled copy of the form's
+        # identity that goes stale the moment the form is revised. The protocol
+        # now describes only the consent PROCESS (rendered as an appendix; see
+        # routers/export.py::_split_informed_consent). icf_directive is still
+        # used to build the standalone consent document itself.
     ),
 }
 

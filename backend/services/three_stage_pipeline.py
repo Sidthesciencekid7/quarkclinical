@@ -39,7 +39,9 @@ from services.protocol_qc import QCStatus, run_qc
 from services.bioanalytical import bioanalytical_directive
 from services.crf_dmp import crf_dmp_directive
 from services.ddi_screening import ddi_directive
-from services.icf import icf_directive
+# NOTE: services.icf.icf_directive is deliberately NOT imported — the consent
+# form's document control must not reach the protocol prompt. See
+# _ENGINE_DIRECTIVES and _PROMPT_EXCLUDED_ENGINES below.
 from services.randomization import randomization_directive
 from services.safety_gating import safety_gating_directive
 from services.safety_reporting import safety_reporting_directive
@@ -585,12 +587,35 @@ _ENGINE_DIRECTIVES: tuple[tuple[str, Any], ...] = (
     ("safety_gating", safety_gating_directive),
     ("safety_reporting", safety_reporting_directive),
     ("crf_dmp", crf_dmp_directive),
-    ("icf", icf_directive),
+    # NO ("icf", icf_directive) HERE, DELIBERATELY — must stay in lockstep with
+    # services/ai_service.py's _ENGINE_DIRECTIVE_PLAN["ethics"], which drops it
+    # for the same reason: the consent form's document control (version, date,
+    # regulatory basis, element coverage, pending site-specific fields) belongs
+    # to the form, not to the protocol. This tuple is an INDEPENDENT copy of
+    # that plan for the whole-document path, so leaving the directive here
+    # would let a single-request generation reintroduce exactly the ICF
+    # metadata the per-section path now excludes. icf_directive is still used
+    # to build the standalone consent document.
     # Regulatory-assessment-report evidence (services/literature_service.py) —
     # mirrors the ai_service.py wiring into "statistical_analysis_plan" /
     # "study_rationale".
     ("regulatory_sources", regulatory_sources_directive),
 )
+
+
+# Engine results that must reach the protocol prompt in NO form — neither as a
+# rendered directive nor as raw JSON in the serialised context block.
+#
+# The context block carries every key whose directive was not rendered (see
+# _stage2_generate_all_sections), so simply dropping an engine from
+# _ENGINE_DIRECTIVES does the OPPOSITE of suppressing it: the full raw result
+# gets serialised instead. `icf` is dropped above deliberately, so it has to be
+# named here too or the consent form's version, element coverage and pending
+# site-specific fields would reach the model as JSON — the exact content the
+# removal exists to keep out of the protocol. The result is still computed and
+# stored (population_config["_icf"]) and still builds the standalone consent
+# document; it just never reaches the protocol's own prompt.
+_PROMPT_EXCLUDED_ENGINES: frozenset[str] = frozenset({"icf"})
 
 
 def _first_line(text: str) -> str:
@@ -664,7 +689,10 @@ async def _stage2_generate_all_sections(
         context, design_directive + decisions_directive + extra_directives
     )
     context_block = json.dumps(
-        {k: v for k, v in context.items() if k not in rendered},
+        {
+            k: v for k, v in context.items()
+            if k not in rendered and k not in _PROMPT_EXCLUDED_ENGINES
+        },
         indent=2, default=str,
     )
 
