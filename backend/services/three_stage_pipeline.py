@@ -1,19 +1,21 @@
 """
 Three-stage AI pipeline for FDA-compliant clinical trial protocol generation.
 
-Architecture (fixed — model assignments are architectural decisions, not
-suggestions; do not collapse stages or swap models):
+All three stages call Claude Sonnet (SONNET_MODEL below) — there is no
+Haiku/Opus tiering; every real model call in this pipeline uses the same
+model. The "three-stage" name refers to the pipeline's three functional
+roles, not three different model tiers:
 
-  Stage 1 (Haiku 4.5)  — classification & routing. JSON-only output. Gates the
-                          rest of the pipeline on confidence >= CONFIDENCE_THRESHOLD.
-  Stage 2 (Opus 4.6)   — full protocol generation. Receives PRE-COMPUTED
-                          deterministic facts (washout, sampling schedule,
-                          sample size, TOST limits) from biostatistics.py and
-                          must reuse them verbatim — Opus reasons about
-                          structure and regulatory language only, never
-                          arithmetic.
-  Stage 3 (Sonnet 4.6) — structured JSON validation/critique of Stage 2's
-                          output. No narrative feedback.
+  Stage 1 (Sonnet) — classification & routing. JSON-only output. Gates the
+                      rest of the pipeline on confidence >= CONFIDENCE_THRESHOLD.
+  Stage 2 (Sonnet) — full protocol generation. Receives PRE-COMPUTED
+                      deterministic facts (washout, sampling schedule,
+                      sample size, TOST limits) from biostatistics.py and
+                      must reuse them verbatim — the model reasons about
+                      structure and regulatory language only, never
+                      arithmetic.
+  Stage 3 (Sonnet) — structured JSON validation/critique of Stage 2's
+                      output. No narrative feedback.
 
 Each stage is independently logged: model, input/output tokens, latency, and
 status (success / halted / failed). Stage 2 only runs if Stage 1 succeeds with
@@ -49,8 +51,6 @@ from services.sampling_schedule import sampling_schedule_directive
 from services.stratification import stratification_directive
 from services.literature_service import regulatory_sources_directive
 
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
-OPUS_MODEL = "claude-opus-4-6"
 SONNET_MODEL = "claude-sonnet-4-6"
 
 CONFIDENCE_THRESHOLD = 0.85
@@ -243,7 +243,7 @@ async def _call_model_streamed(
 
 
 # ---------------------------------------------------------------------------
-# Stage 1 — Haiku: classification & routing
+# Stage 1 — Sonnet: classification & routing
 # ---------------------------------------------------------------------------
 
 _STAGE1_SYSTEM = (
@@ -268,14 +268,14 @@ async def _stage1_classify(client: anthropic.AsyncAnthropic, query: str) -> tupl
     stage = "stage1_classify"
     try:
         message, latency_ms = await _call_model(
-            client, model=HAIKU_MODEL, system=_STAGE1_SYSTEM,
+            client, model=SONNET_MODEL, system=_STAGE1_SYSTEM,
             messages=[{"role": "user", "content": query}], max_tokens=1024,
         )
     except Exception as exc:  # noqa: BLE001
         return (
             {"drug_type": None, "template_id": None, "pk_params": {}, "confidence": 0.0,
              "halt_reason": f"Stage 1 API call failed: {exc}"},
-            _log_entry(stage, HAIKU_MODEL, "failed", error=str(exc)),
+            _log_entry(stage, SONNET_MODEL, "failed", error=str(exc)),
         )
 
     text = _extract_text(message)
@@ -286,7 +286,7 @@ async def _stage1_classify(client: anthropic.AsyncAnthropic, query: str) -> tupl
         return (
             {"drug_type": None, "template_id": None, "pk_params": {}, "confidence": 0.0,
              "halt_reason": f"Stage 1 output could not be parsed as JSON: {err}"},
-            _log_entry(stage, HAIKU_MODEL, "failed",
+            _log_entry(stage, SONNET_MODEL, "failed",
                        input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
                        latency_ms=latency_ms, error=err),
         )
@@ -298,7 +298,7 @@ async def _stage1_classify(client: anthropic.AsyncAnthropic, query: str) -> tupl
         parsed["halt_reason"] = f"confidence {confidence} below threshold {CONFIDENCE_THRESHOLD}"
 
     log = _log_entry(
-        stage, HAIKU_MODEL, "success",
+        stage, SONNET_MODEL, "success",
         input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
         latency_ms=latency_ms,
     )
@@ -306,7 +306,7 @@ async def _stage1_classify(client: anthropic.AsyncAnthropic, query: str) -> tupl
 
 
 # ---------------------------------------------------------------------------
-# Stage 2 — Opus: protocol generation
+# Stage 2 — Sonnet: protocol generation
 # ---------------------------------------------------------------------------
 
 _STAGE2_SYSTEM = (
@@ -341,17 +341,17 @@ async def _stage2_generate(
     )
     try:
         message, latency_ms = await _call_model_streamed(
-            client, model=OPUS_MODEL, system=_STAGE2_SYSTEM,
+            client, model=SONNET_MODEL, system=_STAGE2_SYSTEM,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=16000, thinking={"type": "adaptive"},
         )
     except Exception as exc:  # noqa: BLE001
-        return "", _log_entry(stage, OPUS_MODEL, "failed", error=str(exc))
+        return "", _log_entry(stage, SONNET_MODEL, "failed", error=str(exc))
 
     text = _extract_text(message)
     usage = message.usage
     log = _log_entry(
-        stage, OPUS_MODEL, "success" if text.strip() else "failed",
+        stage, SONNET_MODEL, "success" if text.strip() else "failed",
         input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
         latency_ms=latency_ms,
     )
@@ -502,13 +502,13 @@ async def _stage1_sanity_check(
     user_content = json.dumps({"drug_inn": drug_inn, "study_type": study_type})
     try:
         message, latency_ms = await _call_model(
-            client, model=HAIKU_MODEL, system=_STAGE1_SANITY_SYSTEM,
+            client, model=SONNET_MODEL, system=_STAGE1_SANITY_SYSTEM,
             messages=[{"role": "user", "content": user_content}], max_tokens=512,
         )
     except Exception as exc:  # noqa: BLE001
         return (
             {"drug_type": None, "confidence": 0.0, "halt_reason": f"Stage 1 API call failed: {exc}"},
-            _log_entry(stage, HAIKU_MODEL, "failed", error=str(exc)),
+            _log_entry(stage, SONNET_MODEL, "failed", error=str(exc)),
         )
 
     text = _extract_text(message)
@@ -519,7 +519,7 @@ async def _stage1_sanity_check(
         return (
             {"drug_type": None, "confidence": 0.0,
              "halt_reason": f"Stage 1 output could not be parsed as JSON: {err}"},
-            _log_entry(stage, HAIKU_MODEL, "failed",
+            _log_entry(stage, SONNET_MODEL, "failed",
                        input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
                        latency_ms=latency_ms, error=err),
         )
@@ -530,7 +530,7 @@ async def _stage1_sanity_check(
         parsed["halt_reason"] = f"confidence {confidence} below threshold {CONFIDENCE_THRESHOLD}"
 
     return parsed, _log_entry(
-        stage, HAIKU_MODEL, "success",
+        stage, SONNET_MODEL, "success",
         input_tokens=usage.input_tokens, output_tokens=usage.output_tokens, latency_ms=latency_ms,
     )
 
@@ -662,7 +662,7 @@ async def _stage2_generate_all_sections(
     client: anthropic.AsyncAnthropic, study_type: str, context: dict, section_order: list[str],
     *, extra_directives: str = "", stage: str = "stage2_generate",
 ) -> tuple[dict[str, str], dict]:
-    """One Opus call, forced tool-use, producing every section at once.
+    """One Sonnet call, forced tool-use, producing every section at once.
 
     Thinking is intentionally OFF and tool_choice is forced: this reuses the
     exact pattern services/ai_service.py's extract_pk_parameters() already
@@ -723,7 +723,7 @@ async def _stage2_generate_all_sections(
     start = time.monotonic()
     try:
         async with client.messages.stream(
-            model=OPUS_MODEL,
+            model=SONNET_MODEL,
             # One call emits ALL 17 sections as fields of a single tool call, so
             # the ceiling has to cover the whole document at once. At 20000 this
             # truncated mid-tool-call and returned ~10 of 17 sections: each of
@@ -741,7 +741,7 @@ async def _stage2_generate_all_sections(
         ) as stream:
             message = await stream.get_final_message()
     except Exception as exc:  # noqa: BLE001
-        return {}, _log_entry(stage, OPUS_MODEL, "failed", error=str(exc))
+        return {}, _log_entry(stage, SONNET_MODEL, "failed", error=str(exc))
     latency_ms = (time.monotonic() - start) * 1000.0
 
     sections: dict[str, str] = {}
@@ -777,13 +777,13 @@ async def _stage2_generate_all_sections(
             f"Output tokens used: {usage.output_tokens}."
         )
         return {}, _log_entry(
-            stage, OPUS_MODEL, "failed", error=detail,
+            stage, SONNET_MODEL, "failed", error=detail,
             input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
             latency_ms=latency_ms,
         )
 
     log = _log_entry(
-        stage, OPUS_MODEL, "success" if sections else "failed",
+        stage, SONNET_MODEL, "success" if sections else "failed",
         input_tokens=usage.input_tokens, output_tokens=usage.output_tokens, latency_ms=latency_ms,
     )
     return sections, log
@@ -831,12 +831,12 @@ async def _qc_remediate(
     client: anthropic.AsyncAnthropic, study_type: str, context: dict,
     sections: dict[str, str], section_order: list[str],
 ) -> tuple[dict[str, str], dict, Optional[dict]]:
-    """Deterministic-QC-driven auto-fix: run run_qc, then have Opus regenerate
+    """Deterministic-QC-driven auto-fix: run run_qc, then have Sonnet regenerate
     just the sections with FAIL/WARNING findings, applying the specific feedback.
 
     This is the "agent actually makes the improvements" step — instead of only
     reporting what is missing, the flagged issues are fed back into one targeted
-    Opus pass so the stored protocol comes out as complete as the checker can
+    Sonnet pass so the stored protocol comes out as complete as the checker can
     drive it. Returns (possibly-updated sections, qc summary dict, remediation
     log entry or None).
     """
@@ -930,12 +930,13 @@ async def _mock_all_sections(context: dict, section_order: list[str]) -> dict[st
 async def generate_protocol_via_pipeline(
     *, context: dict, study_type: str, section_order: list[str],
 ) -> tuple[dict[str, str], dict, list[dict], list[dict], Optional[dict]]:
-    """Three-model replacement for the old per-section asyncio.gather loop.
+    """Three-stage Sonnet-only replacement for the old per-section asyncio.gather loop.
 
     Returns (sections, classification, validation, pipeline_log, qc).
     ``sections`` matches the shape routers/protocols.py::create_protocol already
     persists (one HTML string per name in section_order) — callers don't need to
-    know generation happened via Haiku->Opus->Sonnet instead of N Sonnet calls.
+    know generation happened via three sequential Sonnet calls instead of N
+    parallel Sonnet calls.
     ``qc`` is the before/after QC-remediation summary (None if generation never
     reached the remediation stage).
 
@@ -945,9 +946,9 @@ async def generate_protocol_via_pipeline(
         sections = await _mock_all_sections(context, section_order)
         classification = {"drug_type": None, "confidence": 1.0, "halt_reason": None}
         pipeline_log = [
-            _log_entry("stage1_classify", HAIKU_MODEL, "mocked"),
-            _log_entry("stage2_generate", OPUS_MODEL, "mocked"),
-            _log_entry("stage2_remediate", OPUS_MODEL, "mocked"),
+            _log_entry("stage1_classify", SONNET_MODEL, "mocked"),
+            _log_entry("stage2_generate", SONNET_MODEL, "mocked"),
+            _log_entry("stage2_remediate", SONNET_MODEL, "mocked"),
             _log_entry("stage3_validate", SONNET_MODEL, "mocked"),
         ]
         return sections, classification, [], pipeline_log, None
@@ -973,7 +974,7 @@ async def generate_protocol_via_pipeline(
     qc: Optional[dict] = None
     if log2["status"] == "success" and sections:
         # QC-driven remediation: deterministically check the draft, then have
-        # Opus fix the flagged sections before validation runs on the result.
+        # Sonnet fix the flagged sections before validation runs on the result.
         sections, qc, remediation_log = await _qc_remediate(
             client, study_type, context, sections, section_order,
         )

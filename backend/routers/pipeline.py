@@ -1,7 +1,8 @@
-"""Three-stage pipeline router — exposes the Haiku/Opus/Sonnet protocol
-generation pipeline (services/three_stage_pipeline.py) as a single HTTP route.
+"""Three-stage pipeline router — exposes the Sonnet-only protocol generation
+pipeline (services/three_stage_pipeline.py) as a single HTTP route. All three
+stages call Claude Sonnet; there is no Haiku/Opus tiering.
 
-This endpoint spends real Anthropic credits (Opus generation + Sonnet
+This endpoint spends real Anthropic credits (Sonnet generation + Sonnet
 validation), so it is gated behind ``require_user`` exactly like the main
 ``POST /api/protocols`` generation route. The per-stage ``pipeline_log`` is the
 primary error surface; on top of that, a fatal API failure at Stage 1 (credit
@@ -57,22 +58,23 @@ async def generate_via_pipeline(
 ):
     """Run the three-stage pipeline and return its full structured result.
 
-    Stage 1 (Haiku) classifies and gates on confidence >= 0.85; Stage 2 (Opus)
-    generates the protocol from pre-computed deterministic facts; Stage 3
-    (Sonnet) returns structured JSON validation. A low-confidence Stage 1 halt
-    returns 200 with ``halt_reason`` populated and empty protocol/validation —
-    that is a valid, non-error outcome.
+    Stage 1 (Sonnet) classifies and gates on confidence >= 0.85; Stage 2
+    (Sonnet) generates the protocol from pre-computed deterministic facts;
+    Stage 3 (Sonnet) returns structured JSON validation. A low-confidence
+    Stage 1 halt returns 200 with ``halt_reason`` populated and empty
+    protocol/validation — that is a valid, non-error outcome.
 
-    Note: this is a long synchronous call (Opus generation alone runs into the
-    minutes). Callers must use a generous client timeout.
+    Note: this is a long synchronous call (Stage 2 generation alone runs into
+    the minutes). Callers must use a generous client timeout.
 
-    SECURITY: this route spends real Anthropic credits (Opus + Sonnet), so —
-    like POST /api/protocols — it must be gated by more than just "a valid
-    session exists". ``require_user`` alone let ANY Clerk signup (public sign-up
-    flow) drain the API balance by looping this endpoint. It now additionally
-    requires the caller to be a PROVISIONED actor (authenticate_actor → 403 for
-    unprovisioned emails) whose org holds an ACTIVE license
-    (require_active_license → 402 otherwise), matching create_protocol's gate.
+    SECURITY: this route spends real Anthropic credits (three Sonnet calls),
+    so — like POST /api/protocols — it must be gated by more than just "a
+    valid session exists". ``require_user`` alone let ANY Clerk signup (public
+    sign-up flow) drain the API balance by looping this endpoint. It now
+    additionally requires the caller to be a PROVISIONED actor
+    (authenticate_actor → 403 for unprovisioned emails) whose org holds an
+    ACTIVE license (require_active_license → 402 otherwise), matching
+    create_protocol's gate.
     """
     actor = await authenticate_actor(request, db)
     await require_active_license(db, actor)

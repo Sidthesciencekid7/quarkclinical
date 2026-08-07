@@ -1,6 +1,6 @@
 """Regression tests for silently-truncated protocol generation.
 
-All 17 sections are produced by ONE Opus call, as fields of a single
+All 17 sections are produced by ONE Sonnet call, as fields of a single
 write_protocol tool call. When that response hits the max_tokens ceiling the
 tool call is cut off mid-structure and the missing fields come back as empty
 strings -- leaving a dict that is still fully-keyed and truthy.

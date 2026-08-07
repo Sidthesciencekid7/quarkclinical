@@ -419,7 +419,7 @@ class ExportRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Three-stage pipeline (Haiku classify -> Opus generate -> Sonnet validate)
+# Three-stage pipeline (Sonnet classify -> Sonnet generate -> Sonnet validate)
 # ---------------------------------------------------------------------------
 
 
@@ -427,8 +427,8 @@ class PipelineGenerateRequest(BaseModel):
     """Free-form drug name / query plus optional structured overrides.
 
     ``user_params`` may carry ``drug_inn``, ``cv_intra_pct``, ``t_half_hours``,
-    ``tmax_hours``, ``is_nti`` — any present value overrides what Stage 1 (Haiku)
-    extracts before the deterministic facts are computed for Stage 2 (Opus).
+    ``tmax_hours``, ``is_nti`` — any present value overrides what Stage 1 (Sonnet)
+    extracts before the deterministic facts are computed for Stage 2 (Sonnet).
 
     Supplying ``cv_intra_pct`` overrides the retrieved within-subject CV AND
     changes the declared provenance: the computed sample_size comes back with
