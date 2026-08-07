@@ -73,7 +73,7 @@ from services.guideline_coverage import compute_coverage
 from services.guidelines import GUIDELINES, is_supported
 from services.icf import build_icf
 from services.literature_service import LiteratureService, plan_regulatory_sources
-from services.meta_analysis import build_meta_analysis
+from services.meta_analysis import build_meta_analysis, derive_cv_from_mean_sd
 from services.protocol_qc import run_qc
 from services.randomization import blinded_view, generate_allocation
 from services.safety_gating import recommend_safety_gating
@@ -404,8 +404,14 @@ def _resolve_powering_cv(
     # A healthy-volunteer protocol is powered on healthy-volunteer studies; a
     # patient protocol on patient studies. See services/meta_analysis.py for
     # why mixing them silently mis-sizes the trial.
+    #
+    # derive_cv_from_mean_sd() runs first so a source that reports mean +/- SD
+    # for Cmax/AUC without a separate percentage CV - the norm for a biologic
+    # label or a first-in-human paper - still contributes a CV here instead of
+    # silently falling through to "assumed" for a drug whose own literature
+    # already answers the question.
     meta = build_meta_analysis(
-        extracted,
+        derive_cv_from_mean_sd(extracted),
         subject_type=population_config.get("subject_type", "healthy"),
         literature=literature,
     )

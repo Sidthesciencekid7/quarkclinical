@@ -79,7 +79,16 @@ _PK_EXTRACTION_TOOL: dict[str, Any] = {
         "Such CV values are often reported in bioequivalence/PK-similarity studies and in "
         "regulatory review documents — if any abstract references an FDA review, EMA EPAR, "
         "Australian AUSPAR, or a Japanese (PMDA) or Chinese (NMPA) registration study with a "
-        "stated CV, capture it with its population."
+        "stated CV, capture it with its population. "
+        "MEAN +/- SD IS AS IMPORTANT AS A STATED CV%: many sources — this is the norm for "
+        "biologics/monoclonal-antibody labels and first-in-human papers, which report "
+        "'mean (+/- SD) Cmax was X +/- Y' far more often than a percentage CV — give a mean "
+        "and a standard deviation for Cmax/AUC0t/AUC0inf WITHOUT ever stating a percentage "
+        "CV. When that happens, DO NOT skip the entry and do NOT compute a percentage "
+        "yourself: record the mean in `value` on the normal Cmax/AUC0t/AUC0inf row AND put "
+        "the paired standard deviation in that SAME row's `sd` field. The app derives CV% "
+        "from mean/SD deterministically in Python — your job is only to transcribe both "
+        "numbers faithfully, never to do that division yourself."
     ),
     "input_schema": {
         "type": "object",
@@ -104,6 +113,18 @@ _PK_EXTRACTION_TOOL: dict[str, Any] = {
                             ],
                         },
                         "value": {"type": "number"},
+                        "sd": {
+                            "type": "number",
+                            "description": (
+                                "The standard deviation paired with `value`, ONLY for a "
+                                "Cmax/AUC0t/AUC0inf row whose source reports mean +/- SD and does "
+                                "NOT separately state a percentage CV. Same unit as `value` (do not "
+                                "convert). Leave unset for every other row, including one whose "
+                                "source already gives an explicit CV% (do not populate `sd` there — "
+                                "the explicit CV wins and `sd` would be redundant). Never invent an "
+                                "SD that is not stated."
+                            ),
+                        },
                         "unit": {
                             "type": "string",
                             "description": (
@@ -967,7 +988,13 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "<table> with columns Study/Source | Population | Parameter | Within-subject CV% — "
             "keep this EXACT column header regardless of THIS protocol's own design, because "
             "every literature value in this table is a within-subject/intra-subject CV from a "
-            "crossover or replicate study — and add a "
+            "crossover or replicate study. Some trials in this table give CV% as a derived value "
+            "(the trial reported a mean and a standard deviation rather than a percentage; the app "
+            "computed CV% = SD/mean x 100 from those two numbers) rather than a percentage the "
+            "trial stated outright — a `cv_metrics` entry marked derived_from_mean_sd carries this. "
+            "Where that applies to the row you are rendering, append '(derived from mean/SD)' after "
+            "the percentage in that cell rather than presenting it as a value the trial printed — "
+            "and add a "
             "final row identifying the maximum CV adopted; explicitly state which study and which "
             "parameter (Cmax vs AUC) gave the highest CV. When the locked design is PARALLEL, add "
             "one further sentence directly beneath the table stating plainly that these "
@@ -1376,7 +1403,16 @@ def _build_extraction_prompt(
         "binding and bioavailability — extract every value stated there, using "
         "source_pmid 'DAILYMED'.\n"
         "7. Normalize time-based parameters (t_half, Tmax) to HOURS (days×24, minutes÷60) "
-        "and put 'h' in `unit`.\n\n"
+        "and put 'h' in `unit`.\n"
+        "8. A source reporting 'mean (+/- SD)' for Cmax/AUC0t/AUC0inf WITHOUT a separate "
+        "percentage CV is JUST AS USABLE as one that states a CV% directly — this is the "
+        "normal reporting style for a biologic/monoclonal-antibody label or a "
+        "first-in-human paper, not a gap to skip. Record the mean as you normally would "
+        "AND put the paired standard deviation in that same row's `sd` field. Do not "
+        "calculate a percentage yourself and do not omit the entry because no CV% is "
+        "printed — the app derives CV deterministically from mean and sd afterward. This "
+        "applies to every source, not only DAILYMED: journal abstracts commonly report "
+        "mean +/- SD too.\n\n"
         + (f"{regulatory_hint}\n\n" if regulatory_hint else "")
         + f"Literature:\n\n{joined}\n\n"
         "Call record_pk_parameters with all parameters you can identify."

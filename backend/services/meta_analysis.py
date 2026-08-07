@@ -171,6 +171,85 @@ def _fmt_value(row: Optional[dict]) -> Optional[str]:
     return f"{text} {unit}".strip()
 
 
+def derive_cv_from_mean_sd(extracted: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Add a deterministic cv_intra_cmax/cv_intra_auc row wherever a source gave
+    a Cmax/AUC0t/AUC0inf mean with a paired SD but no directly-stated CV%.
+
+    THE PROBLEM THIS FIXES: a within-subject CV is not always printed as a
+    percentage. It is exactly as common, especially for a biologic/monoclonal-
+    antibody label or a first-in-human paper, to see "mean (+/- SD) Cmax was
+    X +/- Y" instead - and CV% = SD / mean x 100 is a two-number division, not
+    a judgement call. Before this function existed, that division was never
+    performed anywhere: extract_pk_parameters() only recorded a CV row when the
+    source stated one as a percentage (per its own STRICT RULES), so a
+    genuinely-reported, directly-computable CV was silently treated as absent -
+    the sample size fell back to "assumed" for a drug whose literature was
+    saying otherwise. This is the deterministic half of that fix: the model
+    (services/ai_service.py's extraction prompt) now transcribes the mean AND
+    the paired sd verbatim into the SAME row rather than doing the arithmetic
+    itself - Python does the division here, exactly once, so the division is
+    never delegated to the model and never silently skipped.
+
+    Runs BEFORE build_meta_analysis(), which is the only thing that reads
+    cv_intra_cmax/cv_intra_auc/cv_intra/cv_within - a derived row is
+    indistinguishable to that function from a directly-stated one except for
+    the ``derived_from_mean_sd`` flag added here, which build_meta_analysis
+    carries through to ``cv_metrics`` so the appendix directive can disclose
+    the provenance honestly rather than presenting a derived figure as if the
+    source had printed a percentage.
+
+    Conservative by construction: a PMID that already carries an explicit CV
+    for a given metric (or a generic, metric-unspecified cv_intra/cv_within,
+    which could be either) is left alone for THAT metric - an explicit value
+    always wins over a derived one, never the reverse. Returns a NEW list
+    (``extracted`` is not mutated); returns it unchanged (same object) when
+    there is nothing to derive, so a caller with no mean/SD pairs pays no cost.
+    """
+    explicit_cmax_pmids: set[str] = set()
+    explicit_auc_pmids: set[str] = set()
+    for p in extracted:
+        pmid = str(p.get("source_pmid") or "")
+        param = p.get("parameter")
+        if param in ("cv_intra_cmax",) or param in _CV_GENERIC_PARAMS:
+            explicit_cmax_pmids.add(pmid)
+        if param in ("cv_intra_auc",) or param in _CV_GENERIC_PARAMS:
+            explicit_auc_pmids.add(pmid)
+
+    derived: list[dict[str, Any]] = []
+    for p in extracted:
+        param = p.get("parameter")
+        if param not in _CMAX_PARAMS and param not in _AUC_PARAMS:
+            continue
+        mean = _num(p.get("value"))
+        sd = _num(p.get("sd"))
+        if mean is None or sd is None:
+            continue
+        pmid = str(p.get("source_pmid") or "")
+        is_cmax = param in _CMAX_PARAMS
+        if is_cmax and pmid in explicit_cmax_pmids:
+            continue
+        if not is_cmax and pmid in explicit_auc_pmids:
+            continue
+        cv_pct = round((sd / mean) * 100.0, 1)
+        derived.append({
+            "parameter": "cv_intra_cmax" if is_cmax else "cv_intra_auc",
+            "value": cv_pct,
+            "unit": "%",
+            "population": p.get("population"),
+            "source_pmid": p.get("source_pmid"),
+            # Slightly below a directly-stated value's typical 1.0, since this
+            # is arithmetic on numbers the model transcribed rather than a
+            # percentage the source printed outright.
+            "confidence": min(_num(p.get("confidence")) or 0.9, 0.85),
+            "derived_from_mean_sd": True,
+            "derived_from_parameter": param,
+        })
+
+    if not derived:
+        return extracted
+    return list(extracted) + derived
+
+
 def build_meta_analysis(
     extracted: list[dict[str, Any]],
     subject_type: Optional[str] = "healthy",
@@ -228,7 +307,11 @@ def build_meta_analysis(
             v = _num(r.get("value"))
             if v is None:
                 continue
-            entry = {"metric": r.get("parameter"), "cv_pct": round(v, 1)}
+            entry = {
+                "metric": r.get("parameter"),
+                "cv_pct": round(v, 1),
+                "derived_from_mean_sd": bool(r.get("derived_from_mean_sd")),
+            }
             if v > _MAX_PLAUSIBLE_CV_PCT:
                 cv_excluded.append(entry)
             else:
@@ -268,6 +351,16 @@ def build_meta_analysis(
     cv_pool = [s for s in matching if s["cv_pct"] is not None]
     powering_cv = max((s["cv_pct"] for s in cv_pool), default=None)
     powering_study = next((s for s in cv_pool if s["cv_pct"] == powering_cv), None)
+    # Whether the SPECIFIC metric that set powering_cv was a derived (mean/SD)
+    # value rather than a directly-stated percentage — the directive discloses
+    # this distinction rather than presenting a derived figure as if the
+    # source itself had printed a CV%.
+    powering_cv_derived = False
+    if powering_study is not None:
+        powering_cv_derived = any(
+            m["cv_pct"] == powering_cv and m.get("derived_from_mean_sd")
+            for m in powering_study.get("cv_metrics", [])
+        )
 
     # What a CV taken from the WRONG population would have been. Reported so the
     # protocol can show the reviewer that the difference was considered
@@ -286,8 +379,12 @@ def build_meta_analysis(
         "n_studies_with_cv": len(cv_pool),
         "powering_cv_pct": powering_cv,
         "powering_cv_study": (powering_study or {}).get("study"),
+        "powering_cv_derived_from_mean_sd": powering_cv_derived,
         "highest_cv_other_populations_pct": other_highest,
-        "summary": _summary(target, matching, cv_pool, powering_cv, other_highest, non_matching),
+        "summary": _summary(
+            target, matching, cv_pool, powering_cv, other_highest, non_matching,
+            powering_cv_derived,
+        ),
     }
 
 
@@ -298,6 +395,7 @@ def _summary(
     powering_cv: Optional[float],
     other_highest: Optional[float],
     non_matching: list[dict],
+    powering_cv_derived: bool = False,
 ) -> str:
     label = "healthy-volunteer" if target == POPULATION_HEALTHY else "patient"
     if not matching:
@@ -308,14 +406,20 @@ def _summary(
         )
     if powering_cv is None:
         return (
-            f"{len(matching)} {label} study(ies) were retrieved but none reported a "
-            f"within-subject CV, so the sample size rests on an assumed CV rather "
-            f"than a measured one."
+            f"{len(matching)} {label} study(ies) were retrieved but none reported or "
+            f"gave a derivable within-subject CV, so the sample size rests on an "
+            f"assumed CV rather than a measured one."
         )
+    basis = (
+        "derived from that study's reported mean and standard deviation "
+        "(CV% = SD/mean x 100), not a percentage the study stated directly"
+        if powering_cv_derived else
+        "the conservative choice"
+    )
     parts = [
         f"{len(matching)} {label} study(ies) were identified, of which "
-        f"{len(cv_pool)} reported a within-subject CV. The study is powered on the "
-        f"highest of these, {powering_cv:.1f}%, the conservative choice."
+        f"{len(cv_pool)} reported or gave a derivable within-subject CV. The study is "
+        f"powered on the highest of these, {powering_cv:.1f}%, {basis}."
     ]
     if other_highest is not None and other_highest > powering_cv:
         parts.append(
@@ -346,9 +450,17 @@ def meta_analysis_directive(result: dict[str, Any]) -> str:
     ]
     cv = result.get("powering_cv_pct")
     if cv is not None:
+        provenance = (
+            "derived from that study's reported mean and SD (CV% = SD/mean x 100), "
+            "not a percentage the study printed directly — state this honestly rather "
+            "than describing it as reported"
+            if result.get("powering_cv_derived_from_mean_sd") else
+            "as directly reported by that study"
+        )
         lines.append(
             f"- ADOPTED within-subject CV for powering: {cv:.1f}% "
-            f"(highest among population-matched studies; source {result.get('powering_cv_study')})."
+            f"(highest among population-matched studies; source {result.get('powering_cv_study')}, "
+            f"{provenance})."
         )
     else:
         lines.append(
@@ -364,14 +476,24 @@ def meta_analysis_directive(result: dict[str, Any]) -> str:
     lines.append("- Table rows (study | indication | AUC | Cmax | CV%):")
     for s in result.get("studies", []):
         flag = "" if s["population_class"] == target else "  [OTHER POPULATION - not used for powering]"
+        cv_cell = "not reported"
+        if s.get("cv_pct") is not None:
+            row_derived = any(
+                m["cv_pct"] == s["cv_pct"] and m.get("derived_from_mean_sd")
+                for m in s.get("cv_metrics", [])
+            )
+            cv_cell = "%.1f%%%s" % (s["cv_pct"], " (derived from mean/SD)" if row_derived else "")
         lines.append(
             f"    {s['study']} | {s.get('indication') or 'not reported'} | "
             f"{s.get('auc') or 'not reported'} | {s.get('cmax') or 'not reported'} | "
-            f"{('%.1f%%' % s['cv_pct']) if s.get('cv_pct') is not None else 'not reported'}{flag}"
+            f"{cv_cell}{flag}"
         )
     lines.append(
         "  Cells reading 'not reported' MUST be rendered as such. Never fill one "
         "from prior knowledge - an invented PK value in a meta-analysis is a "
-        "fabrication, not a gap."
+        "fabrication, not a gap. A CV cell marked '(derived from mean/SD)' was NOT "
+        "printed as a percentage by that study - it was computed here from the "
+        "study's own reported mean and standard deviation. State it as derived, not "
+        "as a value the study reported outright."
     )
     return "\n".join(lines) + "\n"
