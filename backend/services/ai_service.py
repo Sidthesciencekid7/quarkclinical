@@ -1763,6 +1763,7 @@ _ENGINE_CONTEXT_KEYS: tuple[str, ...] = (
     "icf",
     "stratification",
     "regulatory_sources",
+    "meta_analysis",
 )
 
 # Top-level engine-result fields kept in the JSON context block. Anything not
@@ -1831,6 +1832,17 @@ _ENGINE_CONTEXT_FIELDS: dict[str, tuple[str, ...]] = {
     # No section renders a raw regulatory-sources table — the directive is the
     # authoritative form — so this projection stays deliberately thin.
     "regulatory_sources": ("summary", "search_executed", "referenced_sources"),
+    # meta_analysis_directive() already fully narrates the adopted CV, its
+    # provenance, and the complete per-study table (see services/meta_analysis.py)
+    # — no section renders a second, raw meta-analysis table from this key, so
+    # this projection stays deliberately thin, same rationale as
+    # regulatory_sources above. Critically, this is what keeps
+    # cv_excluded_implausible, cv_wrong_basis_metrics/cv_wrong_basis_pct and
+    # studies_excluded_wrong_population OUT of the JSON block — those are
+    # exactly the values the directive deliberately tabulates-but-does-not-adopt
+    # and explains in prose; leaving them in raw JSON would hand the model a
+    # second, uncurated source that disagrees with the directive's disclosure.
+    "meta_analysis": ("summary",),
 }
 
 # Allocation concealment (ICH E9 s2.3.2). If the caller ever hands us the RAW
@@ -1955,12 +1967,29 @@ def _engine_directives(section_name: str, context: dict) -> str:
 
 
 def _all_engine_directives(context: dict) -> str:
-    """Every engine's locked facts, once each, for whole-document callers.
+    """Every engine's locked facts, once each, for a hypothetical whole-document
+    caller that wants per-section scoping collapsed into one block.
 
-    The per-section path uses _engine_directives(); this is the equivalent for a
-    caller that generates all sections in ONE request (services/three_stage_
-    pipeline.py), where per-section scoping is not available. Each engine appears
-    at most once even though several sections consume the same engine.
+    NOT CURRENTLY CALLED ANYWHERE — services/three_stage_pipeline.py, the
+    actual whole-document caller (the path POST /api/protocols uses), does
+    NOT use this. It maintains its own independent, hand-maintained
+    _ENGINE_DIRECTIVES tuple plus a local _engine_directives() function
+    instead (different return shape: (text, rendered_keys), which this
+    function does not provide — that tuple is what lets the caller drop a
+    rendered engine's raw payload from the serialised JSON context, which
+    this function's plain ``str`` return cannot support without further work).
+
+    This duplication is exactly the kind of oversight that let a real engine
+    (meta_analysis) go missing from three_stage_pipeline.py's tuple for a
+    while, undetected, until it was found in code review — this function
+    would have picked it up automatically (it derives its engine list by
+    iterating _ENGINE_DIRECTIVE_PLAN.values(), so a new PLAN entry needs no
+    matching manual edit here), which the hand-maintained tuple cannot. Kept
+    for that reason, not because anything currently depends on it — a
+    reasonable follow-up is adapting it to return (text, rendered_keys) and
+    wiring it into three_stage_pipeline.py in place of the tuple, removing the
+    duplication at its root rather than requiring both to be kept in sync by
+    hand.
     """
     seen: set[str] = set()
     blocks: list[str] = []

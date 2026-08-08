@@ -50,6 +50,7 @@ from services.safety_reporting import safety_reporting_directive
 from services.sampling_schedule import sampling_schedule_directive
 from services.stratification import stratification_directive
 from services.literature_service import regulatory_sources_directive
+from services.meta_analysis import meta_analysis_directive
 
 SONNET_MODEL = "claude-sonnet-4-6"
 
@@ -535,6 +536,31 @@ async def _stage1_sanity_check(
     )
 
 
+def _field_description(name: str) -> str:
+    base = f"HTML body for the '{name.replace('_', ' ').title()}' section. "
+    if name == "ethics":
+        # _SECTION_CONFIGS["ethics"]["instructions"] (reused verbatim in this
+        # path's instructions block - see _stage2_generate_all_sections) tells
+        # the model to write its four required subsections using <h2>
+        # headings. The generic "<h3> as needed" note below is right for
+        # every OTHER section, but for "ethics" specifically it directly
+        # contradicted that instruction - a genuine, prompt-driven source of
+        # mixed <h2>/<h3> subsection markup within one generated Ethics
+        # section, which could make _split_informed_consent
+        # (routers/export.py) misfile a trailing subsection (e.g. Participant
+        # and Data Confidentiality) into the wrong appendix. State the
+        # correct level explicitly here so the two instructions agree.
+        return (
+            base + "Use <p>, <h2> for its four required subsection headings, "
+            "<ul>/<li>, <table> as needed. Body content only - no outer "
+            "section title, number, or <html>/<body> tags."
+        )
+    return (
+        base + "Use <p>, <h3>, <ul>/<li>, <table> as needed. Body content only - "
+        "no outer section title, number, or <html>/<body> tags."
+    )
+
+
 def _build_full_protocol_tool(section_order: list[str]) -> dict:
     return {
         "name": "write_protocol",
@@ -545,14 +571,7 @@ def _build_full_protocol_tool(section_order: list[str]) -> dict:
         "input_schema": {
             "type": "object",
             "properties": {
-                name: {
-                    "type": "string",
-                    "description": (
-                        f"HTML body for the '{name.replace('_', ' ').title()}' section. "
-                        "Use <p>, <h3>, <ul>/<li>, <table> as needed. Body content only - "
-                        "no outer section title, number, or <html>/<body> tags."
-                    ),
-                }
+                name: {"type": "string", "description": _field_description(name)}
                 for name in section_order
             },
             "required": list(section_order),
@@ -587,6 +606,19 @@ _ENGINE_DIRECTIVES: tuple[tuple[str, Any], ...] = (
     ("safety_gating", safety_gating_directive),
     ("safety_reporting", safety_reporting_directive),
     ("crf_dmp", crf_dmp_directive),
+    # The per-study meta-analysis table AND the CV the study is powered on
+    # come from one engine call, so the appendix and the sample-size
+    # justification cannot state different numbers — mirrors
+    # services/ai_service.py's _ENGINE_DIRECTIVE_PLAN["statistical_analysis_plan"]
+    # wiring exactly. MUST be here: this tuple is this path's only source of
+    # the meta-analysis directive (the whole-document path does not also
+    # render ai_service.py's plan), so omitting it does not fall back to "no
+    # meta-analysis" — it falls back to the raw, un-narrated dict reaching the
+    # model as unlocked JSON context instead (see _stage2_generate_all_sections
+    # below: any key NOT rendered here is serialised into the context block
+    # verbatim), losing the CV-basis / derived-from-mean-SD disclosure this
+    # directive exists to state.
+    ("meta_analysis", meta_analysis_directive),
     # NO ("icf", icf_directive) HERE, DELIBERATELY — must stay in lockstep with
     # services/ai_service.py's _ENGINE_DIRECTIVE_PLAN["ethics"], which drops it
     # for the same reason: the consent form's document control (version, date,

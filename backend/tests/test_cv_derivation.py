@@ -1,23 +1,44 @@
-"""Deriving CV% from a reported mean +/- SD when no percentage is stated.
+"""Deriving CV% from a reported mean +/- SD when no percentage is stated, and
+keeping the result honestly labelled as a BETWEEN-subject quantity.
 
-The bug this closes: extract_pk_parameters() only ever recorded a within-subject
-CV row when a source stated one AS A PERCENTAGE. That is not how a biologic
-label or a first-in-human paper usually reports variability - "mean (+/- SD)
-Cmax was X +/- Y" is the norm there, not the exception - so a genuinely
-retrievable, two-number-division-away CV was silently treated as absent, and
-the sample size fell back to an "assumed" CV for a drug whose own literature
-answered the question. Confirmed concretely against guselkumab: the FDA label
-(DailyMed) states "mean (+/- SD) maximum serum concentration of 8.09 +/- 3.68
-mcg/mL" for a single 100 mg SC dose in healthy adult subjects - CV% =
-3.68/8.09*100 = 45.5%, computable but never computed.
+The bug this closes (part 1, extraction): extract_pk_parameters() only ever
+recorded a CV row when a source stated one AS A PERCENTAGE. That is not how a
+biologic label or a first-in-human paper usually reports variability -
+"mean (+/- SD) Cmax was X +/- Y" is the norm there, not the exception - so a
+genuinely retrievable, two-number-division-away CV was silently treated as
+absent, and the sample size fell back to an "assumed" CV for a drug whose own
+literature answered the question. Confirmed concretely against guselkumab: the
+FDA label (DailyMed) states "mean (+/- SD) maximum serum concentration of
+8.09 +/- 3.68 mcg/mL" for a single 100 mg SC dose in healthy adult subjects -
+CV% = 3.68/8.09*100 = 45.5%, computable but never computed.
 
-derive_cv_from_mean_sd() is the deterministic fix: Python performs the
-division exactly once, the model is never asked to (extract_pk_parameters's
+derive_cv_from_mean_sd() is the deterministic fix for part 1: Python performs
+the division exactly once, the model is never asked to (extract_pk_parameters's
 STRICT RULES tell it to transcribe mean+sd, never to calculate a percentage
 itself), and the result is clearly flagged (derived_from_mean_sd) so every
 consumer - the meta-analysis directive, the SAP's cv_table rendering - can
 disclose "derived from mean/SD" rather than presenting it as a value the
 source printed outright.
+
+The bug this closes (part 2, statistical correctness - found in senior code
+review after part 1 shipped): a mean +/- SD reported across a cohort of
+subjects measures how much those subjects differ from EACH OTHER - a
+BETWEEN-subject (inter-individual) quantity. It can never measure how much a
+single subject differs from themselves on repeat dosing - a WITHIN-subject
+(intra-individual) quantity, which is what a crossover or replicate BE design
+is powered on and can only be measured by dosing the SAME subjects twice.
+Part 1 shipped labelling the derived value cv_intra_cmax/cv_intra_auc and let
+it flow into powering completely ungated - correct by luck for a biosimilar
+parallel design (which is the only design that consumes its resolved CV
+directly, with no within/between conversion), but silently ~2x oversized a
+small-molecule crossover study and mis-triggered replicate/RSABE design
+selection whenever the inflated "within-subject" number crossed
+HVD_CV_THRESHOLD. Part 2 renames the derived value to cv_inter_cmax/
+cv_inter_auc and gates build_meta_analysis() on a `cv_basis` the caller states
+up front: a value of the wrong basis is tabulated (so the appendix can
+disclose it was found and explain why it was not used) but never contributes
+to the adopted powering CV - the exact "tabulate, disclose, do not adopt"
+treatment this module already gives a CV from the wrong population.
 """
 from __future__ import annotations
 
@@ -40,14 +61,16 @@ def _cmax(pmid: str, value: float, sd: float | None = None, population: str = "h
 
 def test_real_guselkumab_label_numbers_derive_the_expected_cv():
     """The exact motivating case: FDA label mean (+/- SD) Cmax for a single
-    100 mg SC dose of guselkumab in healthy adult subjects."""
+    100 mg SC dose of guselkumab in healthy adult subjects. The derived
+    parameter must be named cv_inter_cmax (between-subject) - a mean/SD pair
+    across a cohort cannot supply a within-subject figure."""
     extracted = [_cmax("DAILYMED", 8.09, sd=3.68, population="healthy adult subjects")]
     out = derive_cv_from_mean_sd(extracted)
 
     derived = [p for p in out if p.get("derived_from_mean_sd")]
     assert len(derived) == 1
     row = derived[0]
-    assert row["parameter"] == "cv_intra_cmax"
+    assert row["parameter"] == "cv_inter_cmax"
     assert row["value"] == 45.5  # round(3.68 / 8.09 * 100, 1)
     assert row["unit"] == "%"
     assert row["source_pmid"] == "DAILYMED"
@@ -56,7 +79,7 @@ def test_real_guselkumab_label_numbers_derive_the_expected_cv():
     assert any(p["parameter"] == "Cmax" and p["value"] == 8.09 for p in out)
 
 
-def test_auc_mean_sd_derives_cv_intra_auc():
+def test_auc_mean_sd_derives_cv_inter_auc():
     extracted = [
         {"parameter": "AUC0inf", "value": 100.0, "sd": 30.0, "unit": "mcg*d/mL",
          "population": "healthy adults", "source_pmid": "P1", "confidence": 1.0},
@@ -64,7 +87,7 @@ def test_auc_mean_sd_derives_cv_intra_auc():
     out = derive_cv_from_mean_sd(extracted)
     derived = [p for p in out if p.get("derived_from_mean_sd")]
     assert len(derived) == 1
-    assert derived[0]["parameter"] == "cv_intra_auc"
+    assert derived[0]["parameter"] == "cv_inter_auc"
     assert derived[0]["value"] == 30.0
 
 
@@ -75,7 +98,7 @@ def test_auc0t_also_triggers_derivation():
     ]
     derived = [p for p in derive_cv_from_mean_sd(extracted) if p.get("derived_from_mean_sd")]
     assert len(derived) == 1
-    assert derived[0]["parameter"] == "cv_intra_auc"
+    assert derived[0]["parameter"] == "cv_inter_auc"
     assert derived[0]["value"] == 25.0
 
 
@@ -102,9 +125,9 @@ def test_zero_or_negative_mean_is_not_derived():
 
 
 def test_explicit_cv_intra_cmax_wins_no_derivation():
-    """A source that gives BOTH a mean+SD row and an explicit cv_intra_cmax
-    for the same PMID must not get a redundant/conflicting derived row -
-    the explicit value always wins."""
+    """A source that gives BOTH a mean+SD row and an explicit within-subject
+    cv_intra_cmax for the same PMID must not get a redundant/conflicting
+    derived row - the explicit value always wins, regardless of basis."""
     extracted = [
         _cmax("P1", 8.09, sd=3.68),
         {"parameter": "cv_intra_cmax", "value": 22.0, "unit": "%",
@@ -114,6 +137,19 @@ def test_explicit_cv_intra_cmax_wins_no_derivation():
     assert not any(p.get("derived_from_mean_sd") for p in out)
     # The explicit value is untouched and still present.
     assert any(p["parameter"] == "cv_intra_cmax" and p["value"] == 22.0 for p in out)
+
+
+def test_explicit_cv_inter_cmax_also_wins_no_derivation():
+    """Symmetric with the within-subject case: an explicit BETWEEN-subject CV
+    for the same PMID/metric must also block a redundant derived row."""
+    extracted = [
+        _cmax("P1", 8.09, sd=3.68),
+        {"parameter": "cv_inter_cmax", "value": 40.0, "unit": "%",
+         "population": "healthy adults", "source_pmid": "P1", "confidence": 1.0},
+    ]
+    out = derive_cv_from_mean_sd(extracted)
+    assert not any(p.get("derived_from_mean_sd") for p in out)
+    assert any(p["parameter"] == "cv_inter_cmax" and p["value"] == 40.0 for p in out)
 
 
 def test_generic_cv_intra_for_a_pmid_blocks_derivation_for_both_metrics():
@@ -142,7 +178,7 @@ def test_explicit_cv_for_one_metric_does_not_block_the_other():
     out = derive_cv_from_mean_sd(extracted)
     derived = [p for p in out if p.get("derived_from_mean_sd")]
     assert len(derived) == 1
-    assert derived[0]["parameter"] == "cv_intra_cmax"
+    assert derived[0]["parameter"] == "cv_inter_cmax"
 
 
 def test_explicit_cv_for_one_pmid_does_not_block_derivation_for_another():
@@ -199,27 +235,60 @@ def test_unrelated_parameters_are_never_touched():
 
 
 # ---------------------------------------------------------------------------
-# Integration with build_meta_analysis
+# Integration with build_meta_analysis — cv_basis gating
 # ---------------------------------------------------------------------------
 
 
-def test_mean_sd_only_literature_now_yields_a_powering_cv():
-    """Before this fix: a healthy-volunteer study reporting ONLY mean+SD (no
-    percentage) contributed nothing, and build_meta_analysis's powering_cv_pct
-    was None - the exact "no CV found" the fix addresses."""
+def test_mean_sd_only_literature_finds_nothing_without_derivation():
+    """Baseline: without derive_cv_from_mean_sd, mean/SD-only literature
+    contributes no CV at all, regardless of basis - the exact "no CV found"
+    the derivation feature addresses."""
     extracted = [_cmax("DAILYMED", 8.09, sd=3.68, population="healthy adult subjects")]
+    result = build_meta_analysis(extracted, subject_type="healthy")
+    assert result["powering_cv_pct"] is None
 
-    without_fix = build_meta_analysis(extracted, subject_type="healthy")
-    assert without_fix["powering_cv_pct"] is None
 
-    with_fix = build_meta_analysis(derive_cv_from_mean_sd(extracted), subject_type="healthy")
-    assert with_fix["powering_cv_pct"] == 45.5
-    assert with_fix["powering_cv_derived_from_mean_sd"] is True
+def test_derived_between_subject_cv_does_not_power_a_within_subject_design():
+    """THE CRITICAL FIX. cv_basis="within" is what every non-biosimilar
+    (crossover/replicate-eligible) design needs. A derived value is
+    structurally a between-subject quantity (see module docstring) and must
+    NOT be adopted to power a within-subject design - it is tabulated for
+    disclosure only, and the sample size correctly falls back to none/assumed
+    rather than silently using an inflated figure."""
+    extracted = [_cmax("DAILYMED", 8.09, sd=3.68, population="healthy adult subjects")]
+    result = build_meta_analysis(
+        derive_cv_from_mean_sd(extracted), subject_type="healthy", cv_basis="within",
+    )
+    assert result["powering_cv_pct"] is None
+    assert result["cv_basis"] == "within"
+    # But it is NOT silently dropped - it is disclosed as found-but-wrong-basis.
+    assert result["highest_cv_wrong_basis_pct"] == 45.5
+    study = result["studies"][0]
+    assert study["cv_pct"] is None
+    assert study["cv_wrong_basis_pct"] == 45.5
+    assert study["cv_wrong_basis_metrics"] == [
+        {"metric": "cv_inter_cmax", "cv_pct": 45.5, "derived_from_mean_sd": True}
+    ]
+
+
+def test_derived_between_subject_cv_powers_a_between_subject_design():
+    """The positive case: cv_basis="between" is what a biosimilar parallel
+    design needs (services/biostatistics.py feeds it straight through with no
+    within/between conversion), and a mean/SD-derived value IS the right
+    quantity for that design - it is adopted."""
+    extracted = [_cmax("DAILYMED", 8.09, sd=3.68, population="healthy adult subjects")]
+    result = build_meta_analysis(
+        derive_cv_from_mean_sd(extracted), subject_type="healthy", cv_basis="between",
+    )
+    assert result["powering_cv_pct"] == 45.5
+    assert result["powering_cv_derived_from_mean_sd"] is True
+    assert result["cv_basis"] == "between"
 
 
 def test_explicit_cv_literature_is_unaffected_by_wrapping_with_derive():
     """Non-regression: wrapping extracted with derive_cv_from_mean_sd must not
-    change the result at all when the source already gives an explicit CV%."""
+    change the result at all when the source already gives an explicit,
+    correctly-basis-matched within-subject CV%."""
     extracted = [
         {"parameter": "cv_intra_cmax", "value": 24.5, "unit": "%",
          "population": "healthy adults", "source_pmid": "P1", "confidence": 1.0},
@@ -230,25 +299,53 @@ def test_explicit_cv_literature_is_unaffected_by_wrapping_with_derive():
     assert wrapped["powering_cv_derived_from_mean_sd"] is False
 
 
-def test_mixed_explicit_and_derived_studies_pick_the_correct_higher_value():
+def test_explicit_within_subject_cv_wins_over_a_higher_derived_between_subject_one():
+    """A within-subject design must prefer an explicit, correctly-basis-matched
+    CV even when a numerically HIGHER derived (wrong-basis) value exists
+    elsewhere in the literature - basis correctness comes before magnitude."""
     extracted = [
         {"parameter": "cv_intra_cmax", "value": 24.5, "unit": "%",
          "population": "healthy adults", "source_pmid": "P1", "confidence": 1.0},
-        _cmax("P2", 8.09, sd=3.68, population="healthy adults"),  # derives 45.5%
+        _cmax("P2", 8.09, sd=3.68, population="healthy adults"),  # derives cv_inter_cmax=45.5
     ]
-    result = build_meta_analysis(derive_cv_from_mean_sd(extracted), subject_type="healthy")
+    result = build_meta_analysis(
+        derive_cv_from_mean_sd(extracted), subject_type="healthy", cv_basis="within",
+    )
+    assert result["powering_cv_pct"] == 24.5
+    assert result["powering_cv_study"] == "P1"
+    assert result["powering_cv_derived_from_mean_sd"] is False
+    assert result["highest_cv_wrong_basis_pct"] == 45.5
+
+
+def test_same_mixed_literature_powers_a_between_subject_design_on_the_derived_value():
+    """The SAME literature as above, but for a between-subject design: now the
+    explicit within-subject P1 value is the wrong basis and is excluded, and
+    the derived P2 value is the only eligible (and adopted) candidate."""
+    extracted = [
+        {"parameter": "cv_intra_cmax", "value": 24.5, "unit": "%",
+         "population": "healthy adults", "source_pmid": "P1", "confidence": 1.0},
+        _cmax("P2", 8.09, sd=3.68, population="healthy adults"),
+    ]
+    result = build_meta_analysis(
+        derive_cv_from_mean_sd(extracted), subject_type="healthy", cv_basis="between",
+    )
     assert result["powering_cv_pct"] == 45.5
     assert result["powering_cv_study"] == "P2"
     assert result["powering_cv_derived_from_mean_sd"] is True
+    assert result["highest_cv_wrong_basis_pct"] == 24.5
 
 
 def test_implausible_derived_cv_is_still_excluded_by_the_existing_guard():
     """A wildly-implausible ratio (e.g. a transcription slip putting the SD
     larger than the mean many times over) must still be caught by
     build_meta_analysis's pre-existing _MAX_PLAUSIBLE_CV_PCT guard - the
-    derivation path is not exempt from it."""
+    derivation path is not exempt from it. Uses cv_basis="between" so the
+    derived (inter) value actually lands in the basis-matching pool this
+    guard checks."""
     extracted = [_cmax("P1", 1.0, sd=5.0)]  # would derive to 500%
-    result = build_meta_analysis(derive_cv_from_mean_sd(extracted), subject_type="healthy")
+    result = build_meta_analysis(
+        derive_cv_from_mean_sd(extracted), subject_type="healthy", cv_basis="between",
+    )
     assert result["powering_cv_pct"] is None
     study = result["studies"][0]
     assert study["cv_excluded_implausible"]
@@ -256,10 +353,12 @@ def test_implausible_derived_cv_is_still_excluded_by_the_existing_guard():
 
 def test_derived_flag_survives_into_study_cv_metrics():
     extracted = [_cmax("P1", 8.09, sd=3.68)]
-    result = build_meta_analysis(derive_cv_from_mean_sd(extracted), subject_type="healthy")
+    result = build_meta_analysis(
+        derive_cv_from_mean_sd(extracted), subject_type="healthy", cv_basis="between",
+    )
     study = result["studies"][0]
     assert study["cv_metrics"] == [
-        {"metric": "cv_intra_cmax", "cv_pct": 45.5, "derived_from_mean_sd": True}
+        {"metric": "cv_inter_cmax", "cv_pct": 45.5, "derived_from_mean_sd": True}
     ]
 
 
@@ -272,6 +371,15 @@ def test_explicit_cv_metrics_are_flagged_not_derived():
     assert result["studies"][0]["cv_metrics"][0]["derived_from_mean_sd"] is False
 
 
+def test_invalid_cv_basis_is_rejected():
+    extracted = [_cmax("P1", 8.09, sd=3.68)]
+    try:
+        build_meta_analysis(extracted, subject_type="healthy", cv_basis="sideways")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # meta_analysis_directive — disclosure text
 # ---------------------------------------------------------------------------
@@ -281,7 +389,9 @@ def test_directive_discloses_a_derived_powering_cv_honestly():
     from services.meta_analysis import meta_analysis_directive
 
     extracted = [_cmax("DAILYMED", 8.09, sd=3.68, population="healthy adult subjects")]
-    result = build_meta_analysis(derive_cv_from_mean_sd(extracted), subject_type="healthy")
+    result = build_meta_analysis(
+        derive_cv_from_mean_sd(extracted), subject_type="healthy", cv_basis="between",
+    )
     directive = meta_analysis_directive(result)
 
     assert "45.5%" in directive
@@ -294,10 +404,31 @@ def test_directive_does_not_claim_derived_values_were_directly_reported():
     from services.meta_analysis import meta_analysis_directive
 
     extracted = [_cmax("DAILYMED", 8.09, sd=3.68)]
-    result = build_meta_analysis(derive_cv_from_mean_sd(extracted), subject_type="healthy")
+    result = build_meta_analysis(
+        derive_cv_from_mean_sd(extracted), subject_type="healthy", cv_basis="between",
+    )
     directive = meta_analysis_directive(result)
 
     assert "as directly reported by that study" not in directive
+
+
+def test_directive_discloses_a_wrong_basis_cv_that_was_found_but_not_adopted():
+    """The disclosure half of the critical fix: when a between-subject value
+    is the only thing found for a within-subject-basis design, the directive
+    must say so explicitly rather than silently stating "no CV was available"
+    with no explanation - the model must not later invent one."""
+    from services.meta_analysis import meta_analysis_directive
+
+    extracted = [_cmax("DAILYMED", 8.09, sd=3.68, population="healthy adult subjects")]
+    result = build_meta_analysis(
+        derive_cv_from_mean_sd(extracted), subject_type="healthy", cv_basis="within",
+    )
+    directive = meta_analysis_directive(result)
+
+    assert result["powering_cv_pct"] is None
+    assert "45.5" in directive
+    assert "between-subject" in directive
+    assert "not used" in directive.lower() or "not adopted" in directive.lower()
 
 
 def test_directive_for_an_explicit_cv_states_it_was_directly_reported():
@@ -343,7 +474,9 @@ def test_directive_legend_always_explains_the_derived_marker():
 
 def test_summary_text_reflects_derived_provenance():
     extracted = [_cmax("DAILYMED", 8.09, sd=3.68)]
-    result = build_meta_analysis(derive_cv_from_mean_sd(extracted), subject_type="healthy")
+    result = build_meta_analysis(
+        derive_cv_from_mean_sd(extracted), subject_type="healthy", cv_basis="between",
+    )
     assert "derived from that study" in result["summary"]
 
     extracted2 = [
@@ -359,16 +492,46 @@ def test_summary_text_reflects_derived_provenance():
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_powering_cv_uses_derived_values_end_to_end():
+def test_resolve_powering_cv_biosimilar_adopts_the_derived_value():
+    """A biosimilar_pk protocol always uses a parallel design and consumes its
+    resolved CV with no within/between conversion (services/biostatistics.py)
+    - it genuinely needs the between-subject quantity a mean/SD pair supplies,
+    so the derived value IS adopted here. This is the real guselkumab case."""
     from routers.protocols import _resolve_powering_cv
 
     extracted = [_cmax("DAILYMED", 8.09, sd=3.68, population="healthy adult subjects")]
-    cv_pct, provenance = _resolve_powering_cv({"subject_type": "healthy"}, extracted)
+    cv_pct, provenance = _resolve_powering_cv(
+        {"subject_type": "healthy"}, extracted, study_type="biosimilar_pk",
+    )
 
     assert cv_pct == 45.5
     assert provenance["cv_source"] == "literature (highest observed)"
     assert provenance["meta_analysis"]["powering_cv_derived_from_mean_sd"] is True
+    assert provenance["meta_analysis"]["cv_basis"] == "between"
     assert provenance["cv_table"], "cv_table must carry the derived study forward to the SAP"
+
+
+def test_resolve_powering_cv_small_molecule_does_not_adopt_the_derived_value():
+    """THE REGRESSION GUARD for the critical fix, at the router boundary: for
+    any non-biosimilar study_type (BE, food_effect, ...), a mean/SD-only
+    literature source must NOT silently power the study - the derived value is
+    between-subject, this design needs within-subject, and there is no
+    explicit within-subject CV anywhere in the extraction. Before this fix,
+    this returned 45.5 (mislabelled as within-subject) for EVERY study_type;
+    now it correctly falls back to None so recommend_sample_size uses its own
+    clearly-flagged ASSUMED_CV_PCT instead of an inflated, wrongly-basis'd
+    figure."""
+    from routers.protocols import _resolve_powering_cv
+
+    extracted = [_cmax("DAILYMED", 8.09, sd=3.68, population="healthy adult subjects")]
+    cv_pct, provenance = _resolve_powering_cv(
+        {"subject_type": "healthy"}, extracted, study_type="BE",
+    )
+
+    assert cv_pct is None
+    assert "cv_source" not in provenance  # falls through to biostatistics' own "assumed" label
+    assert provenance["meta_analysis"]["cv_basis"] == "within"
+    assert provenance["meta_analysis"]["highest_cv_wrong_basis_pct"] == 45.5
 
 
 def test_resolve_powering_cv_without_fix_would_have_found_nothing():
@@ -382,16 +545,174 @@ def test_resolve_powering_cv_without_fix_would_have_found_nothing():
 
 def test_resolve_powering_cv_investigator_override_still_takes_precedence():
     """Non-regression: an explicit investigator override must still win over
-    ANY literature value, derived or not."""
+    ANY literature value, derived or not, regardless of study_type."""
     from routers.protocols import _resolve_powering_cv
 
     extracted = [_cmax("DAILYMED", 8.09, sd=3.68)]
     cv_pct, provenance = _resolve_powering_cv(
-        {"subject_type": "healthy", "cv_intra": 33.0}, extracted,
+        {"subject_type": "healthy", "cv_intra": 33.0}, extracted, study_type="biosimilar_pk",
     )
     assert cv_pct == 33.0
     assert provenance["cv_is_user_override"] is True
     assert provenance["cv_table"] == []
+
+
+# ---------------------------------------------------------------------------
+# _resolve_powering_cv — cv_basis must follow an explicit design override,
+# not study_type alone.
+#
+# THE BUG (found by adversarial verification of the study_type-only version of
+# this fix): cv_basis was set to "between" whenever study_type=="biosimilar_pk",
+# on the assumption that a biosimilar_pk protocol always ends up parallel.
+# False: recommend_sample_size's design-selection logic checks an explicit
+# `requested_design` (population_config["design"]) FIRST, before its
+# biosimilar-implies-parallel default. A biosimilar protocol whose design was
+# explicitly overridden to "replicate" or "crossover" therefore genuinely
+# needs a WITHIN-subject CV (recommend_sample_size never applies its x1.5
+# within/between conversion for those designs), but the old code still handed
+# it a between-subject-basis value with no conversion - silently powering the
+# study on the wrong quantity, unconverted.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_powering_cv_biosimilar_with_no_design_override_stays_between_basis():
+    """Non-regression: the common case (no explicit design) is unaffected."""
+    from routers.protocols import _resolve_powering_cv
+
+    extracted = [_cmax("DAILYMED", 8.09, sd=3.68, population="healthy adult subjects")]
+    cv_pct, provenance = _resolve_powering_cv(
+        {"subject_type": "healthy"}, extracted, study_type="biosimilar_pk",
+    )
+    assert cv_pct == 45.5
+    assert provenance["meta_analysis"]["cv_basis"] == "between"
+
+
+def test_resolve_powering_cv_biosimilar_with_replicate_override_uses_within_basis():
+    """THE FIX: an explicit design="replicate" override on a biosimilar_pk
+    protocol must switch cv_basis to "within" - the derived (between-subject)
+    value is then correctly excluded from powering rather than silently
+    adopted as if it were within-subject."""
+    from routers.protocols import _resolve_powering_cv
+
+    extracted = [_cmax("DAILYMED", 8.09, sd=3.68, population="healthy adult subjects")]
+    cv_pct, provenance = _resolve_powering_cv(
+        {"subject_type": "healthy", "design": "replicate"}, extracted, study_type="biosimilar_pk",
+    )
+    assert cv_pct is None
+    assert provenance["meta_analysis"]["cv_basis"] == "within"
+    assert provenance["meta_analysis"]["highest_cv_wrong_basis_pct"] == 45.5
+
+
+def test_resolve_powering_cv_biosimilar_with_crossover_override_uses_within_basis():
+    from routers.protocols import _resolve_powering_cv
+
+    extracted = [_cmax("DAILYMED", 8.09, sd=3.68, population="healthy adult subjects")]
+    cv_pct, provenance = _resolve_powering_cv(
+        {"subject_type": "healthy", "design": "crossover"}, extracted, study_type="biosimilar_pk",
+    )
+    assert cv_pct is None
+    assert provenance["meta_analysis"]["cv_basis"] == "within"
+
+
+def test_resolve_powering_cv_biosimilar_with_parallel_override_still_uses_between_basis():
+    """Non-regression: an explicit design="parallel" (redundant with the
+    default) must not change the outcome."""
+    from routers.protocols import _resolve_powering_cv
+
+    extracted = [_cmax("DAILYMED", 8.09, sd=3.68, population="healthy adult subjects")]
+    cv_pct, provenance = _resolve_powering_cv(
+        {"subject_type": "healthy", "design": "parallel"}, extracted, study_type="biosimilar_pk",
+    )
+    assert cv_pct == 45.5
+    assert provenance["meta_analysis"]["cv_basis"] == "between"
+
+
+def test_resolve_powering_cv_non_biosimilar_with_parallel_override_stays_within_basis():
+    """A NON-biosimilar drug explicitly designed as parallel still needs a
+    within-subject CV as input - recommend_sample_size does its own x1.5
+    conversion internally for that combination (design_key=="parallel" and
+    not biosimilar), so cv_basis must stay "within" here, not flip to
+    "between"."""
+    from routers.protocols import _resolve_powering_cv
+
+    extracted = [_cmax("DAILYMED", 8.09, sd=3.68, population="healthy adult subjects")]
+    cv_pct, provenance = _resolve_powering_cv(
+        {"subject_type": "healthy", "design": "parallel"}, extracted, study_type="BE",
+    )
+    assert cv_pct is None
+    assert provenance["meta_analysis"]["cv_basis"] == "within"
+
+
+def test_biosimilar_replicate_override_no_longer_silently_underpowers():
+    """End-to-end regression guard, independently reproduced during code
+    review: before this fix, a biosimilar_pk + design="replicate" override fed
+    the unconverted between-subject-derived CV straight into
+    recommend_sample_size, giving n_enrolled=124 - roughly HALF of the
+    parallel-design n_enrolled=240 the same CV correctly produces when used as
+    the between-subject quantity it actually is. After the fix, with no
+    explicit within-subject CV available, the design correctly falls back to
+    ASSUMED_CV_PCT instead of silently halving the enrollment target."""
+    from routers.protocols import _resolve_powering_cv
+    from services.biostatistics import recommend_sample_size, ASSUMED_CV_PCT
+
+    extracted = [_cmax("DAILYMED", 8.09, sd=3.68, population="healthy adult subjects")]
+    cv_pct, provenance = _resolve_powering_cv(
+        {"subject_type": "healthy", "design": "replicate"}, extracted, study_type="biosimilar_pk",
+    )
+    rec = recommend_sample_size(
+        study_type="biosimilar_pk", drug_inn="examplemab",
+        cv_intra_pct=cv_pct, cv_source=provenance.get("cv_source"),
+        requested_design="replicate",
+    )
+    assert rec.design_key == "replicate"
+    assert rec.cv_pct == ASSUMED_CV_PCT
+    assert rec.cv_source == "assumed"
+
+
+# ---------------------------------------------------------------------------
+# services/biostatistics.py::recommend_sample_size — the real-world effect of
+# the fix on the number that ends up in the protocol. These pin the exact
+# figures independently confirmed during code review.
+# ---------------------------------------------------------------------------
+
+
+def test_biosimilar_sample_size_uses_the_derived_cv_directly():
+    from routers.protocols import _resolve_powering_cv
+    from services.biostatistics import recommend_sample_size
+
+    extracted = [_cmax("DAILYMED", 8.09, sd=3.68, population="healthy adult subjects")]
+    cv_pct, provenance = _resolve_powering_cv(
+        {"subject_type": "healthy"}, extracted, study_type="biosimilar_pk",
+    )
+    rec = recommend_sample_size(
+        study_type="biosimilar_pk", drug_inn="guselkumab",
+        cv_intra_pct=cv_pct, cv_source=provenance.get("cv_source"),
+    )
+    assert rec.design_key == "parallel"
+    assert rec.cv_pct == 45.5
+    assert rec.n_evaluable == 222
+
+
+def test_small_molecule_crossover_falls_back_to_assumed_cv_not_the_derived_one():
+    """Before the fix, this scenario fed the between-subject 45.5% figure into
+    a crossover design as if it were within-subject, giving n=112 for a study
+    that should need n=54 at the true (unknown here) within-subject CV - a
+    >2x oversized trial. After the fix, with no explicit within-subject CV
+    available, the design correctly falls back to ASSUMED_CV_PCT (25.0%)."""
+    from routers.protocols import _resolve_powering_cv
+    from services.biostatistics import recommend_sample_size, ASSUMED_CV_PCT
+
+    extracted = [_cmax("DAILYMED", 8.09, sd=3.68, population="healthy adult subjects")]
+    cv_pct, provenance = _resolve_powering_cv(
+        {"subject_type": "healthy"}, extracted, study_type="BE",
+    )
+    rec = recommend_sample_size(
+        study_type="BE", drug_inn="some-small-molecule",
+        cv_intra_pct=cv_pct, cv_source=provenance.get("cv_source"),
+    )
+    assert rec.design_key == "crossover"
+    assert rec.cv_pct == ASSUMED_CV_PCT
+    assert rec.cv_source == "assumed"
 
 
 # ---------------------------------------------------------------------------

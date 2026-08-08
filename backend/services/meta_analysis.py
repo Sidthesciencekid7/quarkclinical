@@ -131,13 +131,32 @@ def target_population(subject_type: Optional[str]) -> str:
 
 _AUC_PARAMS = ("AUC0inf", "AUC0t")          # preference order: AUC0inf first
 _CMAX_PARAMS = ("Cmax",)
-_CV_CMAX_PARAMS = ("cv_intra_cmax",)
-_CV_AUC_PARAMS = ("cv_intra_auc",)
+
+# Within-subject (intra-individual) CV -- what a crossover or replicate design
+# is powered on. This can only come from a source that measured the SAME
+# subjects more than once (a crossover/replicate study), because that is the
+# only way to isolate within-subject variability from between-subject noise.
+_CV_INTRA_CMAX_PARAMS = ("cv_intra_cmax",)
+_CV_INTRA_AUC_PARAMS = ("cv_intra_auc",)
 _CV_GENERIC_PARAMS = ("cv_intra", "cv_within")
-_ALL_CV_PARAMS = _CV_CMAX_PARAMS + _CV_AUC_PARAMS + _CV_GENERIC_PARAMS
+_ALL_CV_INTRA_PARAMS = _CV_INTRA_CMAX_PARAMS + _CV_INTRA_AUC_PARAMS + _CV_GENERIC_PARAMS
+
+# Between-subject (inter-individual) CV -- what a parallel design is powered
+# on. A mean +/- SD reported across a cohort measures how much subjects differ
+# from EACH OTHER, never how much a single subject differs from themselves on
+# repeat dosing -- there is no arithmetic that recovers a within-subject figure
+# from one cohort's mean and SD. derive_cv_from_mean_sd() below therefore only
+# ever emits these parameter names, never the intra ones, so a derived value
+# can never be silently adopted to power a design that needs the quantity a
+# single mean/SD pair is structurally unable to supply.
+_CV_INTER_CMAX_PARAMS = ("cv_inter_cmax",)
+_CV_INTER_AUC_PARAMS = ("cv_inter_auc",)
+_ALL_CV_INTER_PARAMS = _CV_INTER_CMAX_PARAMS + _CV_INTER_AUC_PARAMS
+
+_ALL_CV_PARAMS = _ALL_CV_INTRA_PARAMS + _ALL_CV_INTER_PARAMS
 
 # A CV above this is implausible for a single PK metric and almost always means
-# the extraction picked up a between-subject CV, a percentage that was actually
+# the extraction picked up the wrong quantity, a percentage that was actually
 # a ratio, or a typo. Powering on it would silently inflate N enormously, so it
 # is dropped from powering and reported as excluded rather than used.
 _MAX_PLAUSIBLE_CV_PCT = 150.0
@@ -172,47 +191,63 @@ def _fmt_value(row: Optional[dict]) -> Optional[str]:
 
 
 def derive_cv_from_mean_sd(extracted: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Add a deterministic cv_intra_cmax/cv_intra_auc row wherever a source gave
+    """Add a deterministic cv_inter_cmax/cv_inter_auc row wherever a source gave
     a Cmax/AUC0t/AUC0inf mean with a paired SD but no directly-stated CV%.
 
-    THE PROBLEM THIS FIXES: a within-subject CV is not always printed as a
-    percentage. It is exactly as common, especially for a biologic/monoclonal-
-    antibody label or a first-in-human paper, to see "mean (+/- SD) Cmax was
-    X +/- Y" instead - and CV% = SD / mean x 100 is a two-number division, not
-    a judgement call. Before this function existed, that division was never
-    performed anywhere: extract_pk_parameters() only recorded a CV row when the
-    source stated one as a percentage (per its own STRICT RULES), so a
-    genuinely-reported, directly-computable CV was silently treated as absent -
-    the sample size fell back to "assumed" for a drug whose literature was
-    saying otherwise. This is the deterministic half of that fix: the model
+    THE PROBLEM THIS FIXES: a CV is not always printed as a percentage. It is
+    exactly as common, especially for a biologic/monoclonal-antibody label or a
+    first-in-human paper, to see "mean (+/- SD) Cmax was X +/- Y" instead - and
+    CV% = SD / mean x 100 is a two-number division, not a judgement call.
+    Before this function existed, that division was never performed anywhere:
+    extract_pk_parameters() only recorded a CV row when the source stated one
+    as a percentage (per its own STRICT RULES), so a genuinely-reported,
+    directly-computable CV was silently treated as absent - the sample size
+    fell back to "assumed" for a drug whose literature was saying otherwise.
+    This is the deterministic half of that fix: the model
     (services/ai_service.py's extraction prompt) now transcribes the mean AND
     the paired sd verbatim into the SAME row rather than doing the arithmetic
     itself - Python does the division here, exactly once, so the division is
     never delegated to the model and never silently skipped.
 
+    WHY "inter", NEVER "intra": a mean +/- SD reported for a PK parameter is
+    computed ACROSS the subjects in a cohort - it is, by construction, a
+    between-subject (inter-individual) quantity. Within-subject variability
+    can only be observed by dosing the SAME subject more than once (a
+    crossover or replicate design) and is not recoverable from a single
+    cohort's mean and SD, no matter how the arithmetic is framed. Labelling
+    this derived value cv_intra_* would silently hand a between-subject number
+    to code that expects a within-subject one - build_meta_analysis() and
+    downstream sample-size code key off the parameter name to decide which
+    quantity a CV is, so the name is the only thing standing between "this
+    powers a parallel design" and "this quietly mis-powers a crossover BE
+    study by roughly the square of the within/between ratio". Emitting
+    cv_inter_* keeps that distinction structural rather than relying on every
+    caller to remember it.
+
     Runs BEFORE build_meta_analysis(), which is the only thing that reads
-    cv_intra_cmax/cv_intra_auc/cv_intra/cv_within - a derived row is
-    indistinguishable to that function from a directly-stated one except for
-    the ``derived_from_mean_sd`` flag added here, which build_meta_analysis
-    carries through to ``cv_metrics`` so the appendix directive can disclose
-    the provenance honestly rather than presenting a derived figure as if the
-    source had printed a percentage.
+    cv_inter_cmax/cv_inter_auc (or the within-subject cv_intra_*/cv_intra/
+    cv_within families) - a derived row is indistinguishable to that function
+    from a directly-stated one except for the ``derived_from_mean_sd`` flag
+    added here, which build_meta_analysis carries through to ``cv_metrics`` so
+    the appendix directive can disclose the provenance honestly rather than
+    presenting a derived figure as if the source had printed a percentage.
 
     Conservative by construction: a PMID that already carries an explicit CV
-    for a given metric (or a generic, metric-unspecified cv_intra/cv_within,
-    which could be either) is left alone for THAT metric - an explicit value
-    always wins over a derived one, never the reverse. Returns a NEW list
-    (``extracted`` is not mutated); returns it unchanged (same object) when
-    there is nothing to derive, so a caller with no mean/SD pairs pays no cost.
+    for a given metric (within- or between-subject, or a generic,
+    metric-unspecified cv_intra/cv_within) is left alone for THAT metric - an
+    explicit value always wins over a derived one, never the reverse. Returns
+    a NEW list (``extracted`` is not mutated); returns it unchanged (same
+    object) when there is nothing to derive, so a caller with no mean/SD pairs
+    pays no cost.
     """
     explicit_cmax_pmids: set[str] = set()
     explicit_auc_pmids: set[str] = set()
     for p in extracted:
         pmid = str(p.get("source_pmid") or "")
         param = p.get("parameter")
-        if param in ("cv_intra_cmax",) or param in _CV_GENERIC_PARAMS:
+        if param in _CV_INTRA_CMAX_PARAMS or param in _CV_INTER_CMAX_PARAMS or param in _CV_GENERIC_PARAMS:
             explicit_cmax_pmids.add(pmid)
-        if param in ("cv_intra_auc",) or param in _CV_GENERIC_PARAMS:
+        if param in _CV_INTRA_AUC_PARAMS or param in _CV_INTER_AUC_PARAMS or param in _CV_GENERIC_PARAMS:
             explicit_auc_pmids.add(pmid)
 
     derived: list[dict[str, Any]] = []
@@ -232,7 +267,7 @@ def derive_cv_from_mean_sd(extracted: list[dict[str, Any]]) -> list[dict[str, An
             continue
         cv_pct = round((sd / mean) * 100.0, 1)
         derived.append({
-            "parameter": "cv_intra_cmax" if is_cmax else "cv_intra_auc",
+            "parameter": "cv_inter_cmax" if is_cmax else "cv_inter_auc",
             "value": cv_pct,
             "unit": "%",
             "population": p.get("population"),
@@ -254,6 +289,7 @@ def build_meta_analysis(
     extracted: list[dict[str, Any]],
     subject_type: Optional[str] = "healthy",
     literature: Optional[list[dict[str, Any]]] = None,
+    cv_basis: str = "within",
 ) -> dict[str, Any]:
     """Build the per-study meta-analysis table and pick the powering CV.
 
@@ -261,10 +297,27 @@ def build_meta_analysis(
     carrying ``source_pmid`` and a free-text ``population``). ``literature`` is
     the optional source list used to attach a study title/indication.
 
+    ``cv_basis`` states which variance quantity THIS protocol's sample size
+    actually needs: ``"within"`` (within-subject/intra-subject -- crossover and
+    replicate designs) or ``"between"`` (between-subject/total variability --
+    parallel designs, and specifically the biosimilar-parallel case which uses
+    the resolved CV directly with no within-to-between conversion; see
+    services/biostatistics.py's own ``cv_for_power`` logic). A study's CV
+    metrics of the WRONG basis for ``cv_basis`` are tabulated under
+    ``cv_wrong_basis_metrics`` -- so the appendix can disclose what was found
+    and explain why it was not used -- but they never contribute to
+    ``powering_cv_pct``, exactly mirroring how a wrong-population CV is
+    tabulated but excluded from powering.
+
     Returns a JSON-serialisable dict. The key contract for callers: the CV in
-    ``powering_cv_pct`` is drawn ONLY from studies in ``studies_matching``, so
-    the appendix table and the sample size cannot disagree.
+    ``powering_cv_pct`` is drawn ONLY from studies in ``studies_matching`` AND
+    only from basis-matching metrics, so the appendix table and the sample
+    size cannot disagree.
     """
+    if cv_basis not in ("within", "between"):
+        raise ValueError(f"cv_basis must be 'within' or 'between', got {cv_basis!r}")
+    basis_params = _ALL_CV_INTRA_PARAMS if cv_basis == "within" else _ALL_CV_INTER_PARAMS
+    off_basis_params = _ALL_CV_INTER_PARAMS if cv_basis == "within" else _ALL_CV_INTRA_PARAMS
     target = target_population(subject_type)
 
     # Title/indication lookup, keyed by PMID.
@@ -300,7 +353,7 @@ def build_meta_analysis(
             "",
         )
 
-        cv_rows = [r for r in rows if r.get("parameter") in _ALL_CV_PARAMS]
+        cv_rows = [r for r in rows if r.get("parameter") in basis_params]
         cv_candidates: list[dict[str, Any]] = []
         cv_excluded: list[dict[str, Any]] = []
         for r in cv_rows:
@@ -317,10 +370,26 @@ def build_meta_analysis(
             else:
                 cv_candidates.append(entry)
 
+        # A CV of the WRONG basis is tabulated for disclosure but never feeds
+        # study_cv -- the same "found it, but it does not answer the question
+        # this protocol is asking" treatment as a wrong-population CV.
+        off_basis_rows = [r for r in rows if r.get("parameter") in off_basis_params]
+        off_basis_candidates: list[dict[str, Any]] = []
+        for r in off_basis_rows:
+            v = _num(r.get("value"))
+            if v is None:
+                continue
+            off_basis_candidates.append({
+                "metric": r.get("parameter"),
+                "cv_pct": round(v, 1),
+                "derived_from_mean_sd": bool(r.get("derived_from_mean_sd")),
+            })
+
         # Within a study, the highest CV across Cmax and AUC is the conservative
         # choice -- the same convention the previous implementation used, and
         # the one regulators expect for BE powering.
         study_cv = max((c["cv_pct"] for c in cv_candidates), default=None)
+        study_cv_wrong_basis = max((c["cv_pct"] for c in off_basis_candidates), default=None)
 
         src_meta = meta_by_pmid.get(pmid, {})
         studies.append({
@@ -339,6 +408,8 @@ def build_meta_analysis(
             "cv_pct": study_cv,
             "cv_metrics": cv_candidates,
             "cv_excluded_implausible": cv_excluded,
+            "cv_wrong_basis_pct": study_cv_wrong_basis,
+            "cv_wrong_basis_metrics": off_basis_candidates,
         })
 
     # Stable, reviewable ordering: studies that carry a CV first (highest CV at
@@ -368,9 +439,18 @@ def build_meta_analysis(
     other_pool = [s["cv_pct"] for s in non_matching if s["cv_pct"] is not None]
     other_highest = max(other_pool, default=None)
 
+    # What a CV of the WRONG basis (within vs. between-subject) would have
+    # been, among population-matched studies. Reported for the same reason as
+    # other_highest: so the reviewer sees the omission was deliberate.
+    wrong_basis_pool = [
+        s["cv_wrong_basis_pct"] for s in matching if s.get("cv_wrong_basis_pct") is not None
+    ]
+    wrong_basis_highest = max(wrong_basis_pool, default=None)
+
     return {
         "target_population": target,
         "subject_type": str(subject_type or "healthy"),
+        "cv_basis": cv_basis,
         "studies": studies,
         "studies_matching": matching,
         "studies_excluded_wrong_population": non_matching,
@@ -381,9 +461,10 @@ def build_meta_analysis(
         "powering_cv_study": (powering_study or {}).get("study"),
         "powering_cv_derived_from_mean_sd": powering_cv_derived,
         "highest_cv_other_populations_pct": other_highest,
+        "highest_cv_wrong_basis_pct": wrong_basis_highest,
         "summary": _summary(
             target, matching, cv_pool, powering_cv, other_highest, non_matching,
-            powering_cv_derived,
+            powering_cv_derived, cv_basis, wrong_basis_highest,
         ),
     }
 
@@ -396,8 +477,11 @@ def _summary(
     other_highest: Optional[float],
     non_matching: list[dict],
     powering_cv_derived: bool = False,
+    cv_basis: str = "within",
+    wrong_basis_highest: Optional[float] = None,
 ) -> str:
     label = "healthy-volunteer" if target == POPULATION_HEALTHY else "patient"
+    basis_label = "within-subject" if cv_basis == "within" else "between-subject (total)"
     if not matching:
         return (
             f"No {label} studies with extractable PK were retrieved, so no "
@@ -405,11 +489,18 @@ def _summary(
             f"to an assumed CV, which must be declared as an assumption."
         )
     if powering_cv is None:
-        return (
+        msg = (
             f"{len(matching)} {label} study(ies) were retrieved but none reported or "
-            f"gave a derivable within-subject CV, so the sample size rests on an "
+            f"gave a derivable {basis_label} CV, so the sample size rests on an "
             f"assumed CV rather than a measured one."
         )
+        if wrong_basis_highest is not None:
+            msg += (
+                f" A {('between-subject' if cv_basis == 'within' else 'within-subject')} "
+                f"CV of {wrong_basis_highest:.1f}% was found, but it is not the quantity "
+                f"this design is powered on and was deliberately NOT used."
+            )
+        return msg
     basis = (
         "derived from that study's reported mean and standard deviation "
         "(CV% = SD/mean x 100), not a percentage the study stated directly"
@@ -418,7 +509,7 @@ def _summary(
     )
     parts = [
         f"{len(matching)} {label} study(ies) were identified, of which "
-        f"{len(cv_pool)} reported or gave a derivable within-subject CV. The study is "
+        f"{len(cv_pool)} reported or gave a derivable {basis_label} CV. The study is "
         f"powered on the highest of these, {powering_cv:.1f}%, {basis}."
     ]
     if other_highest is not None and other_highest > powering_cv:
@@ -427,6 +518,14 @@ def _summary(
             f"{len(non_matching)} study(ies) in a different population; it is "
             f"tabulated for completeness but is deliberately NOT used for powering, "
             f"because it does not describe the population this protocol enrols."
+        )
+    if wrong_basis_highest is not None:
+        parts.append(
+            f"A {('between-subject' if cv_basis == 'within' else 'within-subject')} CV "
+            f"of {wrong_basis_highest:.1f}% was also found among population-matched "
+            f"studies; it is tabulated for completeness but is deliberately NOT used "
+            f"for powering, because it is not the variability quantity this design "
+            f"requires."
         )
     return " ".join(parts)
 
@@ -437,6 +536,9 @@ def meta_analysis_directive(result: dict[str, Any]) -> str:
         return ""
     target = result.get("target_population")
     label = "healthy volunteers" if target == POPULATION_HEALTHY else "patients"
+    cv_basis = result.get("cv_basis") or "within"
+    basis_label = "within-subject" if cv_basis == "within" else "between-subject (total)"
+    other_basis_label = "between-subject" if cv_basis == "within" else "within-subject"
     lines = [
         "\nMETA-ANALYSIS OF PUBLISHED PK STUDIES - ALREADY DETERMINED.",
         "Reproduce this table EXACTLY in the protocol appendix. Do NOT add studies,",
@@ -444,9 +546,12 @@ def meta_analysis_directive(result: dict[str, Any]) -> str:
         f"- Protocol population: {label}. Only studies in this population were used",
         "  for powering; studies in other populations are listed separately and are",
         "  explicitly NOT the basis of the sample size.",
+        f"- This design is powered on {basis_label} variability, so only CVs of that "
+        f"  basis were eligible for adoption; a {other_basis_label} CV, even from a "
+        "  population-matched study, cannot substitute for it and is disclosed but not used.",
         f"- Studies retrieved: {result.get('n_studies_total')} "
         f"({result.get('n_studies_matching')} population-matched, "
-        f"{result.get('n_studies_with_cv')} reporting a CV).",
+        f"{result.get('n_studies_with_cv')} reporting a CV of the required basis).",
     ]
     cv = result.get("powering_cv_pct")
     if cv is not None:
@@ -458,20 +563,28 @@ def meta_analysis_directive(result: dict[str, Any]) -> str:
             "as directly reported by that study"
         )
         lines.append(
-            f"- ADOPTED within-subject CV for powering: {cv:.1f}% "
+            f"- ADOPTED {basis_label} CV for powering: {cv:.1f}% "
             f"(highest among population-matched studies; source {result.get('powering_cv_study')}, "
             f"{provenance})."
         )
     else:
         lines.append(
-            "- No population-matched CV was available; state plainly that the CV is "
-            "an assumption, and do not attribute it to any tabulated study."
+            f"- No population-matched {basis_label} CV was available; state plainly "
+            "that the CV is an assumption, and do not attribute it to any tabulated study."
         )
     other = result.get("highest_cv_other_populations_pct")
     if other is not None and cv is not None and other > cv:
         lines.append(
             f"- NOTE: a higher CV ({other:.1f}%) exists in a non-matching population. "
             "State that it was reviewed and deliberately not adopted, with the reason."
+        )
+    wrong_basis = result.get("highest_cv_wrong_basis_pct")
+    if wrong_basis is not None:
+        lines.append(
+            f"- NOTE: a {other_basis_label} CV ({wrong_basis:.1f}%) was found in a "
+            "population-matched study. It is NOT the variability quantity this design "
+            "is powered on and must NOT be substituted for the adopted CV above — "
+            "state that it was reviewed and deliberately not adopted, with the reason."
         )
     lines.append("- Table rows (study | indication | AUC | Cmax | CV%):")
     for s in result.get("studies", []):
@@ -483,6 +596,11 @@ def meta_analysis_directive(result: dict[str, Any]) -> str:
                 for m in s.get("cv_metrics", [])
             )
             cv_cell = "%.1f%%%s" % (s["cv_pct"], " (derived from mean/SD)" if row_derived else "")
+        elif s.get("cv_wrong_basis_pct") is not None:
+            cv_cell = (
+                "not reported (%.1f%% %s CV found, not usable for this design)"
+                % (s["cv_wrong_basis_pct"], other_basis_label)
+            )
         lines.append(
             f"    {s['study']} | {s.get('indication') or 'not reported'} | "
             f"{s.get('auc') or 'not reported'} | {s.get('cmax') or 'not reported'} | "

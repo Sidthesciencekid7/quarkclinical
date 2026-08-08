@@ -378,6 +378,7 @@ def _resolve_powering_cv(
     population_config: dict[str, Any],
     extracted: list[dict[str, Any]],
     literature: list[dict[str, Any]] | None = None,
+    study_type: str | None = None,
 ) -> tuple[float | None, dict[str, Any]]:
     """Resolve the CV% used to power the study AND its provenance, together.
 
@@ -394,11 +395,62 @@ def _resolve_powering_cv(
     CONSTRUCTION; the literature rows are still retained for the record, but
     under a key whose name cannot be mistaken for a justification.
 
+    ``study_type`` (and, when given, ``population_config["design"]``) decide
+    the CV BASIS this protocol needs (see services/meta_analysis.py's
+    ``cv_basis``). ``recommend_sample_size`` (services/biostatistics.py) feeds
+    the resolved CV to the powering calculation with NO within-to-between
+    conversion applied ONLY when the design is parallel AND the study is
+    biosimilar — that is the one combination whose CV needs to already BE the
+    between-subject/total quantity a mean+SD pair can supply directly, so
+    ``cv_basis="between"`` is used exactly then. Every other combination
+    (including a biosimilar_pk study whose design has been explicitly
+    overridden away from parallel) is powered assuming the resolved CV is
+    within-subject — ``recommend_sample_size`` does its OWN x1.5
+    within-to-between conversion internally when the eventual design turns
+    out parallel — so ``cv_basis="within"`` is used there and a
+    between-subject-derived value (which cannot be converted to a
+    within-subject one by simple arithmetic) is tabulated but never adopted,
+    falling back to the "assumed" CV instead.
+
+    An earlier version of this function assumed "biosimilar_pk always means
+    parallel", which is false: ``recommend_sample_size``'s own design-selection
+    logic checks an explicit ``requested_design`` override FIRST, before its
+    biosimilar-implies-parallel default. Since that override lives in
+    ``population_config["design"]`` — the SAME dict this function already
+    receives, set by the caller up front rather than computed later — it can
+    and must be consulted here too; ignoring it let a biosimilar protocol with
+    ``design="replicate"`` or ``"crossover"`` silently feed an unconverted
+    between-subject CV into a within-subject-only power calculation, roughly
+    halving the recommended N. For every OTHER design ambiguity (NTI/HVD
+    replicate selection depends on the CV itself; long-half-life parallel
+    selection depends on PK data this function does not receive), the design
+    genuinely is not knowable yet — recommend_sample_size decides it AFTER
+    this function returns — so the safe default there remains "within",
+    exactly as before.
+
     Returns ``(cv_pct_or_None, provenance)``. ``provenance`` is merged wholesale
     into the sample-size dict; ``provenance["cv_source"]`` (absent when nothing
     is available, so biostatistics' own "assumed" label stands) is what is
     passed to recommend_sample_size.
     """
+    is_biosimilar = str(study_type or "").strip() == "biosimilar_pk"
+    requested_design = population_config.get("design")
+    if requested_design in ("crossover", "parallel", "replicate"):
+        # An explicit design request is deterministic and known up front — it
+        # wins over every other rule in recommend_sample_size's own
+        # design-selection chain, including the biosimilar default, so it must
+        # win here too.
+        is_parallel = requested_design == "parallel"
+    else:
+        # No override: biosimilar_pk is the one study_type whose DEFAULT
+        # (unrequested) design is deterministically parallel. Every other
+        # study_type's default design depends on the CV itself (is_hvd) or on
+        # drug/PK facts this function does not receive, so it is
+        # conservatively treated as not-yet-known-parallel.
+        is_parallel = is_biosimilar
+    cv_basis = "between" if (is_parallel and is_biosimilar) else "within"
+    basis_label = "within-subject" if cv_basis == "within" else "between-subject (total)"
+
     # Population-matched: the CV that powers the study and the meta-analysis
     # table the appendix prints come from ONE call, so they cannot disagree.
     # A healthy-volunteer protocol is powered on healthy-volunteer studies; a
@@ -409,11 +461,14 @@ def _resolve_powering_cv(
     # for Cmax/AUC without a separate percentage CV - the norm for a biologic
     # label or a first-in-human paper - still contributes a CV here instead of
     # silently falling through to "assumed" for a drug whose own literature
-    # already answers the question.
+    # already answers the question. It always derives a BETWEEN-subject value
+    # (that is all a single cohort's mean/SD can ever supply); build_meta_analysis
+    # only lets it power the study when cv_basis == "between" above.
     meta = build_meta_analysis(
         derive_cv_from_mean_sd(extracted),
         subject_type=population_config.get("subject_type", "healthy"),
         literature=literature,
+        cv_basis=cv_basis,
     )
     cv_high = meta.get("powering_cv_pct")
     cv_table = meta.get("studies_matching") or []
@@ -444,22 +499,23 @@ def _resolve_powering_cv(
             # replaces the powering NUMBER, not the evidence review.
             "meta_analysis": meta,
             "cv_provenance_note": (
-                f"The within-subject CV of {override:.1f}% used to power this study was "
+                f"The {basis_label} CV of {override:.1f}% used to power this study was "
                 "specified by the investigator/sponsor, NOT derived from the published "
                 "literature. State its justification explicitly and do NOT present any "
                 "table of literature trials as its source."
                 + (
-                    f" For reference only, the highest within-subject CV found in the "
+                    f" For reference only, the highest {basis_label} CV found in the "
                     f"literature search was {cv_high:.1f}%."
                     if cv_high else
-                    " No within-subject CV was retrievable from the literature search."
+                    f" No {basis_label} CV was retrievable from the literature search."
                 )
             ),
         }
 
     if cv_high:
-        # Power on the HIGHEST observed within-subject CV (Cmax or AUC) across the
-        # healthy-volunteer literature — the conservative regulatory convention.
+        # Power on the HIGHEST observed CV (Cmax or AUC), of the basis this
+        # design needs, across the population-matched literature — the
+        # conservative regulatory convention.
         return cv_high, {
             "cv_source": _CV_SOURCE_LITERATURE,
             "cv_is_user_override": False,
@@ -469,11 +525,12 @@ def _resolve_powering_cv(
             "cv_table": cv_table,
             "meta_analysis": meta,
             "cv_provenance_note": (
-                f"The within-subject CV of {cv_high:.1f}% is the highest value observed for "
+                f"The {basis_label} CV of {cv_high:.1f}% is the highest value observed for "
                 "either Cmax or AUC across the published "
                 f"{'patient' if meta.get('target_population') == 'patient' else 'healthy-volunteer'} "
-                "studies listed in cv_table. Studies in other populations were retrieved and "
-                "tabulated in the meta-analysis appendix but deliberately NOT used for powering."
+                "studies listed in cv_table. Studies in other populations, and CVs of the wrong "
+                "basis, were retrieved and tabulated in the meta-analysis appendix but "
+                "deliberately NOT used for powering."
             ),
         }
 
@@ -485,7 +542,7 @@ def _resolve_powering_cv(
         "cv_table": [],
         "meta_analysis": meta,
         "cv_provenance_note": (
-            "No within-subject CV was retrievable for the protocol's own population "
+            f"No {basis_label} CV was retrievable for the protocol's own population "
             "and none was supplied; the powering CV is an explicitly-flagged "
             "assumption. The meta-analysis appendix states this plainly."
         ),
@@ -614,7 +671,7 @@ def _augment_config_with_design(
     # --- 1. Sample size + CV provenance -----------------------------------
     # The CV and the evidence presented as its justification are decided
     # together, in one place, so they cannot diverge — see _resolve_powering_cv.
-    cv_pct, cv_provenance = _resolve_powering_cv(cfg, extracted)
+    cv_pct, cv_provenance = _resolve_powering_cv(cfg, extracted, study_type=study_type)
 
     t_half = _median_t_half(pk_params)
     tmax = _median_tmax_hours(pk_params)

@@ -121,9 +121,20 @@ CONTENT_FEATURES: list[ContentFeature] = [
     ContentFeature(
         "cv_basis", "Sample-size CV basis stated", "statistical_analysis_plan",
         ("coefficient of variation", "within-subject cv", "intra-subject cv",
-         "within-subject coefficient", "cv of", "cv%", "%cv", "cvw"),
-        rationale="The SAP must state the within-subject CV used to power the study "
-                  "(the highest observed across healthy-volunteer studies) and its source.",
+         "within-subject coefficient", "between-subject cv", "inter-subject cv",
+         "between-subject coefficient", "cv of", "cv%", "%cv", "cvw"),
+        # No applies_to restriction: EVERY study type must state a powering
+        # CV and its basis, but WHICH basis differs — a biosimilar_pk protocol
+        # is correctly powered on a BETWEEN-subject (total) CV, not a
+        # within-subject one (services/meta_analysis.py's cv_basis; the
+        # biosimilar case is the one design that consumes its resolved CV
+        # with no within-to-between conversion — see
+        # services/biostatistics.py's recommend_sample_size). The keyword
+        # list therefore covers both phrasings rather than only the
+        # within-subject one a crossover/replicate BE study uses.
+        rationale="The SAP must state the CV used to power the study, its basis "
+                  "(within-subject for a crossover/replicate design; between-subject/"
+                  "total for a parallel biosimilar design), and its source.",
     ),
     ContentFeature(
         "immunogenicity_analysis", "Immunogenicity analysis in SAP", "statistical_analysis_plan",

@@ -452,7 +452,8 @@ def _strip_html(text: str) -> str:
 # reorders the four subsections still relocates the right one.
 
 _ICF_HEADING_RE = re.compile(
-    r"<h2[^>]*>(?P<title>.*?)</h2>", re.IGNORECASE | re.DOTALL
+    r"<h(?P<level>[23])[^>]*>(?P<title>.{0,300}?)</h(?P=level)>",
+    re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -467,6 +468,25 @@ def _split_informed_consent(html: str) -> tuple[str, str]:
     if not html or not html.strip():
         return html, ""
 
+    # <h2> AND <h3> are BOTH treated as candidate subsection boundaries,
+    # uniformly, in one pass - not "try <h2>, fall back to <h3> only when
+    # there are zero <h2>s". Ethics subsections are <h2> on the per-section
+    # generation path (services/ai_service.py's _SECTION_CONFIGS) but <h3> on
+    # the whole-document path's tool-schema field description - and that
+    # whole-document path's own prompt is internally contradictory for this
+    # exact field (it reuses ai_service.py's "<h2> headings" instruction
+    # verbatim inside a schema whose generic per-field note says "<h3> as
+    # needed"), so a genuine mix of both levels within one generated Ethics
+    # section is a real, prompt-driven possibility, not a hypothetical. An
+    # h2-first/h3-fallback design (the previous approach here) never looks at
+    # <h3> once any <h2> exists, so a trailing <h3> sibling after the last
+    # matched <h2> is invisible as a boundary and gets silently absorbed into
+    # whichever heading matches "informed consent" - concretely, an unrelated
+    # trailing subsection (e.g. Participant and Data Confidentiality) ends up
+    # relocated into the Informed Consent appendix instead of staying in the
+    # numbered body. The backreference (?P=level) still requires each match's
+    # own opening and closing tag to be the SAME level, so a stray <h2> can
+    # never accidentally pair with a </h3> or vice versa.
     matches = list(_ICF_HEADING_RE.finditer(html))
     if not matches:
         return html, ""
@@ -476,8 +496,9 @@ def _split_informed_consent(html: str) -> tuple[str, str]:
         if "informed consent" not in title and "consent process" not in title:
             continue
         start = m.start()
-        # Runs to the next <h2> (a sibling subsection) or the end of the
-        # section, so the heading and every paragraph under it travel together.
+        # Runs to the next heading of EITHER level, or the end of the section,
+        # so the heading and every paragraph under it travel together without
+        # also sweeping in a sibling subsection at the other level.
         end = matches[i + 1].start() if i + 1 < len(matches) else len(html)
         block = html[start:end].strip()
         remaining = (html[:start] + html[end:]).strip()
@@ -1620,13 +1641,26 @@ def _safe_paragraph(text: str, style: Any) -> Any:
 def _section_number_map(protocol: Protocol) -> dict[str, tuple[int, str]]:
     """Map each section key to its (number, title) exactly as numbered in the body,
     so the amendment appendix can cite section numbers. Mirrors the body loop
-    (skips title/synopsis, splices the SoA number after 'treatment')."""
+    (skips title/synopsis, splices the SoA number after 'treatment') —
+    including the SAME normalize/strip-TOST-dump/consent-split transforms the
+    body loop applies before deciding whether a section is empty. Skipping any
+    of those here was a real, shipped bug: when consent-relocation left the
+    Ethics section with nothing else in it, the body loop correctly skipped
+    numbering it (no bookmark ever gets added — see _build_docx/_build_pdf),
+    but this function, checking the UNSPLIT raw text, still assigned it a
+    number. _add_amendment_appendix_docx/_pdf then gate the PAGEREF field on
+    ``section_key in num_map`` (true for a section with no bookmark to point
+    at), producing a dangling "Error! Bookmark not defined." in the amendment
+    history of a document meant to be the regulated change-control record.
+    """
     m: dict[str, tuple[int, str]] = {}
     idx = 0
     for name in SECTION_ORDER:
         if name in ("title", "synopsis"):
             continue
-        raw = (protocol.sections.get(name) or "").strip()
+        raw = _normalize_pk_notation(_strip_tost_dump((protocol.sections.get(name) or "").strip()))
+        if name == "ethics":
+            raw, _consent = _split_informed_consent(raw)
         if not _strip_html(raw):
             continue
         idx += 1
