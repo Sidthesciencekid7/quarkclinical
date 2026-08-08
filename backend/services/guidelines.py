@@ -72,6 +72,19 @@ class GuidelineProfile:
     biosimilar_pathway: str = ""
     biosimilar_citation: str = ""
     biosimilar_reference_product_term: str = ""
+    # The UI selector's own label for a biosimilar study. ``display_name`` is
+    # written in generic-drug terms ("Bioequivalence (ANDA, 2014)") for every
+    # profile, so showing it unconditionally for a biosimilar_pk study puts a
+    # small-molecule pathway name on screen right next to a correctly-computed
+    # 351(k)/Article-10(4) "Submission pathway" line below it - the same class
+    # of internal contradiction the regulatory_directive() prompt text was
+    # fixed to avoid, just visible in the UI instead of the generated document.
+    # Empty when the generic display_name is already accurate for a biosimilar
+    # (ICH M11's modality-agnostic template label, or ICH M13A, whose citation
+    # already redirects rather than asserting a pathway it does not have) -
+    # the override then falls back to display_name, same pattern as the other
+    # biosimilar_* fields.
+    biosimilar_display_name: str = ""
 
 
 # The FDA biosimilar framing is shared by every FDA profile: which small-molecule
@@ -129,6 +142,7 @@ GUIDELINES: dict[str, GuidelineProfile] = {
         biosimilar_pathway=_FDA_351K_PATHWAY,
         biosimilar_citation=_FDA_BIOSIMILAR_CITATION,
         biosimilar_reference_product_term=_FDA_BIOSIMILAR_REFERENCE_TERM,
+        biosimilar_display_name="FDA - Biosimilar PK Similarity (351(k), 2014)",
     ),
     "EMA-BE-2010": GuidelineProfile(
         id="EMA-BE-2010",
@@ -174,6 +188,7 @@ GUIDELINES: dict[str, GuidelineProfile] = {
         ),
         # No comparator override: the EU reference medicinal product is the
         # comparator for both a generic and a biosimilar application.
+        biosimilar_display_name="EMA - Similar Biological Medicinal Products (2010)",
     ),
     "ICH-M13A-2024": GuidelineProfile(
         id="ICH-M13A-2024",
@@ -289,6 +304,7 @@ GUIDELINES: dict[str, GuidelineProfile] = {
         biosimilar_pathway=_FDA_351K_PATHWAY,
         biosimilar_citation=_FDA_BIOSIMILAR_CITATION,
         biosimilar_reference_product_term=_FDA_BIOSIMILAR_REFERENCE_TERM,
+        biosimilar_display_name="FDA - Biosimilar PK Similarity (351(k), 2003, superseded)",
     ),
 }
 
@@ -320,6 +336,22 @@ def is_biosimilar_study(study_type: str) -> bool:
     """Single normalised check for the biosimilar branch, so every study-type
     split in this module keys off the same test."""
     return (study_type or "").strip().lower() == "biosimilar_pk"
+
+
+def guideline_display_name(version: str, study_type: str = "BE") -> str:
+    """The label the UI selector should show - the biosimilar override when the
+    study is a biosimilar PK-similarity study and the profile defines one.
+
+    Mirrors governing_citation()/reference_product_term() exactly. Without
+    this, the selector's own label always reads the generic-drug wording
+    ("Bioequivalence (ANDA, 2014)") even when the guideline text and the
+    "Submission pathway" line shown next to it correctly say 351(k) - an
+    internal contradiction visible on screen rather than in generated text.
+    """
+    p = get_profile(version)
+    if is_biosimilar_study(study_type) and p.biosimilar_display_name:
+        return p.biosimilar_display_name
+    return p.display_name
 
 
 def submission_pathway(version: str, study_type: str = "BE") -> str:

@@ -30,6 +30,7 @@ from services.guidelines import (
     GUIDELINES,
     get_profile,
     governing_citation,
+    guideline_display_name,
     is_biosimilar_study,
     reference_product_term,
     regulatory_directive,
@@ -252,6 +253,59 @@ def test_unknown_guideline_still_falls_back_to_fda_pathway():
     )
 
 
+# ---------------------------------------------------------------------------
+# guideline_display_name — the UI selector's own label
+#
+# Found via a live-site check: the selector kept showing "FDA - Bioequivalence
+# (ANDA, 2014)" for a Biosimilar PK Similarity study even though the
+# "Submission pathway" line right underneath it correctly said 351(k) - the
+# label was reading a study-type-INDEPENDENT field (display_name) while every
+# other piece of biosimilar framing on the same screen was already
+# study-type-aware. Same defect class as the ANDA/RLD prompt-text bug this
+# file otherwise pins, just visible in the selector instead of the document.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("study_type", SMALL_MOLECULE_TYPES)
+def test_small_molecule_label_is_unaffected(study_type):
+    assert guideline_display_name(FDA, study_type) == get_profile(FDA).display_name
+    assert guideline_display_name(EMA, study_type) == get_profile(EMA).display_name
+
+
+def test_fda_biosimilar_label_names_351k_not_anda():
+    label = guideline_display_name(FDA, "biosimilar_pk")
+    assert "351(k)" in label
+    assert "ANDA" not in label
+    assert label != get_profile(FDA).display_name
+
+
+def test_fda_old_biosimilar_label_names_351k_not_anda():
+    label = guideline_display_name(FDA_OLD, "biosimilar_pk")
+    assert "351(k)" in label
+    assert "ANDA" not in label
+
+
+def test_ema_biosimilar_label_drops_generic_bioequivalence_wording():
+    label = guideline_display_name(EMA, "biosimilar_pk")
+    assert label != get_profile(EMA).display_name
+    assert "Bioequivalence" not in label
+
+
+@pytest.mark.parametrize("gid", (M13A, M11))
+def test_ich_biosimilar_label_falls_back_to_the_generic_one(gid):
+    """Neither ICH profile has a distinct biosimilar override: M13A because it
+    is scoped to small-molecule solid-oral BE (its citation already redirects
+    rather than asserting a pathway it does not have), M11 because its
+    modality-agnostic template label is already accurate as-is."""
+    assert guideline_display_name(gid, "biosimilar_pk") == get_profile(gid).display_name
+
+
+def test_unknown_guideline_label_falls_back_to_fda_biosimilar_label():
+    assert guideline_display_name("MADE-UP-2099", "biosimilar_pk") == guideline_display_name(
+        FDA, "biosimilar_pk"
+    )
+
+
 def test_pathway_fields_stay_ascii():
     # The module mandates ASCII-only strings (no em/en-dashes).
     for prof in GUIDELINES.values():
@@ -314,11 +368,19 @@ async def test_guidelines_endpoint_exposes_pathway_fields():
     assert "ANDA" in fda["submission_pathway"]
     assert "351(k)" in fda["biosimilar_pathway"]
     assert "351(k)" in fda["biosimilar_citation"]
+    assert "351(k)" in fda["biosimilar_display_name"]
+    assert "ANDA" not in fda["biosimilar_display_name"]
 
     ema = by_id[EMA]
     assert "Article 10(4)" in ema["biosimilar_pathway"]
     assert "351(k)" not in ema["biosimilar_pathway"]
+    assert ema["biosimilar_display_name"] != ema["display_name"]
 
     # ICH grants no marketing authorisation -> nothing for the UI to show.
     assert by_id[M13A]["submission_pathway"] == ""
     assert by_id[M13A]["biosimilar_pathway"] == ""
+    # ...and neither ICH profile has a distinct biosimilar label - the
+    # frontend falls back to display_name for both (see
+    # test_ich_biosimilar_label_falls_back_to_the_generic_one).
+    assert by_id[M13A]["biosimilar_display_name"] == ""
+    assert by_id[M11]["biosimilar_display_name"] == ""

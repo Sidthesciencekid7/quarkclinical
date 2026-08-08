@@ -173,6 +173,10 @@ export interface AppGuideline {
   /** Governing citation for a biosimilar study; overrides `citation`, which is
    *  written in generic-drug terms. '' when the profile has no override. */
   biosimilar_citation?: string
+  /** Selector label for a biosimilar study; overrides `display_name`, which is
+   *  written in generic-drug terms (e.g. "Bioequivalence (ANDA, 2014)"). ''
+   *  when the generic label is already accurate for a biosimilar. */
+  biosimilar_display_name?: string
 }
 
 export interface GuidelinesResponse {

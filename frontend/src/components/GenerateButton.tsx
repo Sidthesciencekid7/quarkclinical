@@ -169,14 +169,19 @@ export default function GenerateButton({ drug, studyType, populationConfig, desi
     return () => { cancelled = true }
   }, [])
 
+  // A biosimilar is a different submission from a generic: the FDA profile's
+  // headline citation/pathway/label is ANDA (505(j)) wording that does not
+  // apply to a 351(k) programme, so show the biosimilar framing when that is
+  // the study - for the selector's own label as well as the citation and
+  // pathway text below it, or the label alone would keep reading "ANDA" while
+  // the pathway line correctly says "351(k)" right underneath it.
+  const isBiosimilar = studyType === 'biosimilar_pk'
+  const guidelineDisplayName = (g: AppGuideline) =>
+    (isBiosimilar && g.biosimilar_display_name) || g.display_name
   const selectedGuideline = guidelines.find(g => g.id === guidelineId)
   const guidelineLabel = selectedGuideline
-    ? `${selectedGuideline.display_name} · ${selectedGuideline.region}`
+    ? `${guidelineDisplayName(selectedGuideline)} · ${selectedGuideline.region}`
     : guidelineId
-  // A biosimilar is a different submission from a generic: the FDA profile's
-  // headline citation/pathway is ANDA (505(j)) wording that does not apply to a
-  // 351(k) programme, so show the biosimilar framing when that is the study.
-  const isBiosimilar = studyType === 'biosimilar_pk'
   const guidelineCitation = selectedGuideline
     ? (isBiosimilar && selectedGuideline.biosimilar_citation) || selectedGuideline.citation
     : ''
@@ -427,10 +432,14 @@ export default function GenerateButton({ drug, studyType, populationConfig, desi
             onChange={e => setGuidelineId(e.target.value)}
             className="w-full appearance-none rounded-xl border border-slate-200 bg-white px-4 py-3 pr-10 text-sm font-semibold text-slate-800 shadow-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-cyan-400/40 focus:border-cyan-300 transition"
           >
-            {guidelines.length === 0 && <option value="FDA-BE-2014">FDA — Bioequivalence (ANDA, 2014)</option>}
+            {guidelines.length === 0 && (
+              <option value="FDA-BE-2014">
+                {isBiosimilar ? 'FDA — Biosimilar PK Similarity (351(k), 2014)' : 'FDA — Bioequivalence (ANDA, 2014)'}
+              </option>
+            )}
             {guidelines.map(g => (
               <option key={g.id} value={g.id}>
-                {g.display_name} · {g.region}
+                {guidelineDisplayName(g)} · {g.region}
               </option>
             ))}
           </select>
