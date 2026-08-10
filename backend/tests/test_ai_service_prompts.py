@@ -233,3 +233,64 @@ def test_study_design_instruction_mentions_between_subject_for_parallel_case():
     instr = _SECTION_CONFIGS["study_design"]["instructions"]
     assert "between-subject variability" in instr
     assert "no within-subject comparison at all" in instr
+
+
+# ---------------------------------------------------------------------------
+# Bug 3 - ENDPOINT OVERRIDE reaches objectives/endpoints too, not just SAP
+# ---------------------------------------------------------------------------
+#
+# CONFIRMED BUG from adversarial review of fix #21: _locked_design_directive()
+# (and its _endpoint_override_lines helper) is injected into every section
+# whose context includes sample_size -- objectives and endpoints among them,
+# per the function's own docstring -- not only the SAP section. Both
+# objectives' and endpoints' OWN static _SECTION_CONFIGS instructions text
+# unconditionally describe a single-dose Cmax/AUC0-inf/kel/t1/2/Vz/F/CL/F
+# recipe, so the override must reach those sections too, and must not
+# misattribute itself as countering "the SAP section's" instructions when it
+# is really countering the CURRENT section's own text.
+
+
+def _dual_profile_sample_size() -> dict:
+    return _sample_size(
+        "parallel",
+        endpoint="First-dose AUC(0-tau); Steady-state AUC(0-tau) (co-primary - ALL must pass)",
+        co_primary_endpoints=[
+            "First-dose AUC(0-tau) (area under the concentration-time curve over the first dosing interval)",
+            "Steady-state AUC(0-tau) (area under the concentration-time curve over one dosing interval at steady state)",
+        ],
+    )
+
+
+def test_endpoint_override_reaches_the_objectives_section():
+    context = _minimal_context(sample_size=_dual_profile_sample_size(), randomization=None)
+    context["study_type"] = "biosimilar_pk"
+    prompt = _prompt_for("objectives", context)
+    assert "ENDPOINT OVERRIDE" in prompt
+    assert "SAP section" not in prompt
+    # The section's own static instructions text (unavoidably) still names
+    # the single-dose recipe -- the override exists precisely because that
+    # text cannot be conditioned per-generation -- but the override itself
+    # must be present alongside it to resolve the contradiction.
+    assert "Cmax and AUC0-inf" in prompt
+
+
+def test_endpoint_override_reaches_the_endpoints_section_and_covers_vz_cl():
+    context = _minimal_context(sample_size=_dual_profile_sample_size(), randomization=None)
+    context["study_type"] = "biosimilar_pk"
+    prompt = _prompt_for("endpoints", context)
+    assert "ENDPOINT OVERRIDE" in prompt
+    assert "SAP section" not in prompt
+    # endpoints' own static text lists Vz/F and CL/F as secondary endpoints,
+    # which are themselves derived from kel/AUC0-inf -- the override must
+    # name them too, not just kel/t1/2.
+    assert "Vz/F" in prompt
+    assert "CL/F" in prompt
+
+
+def test_endpoint_override_is_absent_for_conventional_single_dose_objectives_and_endpoints():
+    """Non-regression: the conventional single-dose case must not grow a
+    contradiction-resolving override it doesn't need."""
+    context = _minimal_context(sample_size=_sample_size("crossover"), randomization=None)
+    for section in ("objectives", "endpoints"):
+        prompt = _prompt_for(section, context)
+        assert "ENDPOINT OVERRIDE" not in prompt

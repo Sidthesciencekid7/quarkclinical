@@ -388,7 +388,62 @@ def _design_decision(design_key: Optional[str], t_half_hours: Optional[float]) -
     )
 
 
-def _pd_decision(prof: DrugProfile) -> DesignDecision:
+def _pd_decision(
+    prof: DrugProfile,
+    *,
+    multiple_dose_patient_biosimilar: bool = False,
+) -> DesignDecision:
+    """PD / efficacy endpoint placement.
+
+    Two DIFFERENT designs are handled here and they reach opposite answers, so
+    the branch is deliberate rather than incidental:
+
+      * Single-dose (typically healthy-volunteer) study — a clinically
+        VALIDATED PD marker that responds inside the PK window (GIR by
+        euglycemic clamp for insulins, ANC for filgrastim, reticulocytes for
+        epoetin) IS added as a co-primary alongside PK. That is the established
+        rule for these products and is unchanged.
+
+      * Multiple-dose PATIENT biosimilar study — the co-primary set is the PK
+        pair (first-dose and steady-state AUC(0-tau)) and NOTHING else. An
+        efficacy measure, or a validated biomarker standing in for efficacy at
+        an early timepoint, may be included but ONLY as a SECONDARY endpoint,
+        and the study is never powered on it. Powering a PK-similarity study on
+        an efficacy endpoint would size it for a question it is not designed to
+        answer: efficacy endpoints are far less sensitive to the exposure
+        differences a biosimilar comparison must detect, so they would demand a
+        much larger study while providing weaker evidence of similarity. The
+        biomarker still earns its place descriptively, as supportive evidence
+        that comparable exposure produced comparable pharmacology.
+    """
+    if multiple_dose_patient_biosimilar:
+        if prof.pd_marker:
+            name, method = prof.pd_marker["name"], prof.pd_marker["method"]
+            value = f"Secondary (not powered): {name} ({method})"
+            rationale = (
+                f"{name} is a validated PD marker and is included as a SECONDARY endpoint, "
+                "measured as supportive evidence that comparable exposure produced comparable "
+                "pharmacology. It is NOT co-primary and the study is NOT powered on it — the "
+                "co-primary set is the first-dose and steady-state AUC(0-tau) PK pair."
+            )
+            options = [value, "None (PK only)"]
+        else:
+            value = "Secondary (not powered): clinical efficacy measure, descriptive only"
+            rationale = (
+                "No validated PD marker responds within this product's PK window. An "
+                "appropriate clinical efficacy measure may be collected as a SECONDARY, "
+                "descriptive endpoint, but the study is NOT powered on it: the co-primary set "
+                "is the first-dose and steady-state AUC(0-tau) PK pair, and an efficacy "
+                "endpoint is far less sensitive to the exposure differences this study must "
+                "detect."
+            )
+            options = [value, "None (PK only)"]
+        return DesignDecision(
+            "pd_endpoint", "Efficacy / PD endpoint (secondary)", value, rationale,
+            "Validated PD-marker knowledge base · multiple-dose patient biosimilar design",
+            options,
+        )
+
     if prof.pd_marker:
         name, method = prof.pd_marker["name"], prof.pd_marker["method"]
         value = f"{name} ({method})"
@@ -418,6 +473,8 @@ def determine_design_decisions(
     t_half_hours: Optional[float] = None,
     label_routes: Optional[list[str]] = None,
     label_text: Optional[str] = None,
+    dosing: str = "single",
+    subject_type: str = "healthy",
 ) -> list[DesignDecision]:
     """Apply the five rules and return the ordered, overridable decision set.
 
@@ -436,12 +493,26 @@ def determine_design_decisions(
     label_device = extract_label_device(label_text) if label_text else None
     label_site = extract_label_site(label_text) if label_text else None
     label_matched = bool(extracted_routes or label_device or label_site)
+    # The efficacy/PD placement rule differs for a multiple-dose patient
+    # biosimilar study (secondary only, never powered) from a single-dose study
+    # (a validated in-window PD marker may be co-primary) — see _pd_decision.
+    # The population DECISION is what settles whether this is a patient study,
+    # so it is read from that rather than from the incoming subject_type, which
+    # may not yet reflect the engine's own call.
+    is_patient = (
+        population.value.startswith("Patients")
+        or str(subject_type or "healthy").strip().lower() == "patient"
+    )
+    multiple = str(dosing or "single").strip().lower() in ("multiple", "multi", "repeat")
+    md_patient_biosimilar = bool(
+        is_patient and multiple and str(study_type or "").strip().lower() == "biosimilar_pk"
+    )
     return [
         population,
         _dose_decision(prof, population.value),
         _route_decision(prof, label_device=label_device, label_site=label_site, label_matched=label_matched),
         _design_decision(design_key, t_half_hours),
-        _pd_decision(prof),
+        _pd_decision(prof, multiple_dose_patient_biosimilar=md_patient_biosimilar),
     ]
 
 

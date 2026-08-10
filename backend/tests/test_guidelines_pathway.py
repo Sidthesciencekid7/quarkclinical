@@ -71,10 +71,50 @@ def test_fda_biosimilar_directive_names_351k_and_bpcia():
     assert "Public Health Service Act" in d
 
 
-def test_fda_biosimilar_comparator_is_us_licensed_reference_product():
+def test_fda_biosimilar_comparator_is_the_eu_reference_product_with_a_bridge():
+    """PROGRAMME POLICY: the comparator is the EU reference medicinal product
+    for every biosimilar study in this application, including those written to
+    the FDA 351(k) pathway (a single EU-sourced comparator lot supports both an
+    EU and a US filing).
+
+    The comparator term and its scientific bridge are asserted TOGETHER on
+    purpose. 351(k) requires comparison against the US-LICENSED reference
+    product, so naming an EU-approved comparator WITHOUT the three-way
+    analytical/PK bridge that justifies its relevance would be a regulatory
+    error, not merely an omission. This test therefore pins both halves — if a
+    future change ever drops the bridge while keeping the EU comparator, this
+    fails rather than silently shipping an unjustifiable comparator.
+    """
     d = regulatory_directive(FDA, "biosimilar_pk")
+    assert reference_product_term(FDA, "biosimilar_pk") == (
+        "EU reference medicinal product (EU-approved comparator)"
+    )
+    assert "EU reference medicinal product" in d
+    # The bridge, and the US-licensed product it bridges TO, must both be stated.
+    assert "SCIENTIFIC BRIDGE" in d
     assert "US-licensed reference product" in d
-    assert reference_product_term(FDA, "biosimilar_pk") == "US-licensed reference product"
+    assert "three-way" in d.lower()
+    # ...and the 351(k) pathway itself is still the governing one (B7).
+    assert "351(k)" in d
+
+
+def test_fda_biosimilar_comparator_bridge_is_absent_for_small_molecules():
+    """The bridge is a biosimilar-comparator concept; a small-molecule BE
+    directive must not acquire it."""
+    d = regulatory_directive(FDA, "BE")
+    assert "SCIENTIFIC BRIDGE" not in d
+    assert "EU reference medicinal product" not in d
+    assert "Reference Listed Drug" in d
+
+
+def test_ema_biosimilar_comparator_needs_no_cross_region_bridge():
+    """An EU filing uses the EU reference product natively, so its statement is
+    a sourcing/documentation requirement, not a cross-region bridge to another
+    regulator's product."""
+    d = regulatory_directive(EMA, "biosimilar_pk")
+    assert "European Economic Area" in d
+    assert "SCIENTIFIC BRIDGE" not in d
+    assert "351(k)" not in d
 
 
 def test_fda_biosimilar_directive_has_no_generic_drug_terminology():

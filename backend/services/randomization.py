@@ -269,6 +269,7 @@ def sequences_for_design(
     *,
     n_periods: Optional[int] = None,
     is_nti: Optional[bool] = None,
+    dosing: str = "single",
 ) -> DesignSequences:
     """Resolve the sequence set for a design, matching the sample-size engine.
 
@@ -277,6 +278,12 @@ def sequences_for_design(
     replicate variants are chosen the same way that engine labels them: fully
     replicated (4-period) for a narrow-therapeutic-index drug, partial replicate
     (3-period) otherwise, unless ``n_periods`` pins the choice explicitly.
+
+    ``dosing`` mirrors that same engine's parameter: when ``"multiple"``, the
+    returned label reads "Multiple-dose" instead of the "Single-dose" every
+    variant is defined with — matching biostatistics.py's own design_label,
+    so the randomisation narrative and the sample-size determination never
+    describe the same study with contradictory dosing regimens.
     """
     key = (design_key or "").strip().lower()
     if key not in _VALID_DESIGN_KEYS:
@@ -291,28 +298,32 @@ def sequences_for_design(
                 "a parallel-group design has exactly 1 period; got n_periods=%r"
                 % (n_periods,)
             )
-        return _variant("parallel", "parallel")
-
-    if key == "crossover":
+        result = _variant("parallel", "parallel")
+    elif key == "crossover":
         if n_periods not in (None, 2):
             raise ValueError(
                 "design_key='crossover' is the 2x2x2 design (2 periods). For 3 or 4 "
                 "periods use design_key='replicate'; got n_periods=%r" % (n_periods,)
             )
-        return _variant("crossover", "2x2x2")
+        result = _variant("crossover", "2x2x2")
+    else:
+        # replicate
+        if n_periods is None:
+            result = _variant("replicate", "2x2x4" if is_nti else "2x3x3")
+        elif n_periods == 4:
+            result = _variant("replicate", "2x2x4")
+        elif n_periods == 3:
+            # A 3-period replicate is a partial replicate (TRR/RTR/RRT) unless
+            # the study needs both variance components, the NTI case.
+            result = _variant("replicate", "2x2x3" if is_nti else "2x3x3")
+        else:
+            raise ValueError(
+                "a replicate design has 3 or 4 periods; got n_periods=%r" % (n_periods,)
+            )
 
-    # replicate
-    if n_periods is None:
-        return _variant("replicate", "2x2x4" if is_nti else "2x3x3")
-    if n_periods == 4:
-        return _variant("replicate", "2x2x4")
-    if n_periods == 3:
-        # A 3-period replicate is a partial replicate (TRR/RTR/RRT) unless the
-        # study needs both variance components, which is the NTI case.
-        return _variant("replicate", "2x2x3" if is_nti else "2x3x3")
-    raise ValueError(
-        "a replicate design has 3 or 4 periods; got n_periods=%r" % (n_periods,)
-    )
+    if str(dosing or "single").strip().lower() in ("multiple", "multi", "repeat"):
+        result = replace(result, label=result.label.replace("Single-dose", "Multiple-dose", 1))
+    return result
 
 
 def _variant(key: str, variant: str) -> DesignSequences:
@@ -1320,6 +1331,7 @@ def generate_allocation(
     study_type: Optional[str] = None,
     route: Optional[str] = None,
     immunogenicity_assessed: Optional[bool] = None,
+    dosing: str = "single",
 ) -> dict[str, Any]:
     """Generate the study's randomization list.
 
@@ -1379,7 +1391,7 @@ def generate_allocation(
     if not prefix or not prefix.isascii():
         raise ValueError("subject_id_prefix must be a non-empty ASCII string")
 
-    design = sequences_for_design(design_key, n_periods=n_periods, is_nti=is_nti)
+    design = sequences_for_design(design_key, n_periods=n_periods, is_nti=is_nti, dosing=dosing)
     n_seq = design.n_sequences
 
     # Cautions carry a `disclosable` flag rather than being plain strings,

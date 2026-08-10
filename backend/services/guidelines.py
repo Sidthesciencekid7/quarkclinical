@@ -85,6 +85,11 @@ class GuidelineProfile:
     # the override then falls back to display_name, same pattern as the other
     # biosimilar_* fields.
     biosimilar_display_name: str = ""
+    # Comparator-sourcing statement for a biosimilar study. Carries the
+    # scientific-bridge requirement that using an EU-approved comparator on a
+    # 351(k) filing creates - see _FDA_BIOSIMILAR_BRIDGE. Empty means the
+    # profile asserts no comparator-sourcing condition.
+    biosimilar_comparator_bridge: str = ""
 
 
 # The FDA biosimilar framing is shared by every FDA profile: which small-molecule
@@ -107,7 +112,45 @@ _FDA_BIOSIMILAR_CITATION = (
     "Considerations (2019); FDA Guidance for Industry: Immunogenicity Testing of "
     "Therapeutic Protein Products (2019); Public Health Service Act section 351(k) (BPCIA)"
 )
-_FDA_BIOSIMILAR_REFERENCE_TERM = "US-licensed reference product"
+# COMPARATOR POLICY: the EU reference medicinal product is used as the
+# comparator in this application's biosimilar PK-similarity studies, including
+# those written to the FDA 351(k) pathway.
+#
+# This is a deliberate programme decision, not a default. Sourcing a single
+# EU-licensed comparator lot for the whole clinical programme is the common
+# development strategy: it avoids running the study twice against two
+# separately-sourced comparators and lets one study support both an EU and a US
+# filing.
+#
+# It carries a HARD REGULATORY CONDITION, and stating the comparator without
+# stating the condition would be an error. Section 351(k)(2)(A)(i)(I) requires
+# comparison against the US-LICENSED reference product. When a non-US-licensed
+# comparator is used in a clinical study, FDA requires a SCIENTIFIC BRIDGE - a
+# three-way comparison (proposed biosimilar / US-licensed reference product /
+# EU-approved comparator) with analytical and, where needed, PK data - to
+# justify the relevance of that study to the US-licensed product. The bridge is
+# therefore emitted alongside the comparator term wherever the comparator is
+# stated, so a protocol can never name an EU comparator on a 351(k) filing
+# without also carrying the bridging requirement that makes it acceptable.
+_FDA_BIOSIMILAR_REFERENCE_TERM = "EU reference medicinal product (EU-approved comparator)"
+_FDA_BIOSIMILAR_BRIDGE = (
+    "The comparator is the EU reference medicinal product. Section 351(k) requires the "
+    "comparison to be against the US-licensed reference product, so a SCIENTIFIC BRIDGE is "
+    "REQUIRED and must be described: a three-way comparative assessment of the proposed "
+    "biosimilar, the US-licensed reference product, and the EU-approved comparator - "
+    "comprising comparative analytical characterisation and, where the analytical bridge is "
+    "insufficient, a three-way comparative PK study - to justify the relevance of data "
+    "generated against the EU comparator to the US-licensed reference product. A single "
+    "EU-approved comparator lot is used across the programme, and its identity, source, lot "
+    "number and expiry must be documented. State the bridge explicitly; do NOT present the "
+    "EU comparator as if it directly satisfied the 351(k) comparison on its own."
+)
+_EU_BIOSIMILAR_BRIDGE = (
+    "The comparator is the EU reference medicinal product, sourced from the European Economic "
+    "Area, which is the comparator the EU pathway itself requires - no bridging to another "
+    "region's product is needed for an EU filing. Its identity, source, lot number and expiry "
+    "must be documented, and a single comparator lot is used across the programme."
+)
 
 
 GUIDELINES: dict[str, GuidelineProfile] = {
@@ -142,6 +185,7 @@ GUIDELINES: dict[str, GuidelineProfile] = {
         biosimilar_pathway=_FDA_351K_PATHWAY,
         biosimilar_citation=_FDA_BIOSIMILAR_CITATION,
         biosimilar_reference_product_term=_FDA_BIOSIMILAR_REFERENCE_TERM,
+        biosimilar_comparator_bridge=_FDA_BIOSIMILAR_BRIDGE,
         biosimilar_display_name="FDA - Biosimilar PK Similarity (351(k), 2014)",
     ),
     "EMA-BE-2010": GuidelineProfile(
@@ -189,6 +233,12 @@ GUIDELINES: dict[str, GuidelineProfile] = {
         # No comparator override: the EU reference medicinal product is the
         # comparator for both a generic and a biosimilar application.
         biosimilar_display_name="EMA - Similar Biological Medicinal Products (2010)",
+        # No biosimilar_reference_product_term override: EMA's generic
+        # reference_product_term is already "European Union reference medicinal
+        # product", which is exactly right for a biosimilar, so it is INHERITED.
+        # Overriding it here with a reworded synonym would change the protocol's
+        # comparator wording for no reason.
+        biosimilar_comparator_bridge=_EU_BIOSIMILAR_BRIDGE,
     ),
     "ICH-M13A-2024": GuidelineProfile(
         id="ICH-M13A-2024",
@@ -304,6 +354,7 @@ GUIDELINES: dict[str, GuidelineProfile] = {
         biosimilar_pathway=_FDA_351K_PATHWAY,
         biosimilar_citation=_FDA_BIOSIMILAR_CITATION,
         biosimilar_reference_product_term=_FDA_BIOSIMILAR_REFERENCE_TERM,
+        biosimilar_comparator_bridge=_FDA_BIOSIMILAR_BRIDGE,
         biosimilar_display_name="FDA - Biosimilar PK Similarity (351(k), 2003, superseded)",
     ),
 }
@@ -417,6 +468,11 @@ def regulatory_directive(version: str, study_type: str = "BE") -> str:
         "- Reference/comparator product: refer to it as the "
         f"{reference_product_term(version, study_type)}"
     )
+    if biosimilar and p.biosimilar_comparator_bridge:
+        # Emitted immediately after the comparator term, never separately: an
+        # EU-approved comparator named on a 351(k) filing WITHOUT its scientific
+        # bridge is a regulatory error, so the two must not be able to drift apart.
+        lines.append(f"- Comparator sourcing and bridging: {p.biosimilar_comparator_bridge}")
     if biosimilar:
         lines.append(f"- PK similarity acceptance criteria: {p.acceptance_summary}")
     else:

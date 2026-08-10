@@ -69,6 +69,13 @@ from typing import Any, Optional
 # Reused (never re-derived) from the sample-size engine so the sampling horizon
 # and the washout the protocol already locks stay on the same arithmetic.
 from services.biostatistics import MAX_PRACTICAL_WASHOUT_DAYS, WASHOUT_HALF_LIVES
+from services.comparative_safety import (
+    MIN_DOSES_FOR_STEADY_STATE,
+    MIN_TROUGHS_TO_DEMONSTRATE,
+    SAFETY_MONTHS_EU,
+    doses_to_steady_state as _doses_to_steady_state,
+    immunogenicity_schedule as _cs_immunogenicity_schedule,
+)
 
 # ---------------------------------------------------------------------------
 # Regulatory / clinical constants
@@ -639,6 +646,8 @@ def compute_sampling_schedule(
     label: Optional[dict[str, str]] = None,
     tau_hours: Optional[float] = None,
     draw_volume_ml: float = PK_DRAW_VOLUME_ML,
+    safety_months: Optional[int] = None,
+    subject_type: str = "healthy",
 ) -> dict[str, Any]:
     """Compute THE blood-sampling schedule for this study.
 
@@ -673,6 +682,27 @@ def compute_sampling_schedule(
         Dosing interval for a multiple-dose study; defaults to 24 h with a flag.
     draw_volume_ml:
         Whole-blood volume per PK draw; defaults to PK_DRAW_VOLUME_ML.
+    safety_months:
+        The head-to-head comparative safety/immunogenicity duration this
+        protocol actually uses (services.comparative_safety.build_duration_plan's
+        ``safety_months``). Only consulted for a multiple-dose biosimilar_pk
+        study, where the ADA sampling schedule must span that SAME period —
+        two engines independently proposing two different ADA schedules for
+        one section is exactly the contradiction this parameter exists to
+        prevent. Defaults to the same EU-path default
+        (services.comparative_safety.SAFETY_MONTHS_EU) that engine uses when
+        not supplied, so the two still agree even if a caller has not wired
+        this through yet.
+    subject_type:
+        'healthy' | 'patient'. Gates the dual-profile (first-dose + steady-
+        state) schedule the same way services.biostatistics.
+        co_primary_endpoints_for() and services.comparative_safety.
+        build_duration_plan() gate their own dosing="multiple" branches: a
+        multiple-dose PATIENT biosimilar study has no observable terminal
+        elimination phase and needs both profiles collected; a multiple-dose
+        HEALTHY VOLUNTEER study is a time-boxed regimen and does not get the
+        dual-profile schedule, the immunogenicity-period-linked ADA series,
+        or the doubled blood-volume audit that only make sense for it.
 
     Returns
     -------
@@ -1049,10 +1079,77 @@ def compute_sampling_schedule(
     else:
         predose_rule = None
 
+    # -- Multi-dose biosimilar: BOTH first-dose AND steady-state AUC(0-tau) --
+    # co-primary profiles are required (services/biostatistics.py's
+    # co_primary_endpoints_for) — a single dosing-interval-shaped profile only
+    # ever measures ONE of the two, whichever the caller happened to collect
+    # it at. Both profiles share the IDENTICAL within-interval sampling
+    # density already computed above (dense early + peak-bracketed + log-
+    # spaced tail out to tau) — what differs between them is only WHEN in the
+    # study timeline each is collected, so the same relative-hour template is
+    # reused twice with a different absolute-day offset, rather than
+    # recomputed. `timepoints` (first dose, dose 1 at absolute hour 0)
+    # continues to be usable on its own by any caller that only wants a
+    # single profile's shape; `timepoints_first_dose` is the same list under
+    # an explicit name for callers that need to know it is one of two.
+    is_patient = str(subject_type or "healthy").strip().lower() == "patient"
+    dual_profile_biosimilar = multiple_dose and study == "biosimilar_pk" and is_patient
+    steady_state_dose_number: Optional[int] = None
+    steady_state_start_day: Optional[float] = None
+    timepoints_first_dose: list[dict[str, Any]] = []
+    timepoints_steady_state: list[dict[str, Any]] = []
+    if dual_profile_biosimilar:
+        timepoints_first_dose = timepoints
+        steady_state_dose_number = (
+            _doses_to_steady_state(t_half, tau, cover_all_patients=True)
+            or MIN_DOSES_FOR_STEADY_STATE
+        )
+        offset_hours = (steady_state_dose_number - 1) * tau
+        steady_state_start_day = round(1.0 + offset_hours / 24.0, 1)
+        # Only the ABSOLUTE, calendar-anchored fields (hours/day/label) change
+        # with the offset. window/window_minutes/phase/purpose/lambda_z_point
+        # describe the draw's position WITHIN the interval and are correct
+        # unchanged for either profile.
+        timepoints_steady_state = [
+            {
+                **tp,
+                "hours": round(tp["hours"] + offset_hours, 4),
+                "day": _day_number(tp["hours"] + offset_hours),
+                "label": _clock_label(tp["hours"] + offset_hours),
+            }
+            for tp in timepoints
+        ]
+
     steady_state_troughs: list[dict[str, Any]] = []
-    if multiple_dose:
-        # Trough samples on consecutive pre-dose days demonstrate that steady
-        # state was reached before the profile day is run.
+    if dual_profile_biosimilar and steady_state_dose_number is not None:
+        # Pre-dose troughs at doses (N-2), (N-1) and N — genuinely tau-spaced
+        # dosing occasions, not consecutive calendar days (which are not
+        # dosing days at all for a q2w/q4w biologic regimen and would put the
+        # "3 days before" trough before the very first dose for a short-tau,
+        # low-dose-count regimen). A plateau across three ACTUAL dosing
+        # occasions is what demonstrates steady state; three calendar days
+        # with no dose between them demonstrates nothing.
+        n_troughs = min(MIN_TROUGHS_TO_DEMONSTRATE, steady_state_dose_number)
+        for i in range(n_troughs):
+            dose_number = steady_state_dose_number - n_troughs + 1 + i
+            trough_hour = (dose_number - 1) * tau
+            steady_state_troughs.append({
+                "label": f"Pre-dose trough, immediately before dose {dose_number}",
+                "hours": round(trough_hour, 4),
+                "day": _day_number(trough_hour),
+                "window": f"within {_PREDOSE_WINDOW_MINUTES} min before dose {dose_number}",
+                "volume_ml": round(draw_volume_ml, 2),
+                "purpose": ("Confirms attainment of steady state before the "
+                            "steady-state profile is collected."),
+            })
+    elif multiple_dose:
+        # Generic multi-dose path: any multiple-dose study that is not the
+        # dual-profile patient-biosimilar case above (a non-biosimilar
+        # multi-dose study, OR a multiple-dose HEALTHY VOLUNTEER biosimilar_pk
+        # study, which is real and reachable now that dual_profile_biosimilar
+        # is gated on subject_type=="patient"). Consecutive pre-dose days
+        # rather than genuine dose-numbered troughs, since there is no single
+        # steady_state_dose_number computed on this path.
         for k in range(STEADY_STATE_TROUGH_DAYS, 0, -1):
             steady_state_troughs.append({
                 "label": f"Pre-dose trough, {k} day(s) before the profile day",
@@ -1064,7 +1161,20 @@ def compute_sampling_schedule(
 
     immunogenicity_timepoints: list[dict[str, Any]] = []
     if "immunogenicity" in applicable:
-        for t in _ADA_TIMEPOINTS_HOURS:
+        if dual_profile_biosimilar:
+            # Defer to services.comparative_safety's schedule, which spans the
+            # SAME comparative-safety period this protocol actually uses
+            # (services/comparative_safety.py's build_duration_plan) -
+            # otherwise this function's own fixed short schedule
+            # (_ADA_TIMEPOINTS_HOURS, ending ~Day 85) would be injected into
+            # the identical study_assessments section as a SEPARATE "already
+            # determined" ADA schedule ending months earlier, for a design
+            # whose comparative period runs 6-12+ months.
+            months = safety_months if safety_months else SAFETY_MONTHS_EU
+            ada_hours = [m * 30.44 * 24.0 for m in _cs_immunogenicity_schedule(months)]
+        else:
+            ada_hours = list(_ADA_TIMEPOINTS_HOURS)
+        for t in ada_hours:
             immunogenicity_timepoints.append({
                 "hours": round(t, 2),
                 "day": _day_number(t),
@@ -1082,6 +1192,10 @@ def compute_sampling_schedule(
                         "on the parent drug)")
 
     # -- Blood volume audit -------------------------------------------------
+    # When a second (steady-state) profile exists, its draws are EXTRA blood
+    # taken from the same subject and must be counted too — the audit is a
+    # ceiling on total blood loss, not per-visit, so omitting the second
+    # profile would understate the true total by roughly half.
     blood = _blood_volume_audit(
         times=times,
         periods=periods,
@@ -1089,8 +1203,11 @@ def compute_sampling_schedule(
         t_half=t_half,
         t_last=t_last,
         design=design,
-        ada_draws=len(immunogenicity_timepoints),
+        ada_hours=[tp["hours"] for tp in immunogenicity_timepoints],
         trough_draws=len(steady_state_troughs),
+        extra_profile_offset_hours=(
+            (steady_state_dose_number - 1) * tau if dual_profile_biosimilar else None
+        ),
     )
     if not blood["within_limit"]:
         flags.append({
@@ -1109,6 +1226,20 @@ def compute_sampling_schedule(
     result: dict[str, Any] = {
         "timepoints": timepoints,
         "n_timepoints": len(timepoints),
+        # Only set for a multiple-dose biosimilar study (B1's co-primary set):
+        # the SAME within-interval template as `timepoints`/`n_timepoints`
+        # above, split explicitly into the two profiles that must each be
+        # collected — first dose (dose 1, absolute hour 0) and steady state
+        # (dose `steady_state_dose_number`, offset by
+        # `steady_state_start_day`). A caller that reads `timepoints` alone
+        # still gets a complete, correct first-dose profile; these two keys
+        # exist so a caller that needs BOTH co-primary readings does not have
+        # to guess that the second profile is missing.
+        "dual_profile_biosimilar": dual_profile_biosimilar,
+        "timepoints_first_dose": timepoints_first_dose,
+        "timepoints_steady_state": timepoints_steady_state,
+        "steady_state_dose_number": steady_state_dose_number,
+        "steady_state_start_day": steady_state_start_day,
         "phase_counts": phase_counts,
         "peak_bracketing": {
             "tmax_hours": round(tmax_snapped, 4),
@@ -1181,8 +1312,9 @@ def _blood_volume_audit(
     t_half: float,
     t_last: float,
     design: str,
-    ada_draws: int,
+    ada_hours: list[float],
     trough_draws: int,
+    extra_profile_offset_hours: Optional[float] = None,
 ) -> dict[str, Any]:
     """Total and worst-8-week blood volume, against the healthy-volunteer limit.
 
@@ -1191,8 +1323,18 @@ def _blood_volume_audit(
     the case a per-period total would miss. Period p starts one washout
     (7 x t1/2, the same figure the protocol already locks) plus one full profile
     after period p-1.
+
+    ``extra_profile_offset_hours``: a multiple-dose biosimilar study collects a
+    SECOND full profile (the steady-state one) at this many hours after the
+    first — genuinely additional blood drawn from the same subject, not an
+    alternative reading of the same draws, so it is added as one more copy of
+    ``times`` at that absolute offset rather than folded into ``periods``
+    (which counts crossover/replicate PERIODS, a different concept with its
+    own washout-based spacing).
     """
-    per_period_pk = len(times) * draw_volume_ml
+    n_profiles = 2 if extra_profile_offset_hours is not None else 1
+    per_period_pk = len(times) * draw_volume_ml * n_profiles
+    ada_draws = len(ada_hours)
     ada_ml = ada_draws * ADA_DRAW_VOLUME_ML
     trough_ml = trough_draws * draw_volume_ml * periods
     total = per_period_pk * periods + ada_ml + trough_ml + SAFETY_LAB_VOLUME_ML
@@ -1206,10 +1348,18 @@ def _blood_volume_audit(
         offset = p * cycle
         for t in times:
             draws.append((offset + t, draw_volume_ml))
+        if extra_profile_offset_hours is not None:
+            for t in times:
+                draws.append((offset + extra_profile_offset_hours + t, draw_volume_ml))
         for _ in range(trough_draws):
             draws.append((offset, draw_volume_ml))
-    for i in range(ada_draws):
-        draws.append((_ADA_TIMEPOINTS_HOURS[i], ADA_DRAW_VOLUME_ML))
+    # ADA hours are the REAL schedule the protocol actually uses (fixed for a
+    # single-dose study, or the comparative-safety-period-spanning one for a
+    # multiple-dose biosimilar) - not an assumed fixed-length tuple, which
+    # would silently mis-index once a schedule with more than five points
+    # (e.g. a 12-month comparative period) was introduced.
+    for t in ada_hours:
+        draws.append((t, ADA_DRAW_VOLUME_ML))
     draws.sort()
 
     worst = 0.0
@@ -1309,6 +1459,7 @@ def sampling_schedule_directive(result: dict[str, Any]) -> str:
         return ""
     tp = result["timepoints"]
     pb = result.get("peak_bracketing", {})
+    dual = bool(result.get("dual_profile_biosimilar"))
     lines = [
         "PK BLOOD-SAMPLING SCHEDULE - these timepoints are ALREADY DETERMINED. "
         "Reproduce this EXACT list of nominal times; do not add, drop, round, "
@@ -1318,9 +1469,28 @@ def sampling_schedule_directive(result: dict[str, Any]) -> str:
         f"({result.get('tmax_basis')}), terminal t1/2 = "
         f"{_fmt_hours(result.get('t_half_hours', 0))} h "
         f"({result.get('t_half_basis')}); horizon = {result.get('horizon_basis')}.",
-        f"Nominal times (h post-dose), each repeated in EVERY one of the "
-        f"{result.get('periods')} period(s):",
     ]
+    if dual:
+        # TWO co-primary profiles, not one: first-dose AUC(0-tau) and
+        # steady-state AUC(0-tau) are collected at DIFFERENT points in the
+        # study timeline, sharing the identical within-interval sampling
+        # pattern below. Rendering only one (the earlier bug this fixes)
+        # leaves a co-primary endpoint with no schedule to measure it by.
+        lines.append(
+            f"TWO co-primary profiles are collected, each using the IDENTICAL "
+            f"within-interval sampling pattern listed once below: the FIRST-DOSE "
+            f"profile (dose 1, Day 1) and the STEADY-STATE profile (dose "
+            f"{result.get('steady_state_dose_number')}, starting Day "
+            f"{result.get('steady_state_start_day')}). Nominal times below are "
+            f"HOURS SINCE THAT PROFILE'S OWN DOSE, not since Day 1 - apply the "
+            f"pattern at both study points."
+        )
+    lines.append(
+        f"Nominal times (h post-dose), each repeated in EVERY one of the "
+        f"{result.get('periods')} period(s)"
+        + (" and at BOTH the first-dose and steady-state profiles above" if dual else "")
+        + ":"
+    )
     for t in tp:
         lines.append(
             f"  {t['index']}. {t['hours']} h [{t['label']}] - {t['phase']} phase, "

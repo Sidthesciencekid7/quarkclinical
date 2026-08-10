@@ -19,6 +19,7 @@ canakinumab / biosimilar_pk / parallel protocol):
 import pytest
 
 from services.biostatistics import recommend_sample_size, sample_size_tost
+from routers.export import _actual_power_footnote
 
 
 def test_parallel_sensitivity_matches_main_calculation_per_arm():
@@ -141,6 +142,89 @@ def test_crossover_design_sensitivity_parallel_columns_now_per_arm():
     )
     assert raw_total == 156
     assert row_25["parallel_90"] == raw_total // 2 == 78
+
+
+def test_power_adjusted_design_gets_an_actual_power_column_matching_the_headline_n():
+    """CONFIRMED BUG from adversarial review: for a co-primary power-adjusted
+    design (services/multiplicity.py raises per-endpoint power above the
+    conventional 80/90% bases, e.g. to 94.87% for two independent endpoints
+    at a 90% overall target), the sensitivity table only ever offered 80%/90%
+    columns -- no column reproduced the study's own headline evaluable-N at
+    ANY CV, which reads as an unexplained inconsistency to a reviewer
+    cross-checking the table."""
+    rec = recommend_sample_size(
+        study_type="biosimilar_pk", drug_inn="adalimumab", cv_intra_pct=25.0,
+        cv_source="literature", dosing="multiple", subject_type="patient",
+    )
+    assert rec.power_adjusted is True
+    assert rec.power not in (0.80, 0.90)
+
+    row = next(r for r in rec.sensitivity if r["cv_pct"] == 25)
+    assert "crossover_actual" in row
+    assert "parallel_actual" in row
+    assert row["actual_power_pct"] == pytest.approx(rec.power * 100, abs=0.01)
+
+    expected = sample_size_tost(
+        25, gmr=rec.gmr, power=rec.power, lower=rec.lower_limit, upper=rec.upper_limit,
+        design="parallel",
+    ) // 2
+    assert row["parallel_actual"] == expected
+
+
+def test_actual_power_footnote_does_not_falsely_claim_equality_for_a_parallel_design():
+    """CONFIRMED BUG from adversarial review: the footnote for the actual-
+    power sensitivity column originally claimed "the headline evaluable-N
+    above is the value in this column" unconditionally. For a PARALLEL
+    design (the default for biosimilar_pk) the actual column is per-arm
+    while the headline 'Evaluable subjects required' is the TOTAL across
+    both arms -- the old footnote's equality claim was false for exactly the
+    mainline case this feature targets."""
+    rec = recommend_sample_size(
+        study_type="biosimilar_pk", drug_inn="adalimumab", cv_intra_pct=25.0,
+        cv_source="literature", dosing="multiple", subject_type="patient",
+    ).to_dict()
+    assert rec["design_key"] == "parallel"
+    row = next(r for r in rec["sensitivity"] if r["cv_pct"] == 25)
+    actual_pct = row["actual_power_pct"]
+
+    note = _actual_power_footnote(rec, actual_pct)
+    assert "headline evaluable-N above is the value in this column" not in note
+    assert "PER ARM" in note
+    # The footnote's own claim must actually be true: doubling the per-arm
+    # actual figure must equal the headline evaluable-N total.
+    assert row["parallel_actual"] * 2 == rec["n_evaluable"]
+
+
+def test_actual_power_footnote_states_exact_reproduction_for_a_crossover_design():
+    """Non-regression: for a crossover design there IS no arm split, so the
+    actual column genuinely does reproduce the headline evaluable-N exactly
+    -- the footnote must say so plainly for that case."""
+    rec = recommend_sample_size(
+        study_type="biosimilar_pk", drug_inn="adalimumab", cv_intra_pct=25.0,
+        cv_source="literature", dosing="multiple", subject_type="patient",
+        requested_design="crossover",
+    ).to_dict()
+    assert rec["design_key"] == "crossover"
+    row = next(r for r in rec["sensitivity"] if r["cv_pct"] == 25)
+    actual_pct = row["actual_power_pct"]
+
+    note = _actual_power_footnote(rec, actual_pct)
+    assert "reproduces" in note and "exactly" in note
+    assert row["crossover_actual"] == rec["n_evaluable"]
+
+
+def test_conventional_design_gets_no_actual_power_column():
+    """Non-regression: a conventional (non-power-adjusted) study must not
+    grow a redundant third column when 80/90% already cover its basis."""
+    rec = recommend_sample_size(
+        study_type="BE", drug_inn="ibuprofen", cv_intra_pct=25.0,
+        cv_source="literature", requested_design="crossover", power=0.90, gmr=0.95,
+    )
+    assert rec.power_adjusted is False
+    for row in rec.sensitivity:
+        assert "crossover_actual" not in row
+        assert "parallel_actual" not in row
+        assert "actual_power_pct" not in row
 
 
 def test_sensitivity_values_are_always_ints_and_even_before_halving():

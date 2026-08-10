@@ -2927,6 +2927,82 @@ def _normalize_sample_size(rec: dict[str, Any] | None) -> dict[str, Any] | None:
     return merged
 
 
+def _power_rows(rec: dict) -> list[tuple[str, str]]:
+    """(label, value) rows for the target/achieved power lines of the sample-
+    size assumptions table — shared by the DOCX and PDF builders.
+
+    ``rec['power']`` is the PER-ENDPOINT power the size was actually computed
+    at (services/biostatistics.py). For a design with more than one co-primary
+    endpoint that value is raised ABOVE the design's real target so that
+    OVERALL power (the probability every endpoint passes) reaches the
+    requested figure — rendering it as "Target power" on its own states a
+    design power the study was never asked to have. When there is more than
+    one co-primary endpoint, the OVERALL figure is the headline row and the
+    per-endpoint figure it was derived from is disclosed alongside it.
+    """
+    overall = rec.get("overall_power")
+    # power_adjusted, not endpoint COUNT, is the correct gate: the CONVENTIONAL
+    # Cmax + AUC(0-inf) pair also has two co-primary endpoints, so a count check
+    # alone would headline that pair's independence-based lower bound (~81%) as
+    # if it were the design's real target power.
+    if overall is None or not rec.get("power_adjusted", True):
+        return [
+            ("Target power", f"{rec['power'] * 100:.0f}%"),
+            ("Achieved power at planned N", f"{rec['achieved_power'] * 100:.1f}%"),
+        ]
+    achieved_overall = rec.get("achieved_overall_power")
+    return [
+        ("Target power (overall — all co-primary endpoints must pass)", f"{overall * 100:.0f}%"),
+        ("Per-endpoint power (achieves the overall target above)", f"{rec['power'] * 100:.2f}%"),
+        (
+            "Achieved power at planned N (overall)",
+            f"{achieved_overall * 100:.1f}%" if achieved_overall is not None
+            else f"{rec['achieved_power'] * 100:.1f}% per endpoint",
+        ),
+    ]
+
+
+def _power_conclusion_pct(rec: dict) -> float:
+    """The power figure quoted in the sample-size conclusion sentence — overall
+    when the design was genuinely power-adjusted, matching _power_rows above."""
+    if rec.get("power_adjusted", True) and rec.get("achieved_overall_power") is not None:
+        return rec["achieved_overall_power"] * 100
+    return rec["achieved_power"] * 100
+
+
+def _actual_power_footnote(rec: dict, actual_pct: float) -> str:
+    """Footnote sentence for the sensitivity table's power-adjusted column.
+
+    CONFIRMED BUG (adversarial review): an earlier version of this footnote
+    unconditionally claimed "the headline evaluable-N above is the value in
+    this column" — true for a crossover design (whose sensitivity columns are
+    already totals, matching n_evaluable directly), but FALSE for a parallel
+    design, which is the default for biosimilar_pk: the sensitivity table's
+    parallel columns are per-arm (n_evaluable // 2), while "Evaluable
+    subjects required" above is the TOTAL across both arms. A reviewer
+    who followed the old footnote to the letter would find the column did
+    NOT match the headline figure — the exact confusion this column exists
+    to eliminate, reintroduced by an incorrect equality claim baked into the
+    exported regulatory document text itself. State the per-arm/total
+    distinction explicitly instead of asserting a bare equality.
+    """
+    base = (
+        f" *The {actual_pct:g}% columns are the per-endpoint power this study is actually "
+        f"sized at (raised above the conventional 80/90% bases so that OVERALL power across "
+        f"all co-primary endpoints reaches the target — see the multiplicity note above)."
+    )
+    if rec.get("design_key") == "crossover":
+        return base + (
+            f" For this crossover design, the {actual_pct:g}% row at the assumed CV above "
+            f"reproduces the 'Evaluable subjects required' total exactly."
+        )
+    return base + (
+        f" For this parallel design, the {actual_pct:g}% row at the assumed CV above is PER "
+        f"ARM (as for the 80%/90% columns to its left); double it to reproduce the "
+        f"'Evaluable subjects required' total above."
+    )
+
+
 def _ss_para(doc: Document, text: str, *, italic: bool = False, size: float = 10.5,
              indent: float | None = None) -> None:
     p = doc.add_paragraph()
@@ -3097,18 +3173,19 @@ def _add_sample_size_section_docx(doc: Document, protocol: Protocol,
 
     # --- Assumptions table ------------------------------------------------
     doc.add_heading(f"{section_idx}.S.1 Design Assumptions", level=3)
+    power_rows = _power_rows(rec)
     assumptions = [
         ("Study design", rec["design"]),
         ("Statistical approach", rec["approach"]),
         ("Acceptance limits (90% CI of GMR)", f"{lower:.2f}-{upper:.2f}%"),
         ("Assumed true GMR (T/R)", f"{rec['gmr']:.2f}"),
         ("Within-subject CV", f"{rec['cv_pct']:.1f}% ({rec['cv_source']})"),
-        ("Target power", f"{rec['power']*100:.0f}%"),
+        power_rows[0],
         ("Significance level (alpha)", f"{rec['alpha']:.2f} (one-sided)"),
         ("Evaluable subjects required", f"{rec['n_evaluable']}"),
         ("Dropout allowance", f"{rec['dropout_rate']*100:.0f}%"),
         ("Planned enrolment", f"{rec['n_enrolled']} subjects{per_arm}"),
-        ("Achieved power at planned N", f"{rec['achieved_power']*100:.1f}%"),
+        *power_rows[1:],
     ]
     _ss_kv_table_docx(doc, assumptions)
 
@@ -3116,7 +3193,7 @@ def _add_sample_size_section_docx(doc: Document, protocol: Protocol,
         doc,
         f"Conclusion: a total of {rec['n_enrolled']} subjects{per_arm} will be enrolled "
         f"to provide {rec['n_evaluable']} evaluable subjects, yielding "
-        f"{rec['achieved_power']*100:.0f}% power to demonstrate "
+        f"{_power_conclusion_pct(rec):.0f}% power to demonstrate "
         f"{'PK similarity' if protocol.study_type.value == 'biosimilar_pk' else 'bioequivalence'} "
         f"under the stated assumptions.",
     )
@@ -3136,17 +3213,24 @@ def _add_sample_size_section_docx(doc: Document, protocol: Protocol,
     doc.add_heading(
         f"{section_idx}.S.2 Sensitivity of Sample Size to CV and Power", level=3
     )
+    sens_rows = rec.get("sensitivity", [])
+    actual_pct = next((r["actual_power_pct"] for r in sens_rows if "actual_power_pct" in r), None)
     headers = [
         "CV (%)", "Crossover 80%", "Crossover 90%",
         "Parallel/arm 80%", "Parallel/arm 90%",
     ]
+    if actual_pct is not None:
+        headers += [f"Crossover {actual_pct:g}%*", f"Parallel/arm {actual_pct:g}%*"]
     rows = [headers]
-    for r in rec.get("sensitivity", []):
-        rows.append([
+    for r in sens_rows:
+        row = [
             str(r.get("cv_pct", "?")),
             str(r.get("crossover_80", "?")), str(r.get("crossover_90", "?")),
             str(r.get("parallel_80", "?")), str(r.get("parallel_90", "?")),
-        ])
+        ]
+        if actual_pct is not None:
+            row += [str(r.get("crossover_actual", "?")), str(r.get("parallel_actual", "?"))]
+        rows.append(row)
     _ss_grid_table_docx(doc, rows)
 
     _ss_para(
@@ -3154,7 +3238,8 @@ def _add_sample_size_section_docx(doc: Document, protocol: Protocol,
         "Note: values are minimum evaluable subject counts (crossover totals across both "
         "sequences; parallel shown per arm) computed by exact TOST power at a true GMR of "
         f"{rec['gmr']:.2f}. The planned design uses the row matching the assumed CV above, "
-        "inflated for the dropout allowance.",
+        "inflated for the dropout allowance."
+        + (_actual_power_footnote(rec, actual_pct) if actual_pct is not None else ""),
         italic=True, size=10.5,
     )
 
@@ -3418,6 +3503,7 @@ def _add_sample_size_section_pdf(story, protocol, styles, section_idx):
             styles["Body"],
         ))
 
+    power_rows = _power_rows(rec)
     assumptions = [
         ["Parameter", "Value"],
         ["Study design", rec["design"]],
@@ -3425,18 +3511,18 @@ def _add_sample_size_section_pdf(story, protocol, styles, section_idx):
         ["Acceptance limits (90% CI of GMR)", f"{lower:.2f}-{upper:.2f}%"],
         ["Assumed true GMR (T/R)", f"{rec['gmr']:.2f}"],
         ["Within-subject CV", f"{rec['cv_pct']:.1f}% ({rec['cv_source']})"],
-        ["Target power", f"{rec['power']*100:.0f}%"],
+        list(power_rows[0]),
         ["Significance level (alpha)", f"{rec['alpha']:.2f} (one-sided)"],
         ["Evaluable subjects required", f"{rec['n_evaluable']}"],
         ["Dropout allowance", f"{rec['dropout_rate']*100:.0f}%"],
         ["Planned enrolment", f"{rec['n_enrolled']} subjects{per_arm}"],
-        ["Achieved power at planned N", f"{rec['achieved_power']*100:.1f}%"],
+        *[list(r) for r in power_rows[1:]],
     ]
     _simple_table_pdf(story, assumptions, styles, col_widths=[70 * rl_mm, 90 * rl_mm])
 
     story.append(Paragraph(
         f"Conclusion: {rec['n_enrolled']} subjects{per_arm} will be enrolled to provide "
-        f"{rec['n_evaluable']} evaluable subjects ({rec['achieved_power']*100:.0f}% power).",
+        f"{rec['n_evaluable']} evaluable subjects ({_power_conclusion_pct(rec):.0f}% power).",
         styles["Body"],
     ))
 
@@ -3450,13 +3536,26 @@ def _add_sample_size_section_pdf(story, protocol, styles, section_idx):
 
     story.append(Spacer(1, 3 * rl_mm))
     story.append(Paragraph("Sensitivity of sample size to CV and power:", styles["Body"]))
-    sens = [["CV (%)", "Crossover 80%", "Crossover 90%", "Parallel/arm 80%", "Parallel/arm 90%"]]
-    for r in rec.get("sensitivity", []):
-        sens.append([
+    sens_rows = rec.get("sensitivity", [])
+    actual_pct = next((r["actual_power_pct"] for r in sens_rows if "actual_power_pct" in r), None)
+    sens_headers = ["CV (%)", "Crossover 80%", "Crossover 90%", "Parallel/arm 80%", "Parallel/arm 90%"]
+    if actual_pct is not None:
+        sens_headers += [f"Crossover {actual_pct:g}%*", f"Parallel/arm {actual_pct:g}%*"]
+    sens = [sens_headers]
+    for r in sens_rows:
+        row = [
             str(r.get("cv_pct", "?")), str(r.get("crossover_80", "?")), str(r.get("crossover_90", "?")),
             str(r.get("parallel_80", "?")), str(r.get("parallel_90", "?")),
-        ])
+        ]
+        if actual_pct is not None:
+            row += [str(r.get("crossover_actual", "?")), str(r.get("parallel_actual", "?"))]
+        sens.append(row)
     _simple_table_pdf(story, sens, styles)
+    if actual_pct is not None:
+        story.append(Paragraph(
+            f"<i>{_actual_power_footnote(rec, actual_pct).strip()}</i>",
+            styles["Body"],
+        ))
 
 
 def _add_schedule_of_activities_pdf(story, protocol, styles, idx, heading):

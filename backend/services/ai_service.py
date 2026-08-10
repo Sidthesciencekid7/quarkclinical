@@ -28,7 +28,10 @@ from services.bioanalytical import bioanalytical_directive
 from services.crf_dmp import crf_dmp_directive
 from services.ddi_screening import ddi_directive
 from services.icf import icf_directive
+from services.comparative_safety import comparative_safety_directive
 from services.meta_analysis import meta_analysis_directive
+from services.multiplicity import multiplicity_directive
+from services.patient_population import patient_population_directive
 from services.randomization import randomization_directive
 from services.safety_gating import safety_gating_directive
 from services.safety_reporting import safety_reporting_directive
@@ -337,7 +340,7 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "Reference template, Section 4 — Study Endpoints (4.1 Primary Endpoint, "
             "4.2 Secondary endpoints)"
         ),
-        "context_keys": ["drug_inn", "study_type", "sample_size"],
+        "context_keys": ["drug_inn", "study_type", "sample_size", "multiplicity"],
         "instructions": (
             "Write TWO subsections using <h2> headings: "
             "1) **Primary Endpoint** — a bullet list with exactly the co-primary PK endpoints from "
@@ -361,7 +364,7 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "Reference template, Section 5 — Study Design (5.1 Study Overview: 5.1.1 Screening "
             "Period, 5.1.2 Confinement and Check-in, 5.1.3 Study Period, 5.1.4 End of Study)"
         ),
-        "context_keys": ["study_type", "population_config", "guideline_version", "sample_size", "pk_parameters"],
+        "context_keys": ["study_type", "population_config", "guideline_version", "sample_size", "pk_parameters", "patient_population", "comparative_safety"],
         "instructions": (
             "Describe the study design for the SINGLE design specified in the locked design "
             "parameters — this may be a 2-period crossover, a 2-arm parallel-group, OR a "
@@ -424,7 +427,7 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
         ),
         "context_keys": [
             "population_config", "sample_size", "ddi", "safety_gating", "stratification",
-            "randomization",
+            "randomization", "patient_population",
         ],
         "instructions": (
             "Write FOUR subsections using <h2> headings, in this exact order: "
@@ -636,8 +639,7 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
         ),
         "context_keys": [
             "pk_parameters", "study_type", "drug_inn", "analytical_method", "lloq",
-            "sampling_schedule", "bioanalytical", "safety_gating",
-        ],
+            "sampling_schedule", "bioanalytical", "safety_gating", "comparative_safety"],
         "instructions": (
             "Write subsections using <h2> headings, in this exact order: "
             "1) **Pharmacokinetic Assessment** — "
@@ -739,7 +741,7 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "Recording and Follow-up; Abnormal Lab Results; Pregnancy Reporting; Reporting of "
             "SAEs; Concomitant Medication); ICH E6(R2) Section 4.4; 21 CFR 312.32; CTCAE v5.0"
         ),
-        "context_keys": ["drug_inn", "study_type", "safety_gating", "safety_reporting"],
+        "context_keys": ["drug_inn", "study_type", "safety_gating", "safety_reporting", "comparative_safety"],
         "instructions": (
             "Write ONE <h2> subsection '10.1 Handling and Reporting of Adverse Events' containing "
             "EIGHT <h3> sub-subsections in this exact order (plus the TWO additional "
@@ -909,8 +911,7 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
         ),
         "context_keys": [
             "pk_parameters", "study_type", "acceptance_criteria", "cv_intra",
-            "sample_size", "meta_analysis", "regulatory_sources", "randomization",
-        ],
+            "sample_size", "meta_analysis", "regulatory_sources", "randomization", "multiplicity"],
         "instructions": (
             "Write the complete statistical analysis plan, tailored to study_type, as ELEVEN <h2> "
             "subsections in this exact order, FOLLOWED BY the meta-analysis appendix described "
@@ -1579,6 +1580,83 @@ def _cv_provenance_lines(ss: dict[str, Any]) -> list[str]:
     ]
 
 
+def _power_line(ss: dict[str, Any]) -> str:
+    """The "Power: NN%" fragment of the locked design block.
+
+    ``ss['power']`` is the PER-ENDPOINT value the sample size was actually
+    computed at (services/biostatistics.py) — for a multiple-dose biosimilar
+    with two co-primary endpoints this is raised ABOVE the requested overall
+    power (e.g. 94.87% to hold 90% overall). Printing that raw value here as
+    "Power: 95%" would state a design power the study was never asked to have,
+    in the block injected into the synopsis, objectives, study design and
+    population sections — none of which also receive multiplicity_directive()
+    (only statistical_analysis_plan and endpoints do). This headlines the
+    OVERALL power (what the study is actually required to deliver) and, only
+    when there is more than one co-primary endpoint, discloses the raised
+    per-endpoint figure alongside it so the two numbers are never presented as
+    contradicting each other.
+    """
+    overall = ss.get("overall_power")
+    per_endpoint = ss.get("power")
+    # power_adjusted, not "more than one co-primary endpoint", is the correct
+    # gate: even the CONVENTIONAL Cmax + AUC(0-inf) pair counts as two
+    # endpoints, so a length check alone would wrongly headline that pair's
+    # independence-based lower bound (~81%) as if it were the design's real
+    # target power.
+    if overall is None or not ss.get("power_adjusted", True):
+        return f"Power: {per_endpoint * 100:.0f}%;"
+    return (
+        f"Power: {overall * 100:.0f}% (overall — the probability every co-primary "
+        f"endpoint passes; each endpoint is individually powered at "
+        f"{per_endpoint * 100:.2f}% to achieve this, see the multiplicity note below);"
+    )
+
+
+def _endpoint_override_lines(ss: dict[str, Any]) -> list[str]:
+    """Extra locked-facts lines that OVERRIDE every section's own static
+    single-dose instructions when the co-primary set is NOT the conventional
+    single-dose Cmax + AUC(0-inf) pair.
+
+    THE PROBLEM THIS FIXES: _locked_design_directive() (this function's
+    caller) is injected into EVERY section whose context includes
+    sample_size — synopsis, study design, objectives, subject selection AND
+    the SAP (see its own docstring) — and several of those sections'
+    _SECTION_CONFIGS instructions are large STATIC strings that unconditionally
+    describe a single-dose NCA recipe: the SAP names "Cmax and AUC0-inf",
+    derived via a terminal log-linear regression (kel), with AUC0-inf =
+    AUC0-t + Clast/kel; the endpoints section additionally lists AUC0-t,
+    Vz/F, CL/F, kel and t1/2 as SECONDARY endpoints (Vz/F and CL/F are
+    themselves derived from kel/AUC0-inf, so they inherit the same problem).
+    For a multiple-dose biosimilar study the co-primary endpoints are
+    actually first-dose and steady-state AUC(0-tau)
+    (services/biostatistics.py's co_primary_endpoints_for) — a genuinely
+    DIFFERENT set the "Co-primary endpoints" line just above already states
+    correctly, so the model is handed contradictory statements of what it is
+    even measuring in EVERY section this directive reaches. Nothing about
+    AUC(0-inf)/kel/t1/2/Vz/F/CL/F is derivable from either profile, since
+    each one covers only ONE dosing interval (services/sampling_schedule.py's
+    own lambda_z_required=False for exactly this design already says so).
+    The override text below is deliberately generic about WHERE the
+    contradicting instructions live (rather than naming "the SAP section"),
+    since this same function is injected into sections whose own static text
+    differs.
+    """
+    co_primary = ss.get("co_primary_endpoints") or []
+    if len(co_primary) <= 1 or not any("tau" in e.lower() for e in co_primary):
+        return []
+    return [
+        "- ENDPOINT OVERRIDE: this document's standard single-dose analysis language "
+        "(wherever it appears in this section's own instructions — Cmax + AUC(0-inf), "
+        "kel-based terminal slope, AUC0-inf = AUC0-t + Clast/kel, or a secondary-endpoint "
+        "list naming kel, t1/2, Vz/F or CL/F) does NOT apply to this study. Use ONLY the "
+        "co-primary endpoints stated above, plus their own listed secondary endpoints "
+        "(Ctrough, Tmax, accumulation ratio). Do NOT derive, report, or reference "
+        "AUC(0-inf), kel, t1/2, Vz/F, or CL/F for either profile — each covers exactly "
+        "one dosing interval, so a terminal elimination slope cannot be fitted from it "
+        "and nothing computed from that slope is estimable either.",
+    ]
+
+
 def _locked_design_directive(ss: dict[str, Any] | None) -> str:
     """Authoritative design block injected into every section that receives the
     sample_size recommendation, so the design, N, and limits are identical across
@@ -1598,11 +1676,11 @@ def _locked_design_directive(ss: dict[str, Any] | None) -> str:
         f"- Acceptance limits: {ss['lower_limit']*100:.2f}-{ss['upper_limit']*100:.2f}% "
         "for the 90% CI of the Test/Reference geometric mean ratio",
         f"- Co-primary endpoints: {ss['endpoint']}",
+        *_endpoint_override_lines(ss),
         f"- Assumed {_cv_basis_label(ss.get('design_key'))} CV: {ss['cv_pct']}% "
         f"(source: {ss['cv_source']})",
         *_cv_provenance_lines(ss),
-        f"- True GMR assumption: {ss['gmr']:.2f}; Power: {ss['power']*100:.0f}%; "
-        f"alpha: {ss['alpha']}",
+        f"- True GMR assumption: {ss['gmr']:.2f}; {_power_line(ss)} alpha: {ss['alpha']}",
         f"- Planned enrolment: {ss['n_enrolled']} subjects{per_arm}, "
         f"yielding {ss['n_evaluable']} evaluable "
         f"({ss['dropout_rate']*100:.0f}% dropout allowance)",
@@ -1673,6 +1751,11 @@ _ENGINE_DIRECTIVE_PLAN: dict[str, tuple[tuple[str, Any], ...]] = {
         ("sampling_schedule", sampling_schedule_directive),
     ),
     "population": (
+        # The selected indication AND the naive/con-med eligibility criteria it
+        # implies are written HERE — this is the section that states who is
+        # enrolled, so the indication choice and the criteria that deliver it
+        # must not be split across sections.
+        ("patient_population", patient_population_directive),
         ("ddi", ddi_directive),
         ("safety_gating", safety_gating_directive),
         # Eligibility criteria are written HERE, so the population section is
@@ -1701,10 +1784,16 @@ _ENGINE_DIRECTIVE_PLAN: dict[str, tuple[tuple[str, Any], ...]] = {
         ("sampling_schedule", sampling_schedule_directive),
         ("bioanalytical", bioanalytical_directive),
         ("safety_gating", safety_gating_directive),
+        # Dose count to steady state and the ADA sampling months — the
+        # assessment schedule has to reflect both.
+        ("comparative_safety", comparative_safety_directive),
     ),
     "safety_monitoring": (
         ("safety_gating", safety_gating_directive),
         ("safety_reporting", safety_reporting_directive),
+        # The head-to-head comparative safety/immunogenicity period, and the
+        # fact that it continues well past the primary PK readout.
+        ("comparative_safety", comparative_safety_directive),
     ),
     "data_handling": (
         # scope="all": the DMP narrative feeds subsections 1/3/4 and the CRF
@@ -1712,6 +1801,11 @@ _ENGINE_DIRECTIVE_PLAN: dict[str, tuple[tuple[str, Any], ...]] = {
         ("crf_dmp", lambda r: crf_dmp_directive(r, "all")),
     ),
     "statistical_analysis_plan": (
+        # Co-primary alpha and power: which alpha each endpoint is tested at,
+        # whether it was adjusted and why, and the per-endpoint power needed to
+        # hold OVERALL power at target. Placed FIRST so the SAP's own sample-size
+        # narrative is written against it rather than restating a convention.
+        ("multiplicity", multiplicity_directive),
         # The per-study meta-analysis table AND the CV the study is powered on
         # come from one engine call, so the appendix and the sample-size
         # justification cannot state different numbers.
@@ -1764,6 +1858,9 @@ _ENGINE_CONTEXT_KEYS: tuple[str, ...] = (
     "stratification",
     "regulatory_sources",
     "meta_analysis",
+    "patient_population",
+    "comparative_safety",
+    "multiplicity",
 )
 
 # Top-level engine-result fields kept in the JSON context block. Anything not
@@ -1843,6 +1940,15 @@ _ENGINE_CONTEXT_FIELDS: dict[str, tuple[str, ...]] = {
     # and explains in prose; leaving them in raw JSON would hand the model a
     # second, uncurated source that disagrees with the directive's disclosure.
     "meta_analysis": ("summary",),
+    # Both of these are fully narrated by their own directives; the raw dicts
+    # carry ranked-but-rejected candidates and per-timepoint schedules that the
+    # directive already renders in the form the model should consume, so only
+    # the summary line is carried as JSON. Same rationale as meta_analysis.
+    "patient_population": ("summary",),
+    "comparative_safety": ("safety_months", "doses_to_steady_state"),
+    # Fully narrated by multiplicity_directive(); the raw dict adds only the
+    # rationale strings the directive already renders.
+    "multiplicity": ("n_co_primary", "alpha_per_endpoint", "per_endpoint_power", "overall_power"),
 }
 
 # Allocation concealment (ICH E9 s2.3.2). If the caller ever hands us the RAW

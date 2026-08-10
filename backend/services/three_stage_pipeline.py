@@ -50,7 +50,10 @@ from services.safety_reporting import safety_reporting_directive
 from services.sampling_schedule import sampling_schedule_directive
 from services.stratification import stratification_directive
 from services.literature_service import regulatory_sources_directive
+from services.comparative_safety import comparative_safety_directive
 from services.meta_analysis import meta_analysis_directive
+from services.multiplicity import multiplicity_directive
+from services.patient_population import patient_population_directive
 
 SONNET_MODEL = "claude-sonnet-4-6"
 
@@ -619,6 +622,20 @@ _ENGINE_DIRECTIVES: tuple[tuple[str, Any], ...] = (
     # verbatim), losing the CV-basis / derived-from-mean-SD disclosure this
     # directive exists to state.
     ("meta_analysis", meta_analysis_directive),
+    # Same three additions the per-section path carries in its own
+    # _ENGINE_DIRECTIVE_PLAN. This tuple is an INDEPENDENT copy of that plan, so
+    # an engine added there and not here does NOT get suppressed here — it gets
+    # serialised into the raw JSON context block instead, losing its locked
+    # narration. That exact drift already happened once with meta_analysis.
+    #   patient_population - the selected indication + the naive/con-med
+    #     eligibility criteria that deliver it (patient biosimilar only).
+    #   comparative_safety - doses to steady state, and the head-to-head
+    #     safety/immunogenicity period that outlives the primary PK readout.
+    #   multiplicity - co-primary alpha (unadjusted, with the reason) and the
+    #     per-endpoint power needed to hold OVERALL power at target.
+    ("patient_population", patient_population_directive),
+    ("comparative_safety", comparative_safety_directive),
+    ("multiplicity", multiplicity_directive),
     # NO ("icf", icf_directive) HERE, DELIBERATELY — must stay in lockstep with
     # services/ai_service.py's _ENGINE_DIRECTIVE_PLAN["ethics"], which drops it
     # for the same reason: the consent form's document control (version, date,

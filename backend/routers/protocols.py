@@ -73,7 +73,9 @@ from services.guideline_coverage import compute_coverage
 from services.guidelines import GUIDELINES, is_supported
 from services.icf import build_icf
 from services.literature_service import LiteratureService, plan_regulatory_sources
+from services.comparative_safety import build_duration_plan
 from services.meta_analysis import build_meta_analysis, derive_cv_from_mean_sd
+from services.patient_population import select_patient_population
 from services.protocol_qc import run_qc
 from services.randomization import blinded_view, generate_allocation
 from services.safety_gating import recommend_safety_gating
@@ -173,6 +175,11 @@ _OPTIONAL_CTX_KEYS = (
     # --- sampling-schedule hints -------------------------------------------
     "dosing",                  # 'single' | 'multiple'
     "dosing_interval_hours",   # tau, hours (multiple-dose only)
+    # --- comparative safety / immunogenicity duration -----------------------
+    # Months of head-to-head follow-up. Omitted => the engine's own default
+    # (12 months, the EU expectation, since the comparator is the EU reference
+    # medicinal product); see services/comparative_safety.py.
+    "comparative_safety_months",
     # --- bioanalytical hint -------------------------------------------------
     "dose_mg",
     # --- safety-reporting hints (sponsor regulatory-affairs overrides) ------
@@ -687,6 +694,14 @@ def _augment_config_with_design(
         # sample-size source for the regulatory record when R is installed
         # (falls back to the validated Python engine otherwise).
         use_r=True,
+        # Decide the co-primary endpoint SET and its multiplicity, which the
+        # sample size then follows: a multiple-dose biosimilar study compares
+        # first-dose AND steady-state AUC(0-tau) and must be powered so that
+        # BOTH pass (services/multiplicity.py), whereas a single-dose study
+        # keeps the conventional Cmax + AUC(0-inf) pair and the conventional
+        # per-endpoint powering basis.
+        dosing=str(cfg.get("dosing") or "single"),
+        subject_type=str(cfg.get("subject_type") or "healthy"),
     )
     ss = rec.to_dict()
     # Carry the median half-life alongside the recommendation so the QC
@@ -748,6 +763,11 @@ def _augment_config_with_design(
             design_key=design_key,
             t_half_hours=t_half,
             label_text=label_text,
+            # An efficacy/PD marker is co-primary in a single-dose study but
+            # SECONDARY (and never powered on) in a multiple-dose patient
+            # biosimilar study — see design_decisions._pd_decision.
+            dosing=dosing,
+            subject_type=str(cfg.get("subject_type") or "healthy"),
         )
     )
     cfg["_design_decisions"] = decisions
@@ -758,7 +778,32 @@ def _augment_config_with_design(
     pd_value = decision_values.get("pd_endpoint", "")
     pd_coprimary = bool(pd_value) and not pd_value.strip().lower().startswith("none")
 
-    # --- 4. PK blood-sampling schedule ------------------------------------
+    # --- 4a. Study duration: doses to steady state + comparative safety -----
+    # Computed BEFORE the sampling schedule (step 4b) on purpose: its
+    # resolved `safety_months` is what the sampling schedule's own ADA
+    # (immunogenicity) sampling must span for a multiple-dose biosimilar
+    # study, so the two engines cannot independently propose two different
+    # ADA schedules for the same comparative period. t_half_basis is not yet
+    # known at this point (the sampling schedule is what resolves it, honestly
+    # or via a flagged assumption), so it is passed through blank here and the
+    # duration plan's own text simply omits the parenthetical basis note.
+    cfg["_comparative_safety"] = _safe_engine(
+        "comparative_safety",
+        build_duration_plan,
+        study_type=study_type,
+        dosing=dosing,
+        subject_type=str(cfg.get("subject_type") or "healthy"),
+        t_half_hours=t_half,
+        t_half_basis="literature" if t_half else "",
+        tau_hours=cfg.get("dosing_interval_hours"),
+        # The comparator is the EU reference medicinal product for every
+        # biosimilar study in this application (services/guidelines.py), which
+        # puts the programme on the EU 12-month comparative-safety expectation.
+        eu_reference_product=True,
+        safety_months=cfg.get("comparative_safety_months"),
+    )
+
+    # --- 4b. PK blood-sampling schedule ------------------------------------
     cfg["_sampling_schedule"] = _safe_engine(
         "sampling_schedule",
         compute_sampling_schedule,
@@ -770,8 +815,31 @@ def _augment_config_with_design(
         is_biologic=is_biologic,
         label=label,
         tau_hours=cfg.get("dosing_interval_hours"),
+        # For a multiple-dose biosimilar study, the ADA sampling must span the
+        # SAME comparative-safety period computed just above — see
+        # compute_sampling_schedule's own docstring for why this parameter
+        # exists at all.
+        safety_months=(cfg.get("_comparative_safety") or {}).get("safety_months"),
+        subject_type=str(cfg.get("subject_type") or "healthy"),
     )
     sched = cfg.get("_sampling_schedule")
+
+    # --- 4c. Patient population / indication selection ---------------------
+    # Only produces anything for a PATIENT biosimilar study; a healthy-volunteer
+    # study returns applicable=False and contributes nothing to the prompt.
+    # Runs AFTER the meta-analysis (step 1) because rule 4 — "where monotherapy
+    # is unavailable, pick the indication with the lowest PK variability from
+    # prior trials" — is ranked on the real per-study CVs that engine extracted,
+    # not on a qualitative guess, whenever the literature actually supplies them.
+    cfg["_patient_population"] = _safe_engine(
+        "patient_population",
+        select_patient_population,
+        drug_inn=drug_inn,
+        study_type=study_type,
+        subject_type=str(cfg.get("subject_type") or "healthy"),
+        label=label,
+        meta_analysis=cfg.get("_meta_analysis") or {},
+    )
 
     # --- 5. Drug-drug interaction screening (concomitant-medication rules) --
     cfg["_ddi"] = _safe_engine(
@@ -859,6 +927,7 @@ def _augment_config_with_design(
             is_nti=is_nti,
             pd_coprimary=pd_coprimary,
             label=label,
+            dosing=dosing,
         )
 
     # --- 10. CRF specification + Data Management Plan ----------------------
@@ -954,6 +1023,15 @@ def _build_context(
     rec = population_config.get("_sample_size")
     if rec:
         ctx["sample_size"] = rec
+        # Co-primary alpha/power handling. Surfaced as its own context key so
+        # multiplicity_directive() can reach it without the SAP prompt having to
+        # dig into the sample-size dict — same pattern as _meta_analysis. Only
+        # set when there is genuinely more than one co-primary endpoint, so a
+        # single-endpoint design never carries a multiplicity discussion it
+        # does not need.
+        mult = rec.get("multiplicity") or {}
+        if mult.get("n_co_primary", 0) > 1:
+            ctx["multiplicity"] = mult
     # Locked stratification factors — the randomisation and population sections
     # narrate these; they never re-derive or re-rank them.
     strat = population_config.get("_stratification")
@@ -987,6 +1065,18 @@ def _build_context(
     sched = population_config.get("_sampling_schedule")
     if sched:
         ctx["sampling_schedule"] = sched
+    # Selected indication + the eligibility criteria that deliver it. Only set
+    # for a patient biosimilar study — the engine returns applicable=False
+    # otherwise, and an inapplicable result is dropped here so it can never
+    # reach a healthy-volunteer prompt as an empty population instruction.
+    patient_pop = population_config.get("_patient_population")
+    if patient_pop and patient_pop.get("applicable"):
+        ctx["patient_population"] = patient_pop
+    # Doses to steady state + head-to-head comparative safety duration. Same
+    # applicability gate: single-dose and non-biosimilar studies get nothing.
+    comp_safety = population_config.get("_comparative_safety")
+    if comp_safety and comp_safety.get("applicable"):
+        ctx["comparative_safety"] = comp_safety
     ddi = population_config.get("_ddi")
     if ddi:
         ctx["ddi"] = ddi
