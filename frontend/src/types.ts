@@ -95,8 +95,6 @@ export interface AdminOrgRow {
 export type StudyType = 'BE' | 'biosimilar_pk' | 'food_effect'
 export type SubjectType = 'healthy' | 'patient'
 export type SexType = 'male' | 'female' | 'both'
-export type RenalStatus = 'normal' | 'mild' | 'moderate' | 'severe'
-export type HepaticStatus = 'normal' | 'mild' | 'moderate' | 'severe'
 
 export interface PopulationConfig {
   subject_type: SubjectType
@@ -105,9 +103,25 @@ export interface PopulationConfig {
   sex: SexType
   weight_min: number
   weight_max: number
-  renal_status: RenalStatus
-  hepatic_status: HepaticStatus
   exclusion_presets: string[]
+  /**
+   * Extra PK blood-sampling timepoints to add to the auto-computed schedule,
+   * as free text (e.g. "36, 48, 72" or "36h, 48h"), in HOURS post-dose. The
+   * backend parses out any numbers it finds and ignores the rest rather than
+   * rejecting the whole field — see services/sampling_schedule.py's
+   * additional_timepoints_hours parameter. Left blank, only the auto-computed
+   * schedule is used.
+   */
+  additional_pk_timepoints_hours?: string
+  /**
+   * Extra immunogenicity (ADA) sampling timepoints to add to the auto-computed
+   * schedule, as free text, in MONTHS post-first-dose (matching the
+   * comparative-safety period's own units) — e.g. "9, 15". See
+   * services/comparative_safety.py's additional_months parameter. Only
+   * meaningful for a multiple-dose biosimilar patient study, where an
+   * immunogenicity schedule is computed at all.
+   */
+  additional_immunogenicity_timepoints_months?: string
   // Optional study-design parameters that drive the sample-size engine and the
   // generated protocol. Omitted keys fall back to literature / sensible defaults.
   /**
@@ -135,8 +149,6 @@ export const defaultPopulationConfig: PopulationConfig = {
   sex: 'both',
   weight_min: 50,
   weight_max: 100,
-  renal_status: 'normal',
-  hepatic_status: 'normal',
   // Only drug-AGNOSTIC criteria are pre-selected. Pathway-specific exclusions
   // (CYP/UGT/transporter perpetrators, grapefruit, tobacco-as-CYP1A2-inducer)
   // are supplied per drug by the backend DDI screening engine — a hardcoded

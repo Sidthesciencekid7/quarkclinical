@@ -730,3 +730,186 @@ def test_extract_reported_timepoints_reads_tables_prose_and_days():
     assert extract_reported_timepoints("Samples at 0.5 h, 1 h, 2 h and 24 hours.") == \
         [0.5, 1.0, 2.0, 24.0]
     assert extract_reported_timepoints("") == []
+
+
+# ---------------------------------------------------------------------------
+# additional_timepoints_hours - user-requested extra PK draws
+# ---------------------------------------------------------------------------
+#
+# New user-facing input: extra PK draws on top of the auto-computed schedule.
+# Merged into the SAME classification pass as every other timepoint (real
+# phase/purpose, not a bare "extra" label) and flagged user_added=True so the
+# schedule stays honest about provenance; out-of-horizon values are rejected
+# and disclosed rather than silently extending the horizon (which would
+# invalidate the AUC_%extrap prediction).
+
+
+def test_additional_pk_timepoint_within_horizon_is_added_and_classified():
+    s = compute_sampling_schedule(
+        6.0, 1.0, "crossover", "BE", additional_timepoints_hours=[7.5],
+    )
+    added = [tp for tp in s["timepoints"] if tp.get("user_added")]
+    assert len(added) == 1
+    assert added[0]["hours"] == pytest.approx(7.5, abs=0.05)
+    # Still gets a real phase/purpose from the normal classification pass,
+    # not a placeholder "extra" tag.
+    assert added[0]["phase"] in ("absorption", "peak", "elimination")
+    assert added[0]["purpose"]
+
+
+def test_additional_pk_timepoint_is_disclosed_in_assumptions():
+    s = compute_sampling_schedule(
+        6.0, 1.0, "crossover", "BE", additional_timepoints_hours=[7.5],
+    )
+    added_note = next(
+        a for a in s["assumptions"] if a["key"] == "additional_pk_timepoints_added"
+    )
+    assert 7.5 in added_note["value"]
+
+
+def test_additional_pk_timepoint_beyond_horizon_is_rejected_not_silently_extended():
+    """CONFIRMED requirement: a value outside [0, horizon] must not silently
+    change the sampling horizon (and therefore AUC_%extrap) - it is dropped
+    and disclosed instead."""
+    s = compute_sampling_schedule(
+        6.0, 1.0, "crossover", "BE", additional_timepoints_hours=[10_000.0],
+    )
+    assert not any(tp.get("user_added") for tp in s["timepoints"])
+    rejected_note = next(
+        a for a in s["assumptions"] if a["key"] == "additional_pk_timepoints_rejected"
+    )
+    assert 10_000.0 in rejected_note["value"]
+
+
+def test_additional_pk_timepoints_default_to_no_change():
+    """Non-regression: omitting the parameter must not alter the schedule at
+    all (every existing test in this file relies on this)."""
+    with_none = compute_sampling_schedule(6.0, 1.0, "crossover", "BE")
+    with_empty = compute_sampling_schedule(
+        6.0, 1.0, "crossover", "BE", additional_timepoints_hours=[],
+    )
+    assert with_none["timepoints"] == with_empty["timepoints"]
+    assert not any(tp.get("user_added") for tp in with_none["timepoints"])
+
+
+def test_additional_pk_timepoints_reach_both_profiles_of_a_dual_profile_study():
+    """For a multiple-dose PATIENT biosimilar study, an additional PK
+    timepoint must appear in BOTH the first-dose and steady-state profiles -
+    the within-interval template both profiles share. Uses 108h, confirmed
+    NOT already present in this fixture's auto-computed schedule (36h/48h/64h/
+    80h/96h/120h/... are), so this exercises a genuinely new addition rather
+    than the already-covered case covered separately below."""
+    s = compute_sampling_schedule(
+        336.0, 96.0, "parallel", "biosimilar_pk", dosing="multiple",
+        subject_type="patient", tau_hours=336.0,
+        additional_timepoints_hours=[108.0],
+    )
+    assert s["dual_profile_biosimilar"] is True
+    first_dose_added = [tp for tp in s["timepoints_first_dose"] if tp.get("user_added")]
+    steady_state_added = [tp for tp in s["timepoints_steady_state"] if tp.get("user_added")]
+    assert len(first_dose_added) == 1
+    assert len(steady_state_added) == 1
+    assert first_dose_added[0]["hours"] == pytest.approx(108.0, abs=0.05)
+    # Steady-state copy is offset by the same amount as every other timepoint
+    # in that profile, not left at the first-dose absolute hour.
+    offset = s["steady_state_dose_number"] and (s["steady_state_dose_number"] - 1) * 336.0
+    assert steady_state_added[0]["hours"] == pytest.approx(108.0 + offset, abs=0.05)
+
+
+def test_additional_pk_timepoints_ignored_for_healthy_volunteer_dual_profile_gate():
+    """Non-regression: a healthy-volunteer multiple-dose biosimilar study has
+    no dual-profile schedule at all (services/sampling_schedule.py's own
+    subject_type gate) - additional timepoints still apply to whatever
+    single schedule IS computed, without crashing on the absent second
+    profile."""
+    s = compute_sampling_schedule(
+        336.0, 96.0, "parallel", "biosimilar_pk", dosing="multiple",
+        subject_type="healthy", tau_hours=336.0,
+        additional_timepoints_hours=[108.0],
+    )
+    assert s["dual_profile_biosimilar"] is False
+    assert s["timepoints_first_dose"] == []
+    assert s["timepoints_steady_state"] == []
+    assert any(tp.get("user_added") for tp in s["timepoints"])
+
+
+# ---------------------------------------------------------------------------
+# Provenance honesty - a requested timepoint that collides with an
+# already-scheduled one must NOT be reported as "added"
+# ---------------------------------------------------------------------------
+#
+# CONFIRMED BUG from adversarial review: a user-requested time that happens
+# to snap onto a slot the engine was going to schedule anyway (the horizon
+# endpoint t_last, force-appended to every schedule regardless of user input,
+# or a coincidental collision with an auto peak-fraction point) was flagged
+# user_added=True and reported in "additional_pk_timepoints_added" even
+# though nothing was actually added on top of the auto-computed schedule -
+# contradicting the module's own "stay honest about provenance" design goal.
+
+
+def test_additional_pk_timepoint_colliding_with_the_horizon_endpoint_is_not_falsely_added():
+    baseline = compute_sampling_schedule(6.0, 1.0, "crossover", "BE")
+    t_last = baseline["timepoints"][-1]["hours"]
+    s = compute_sampling_schedule(
+        6.0, 1.0, "crossover", "BE", additional_timepoints_hours=[t_last],
+    )
+    assert s["n_timepoints"] == baseline["n_timepoints"]
+    assert not any(tp.get("user_added") for tp in s["timepoints"])
+    assert any(a["key"] == "additional_pk_timepoints_already_covered" for a in s["assumptions"])
+    assert not any(a["key"] == "additional_pk_timepoints_added" for a in s["assumptions"])
+
+
+def test_additional_pk_timepoint_colliding_with_an_auto_peak_point_is_not_falsely_added():
+    """0.5h collides with the auto-computed 0.5 x Tmax peak-bracketing point
+    for this fixture (Tmax=1.0h)."""
+    baseline = compute_sampling_schedule(6.0, 1.0, "crossover", "BE")
+    s = compute_sampling_schedule(
+        6.0, 1.0, "crossover", "BE", additional_timepoints_hours=[0.5],
+    )
+    assert s["n_timepoints"] == baseline["n_timepoints"]
+    assert s["blood_volume"]["total_ml"] == baseline["blood_volume"]["total_ml"]
+    assert not any(tp.get("user_added") for tp in s["timepoints"])
+    assert any(a["key"] == "additional_pk_timepoints_already_covered" for a in s["assumptions"])
+
+
+def test_additional_pk_timepoint_genuinely_new_is_still_flagged_added():
+    """Non-regression: the honesty fix must not turn EVERY addition into
+    'already covered' - a genuinely new time must still be flagged and
+    disclosed as added."""
+    s = compute_sampling_schedule(
+        6.0, 1.0, "crossover", "BE", additional_timepoints_hours=[7.5],
+    )
+    assert any(tp.get("user_added") for tp in s["timepoints"])
+    assert any(a["key"] == "additional_pk_timepoints_added" for a in s["assumptions"])
+    assert not any(a["key"] == "additional_pk_timepoints_already_covered" for a in s["assumptions"])
+
+
+# ---------------------------------------------------------------------------
+# routers/protocols.py's _parse_number_list - regex edge cases
+# ---------------------------------------------------------------------------
+#
+# CONFIRMED BUGS from adversarial review: a no-space range like "24-48" (a
+# realistic way to type "add draws at 24 and 48") parsed the hyphen as a
+# minus sign, producing [24.0, -48.0] instead of [24.0, 48.0]; and scientific
+# notation ("1e5") silently split into the two unrelated numbers [1.0, 5.0]
+# instead of being read as one number (100000.0).
+
+
+def test_parse_number_list_does_not_misread_a_no_space_range_as_a_negative_number():
+    from routers.protocols import _parse_number_list
+    assert _parse_number_list("24-48") == [24.0, 48.0]
+    assert _parse_number_list("10-20-30") == [10.0, 20.0, 30.0]
+
+
+def test_parse_number_list_still_captures_genuine_negative_numbers():
+    """Non-regression: a '-' NOT directly abutting a preceding digit (start
+    of string, or after whitespace/a separator) is still a genuine sign."""
+    from routers.protocols import _parse_number_list
+    assert _parse_number_list("-5, 10") == [-5.0, 10.0]
+    assert _parse_number_list("9.5, -1, 3") == [9.5, -1.0, 3.0]
+
+
+def test_parse_number_list_reads_scientific_notation_as_one_number():
+    from routers.protocols import _parse_number_list
+    assert _parse_number_list("1e5") == [100000.0]
+    assert _parse_number_list("36, 1.5e2, 48") == [36.0, 150.0, 48.0]

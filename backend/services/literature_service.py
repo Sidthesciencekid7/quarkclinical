@@ -78,8 +78,13 @@ logger = logging.getLogger(__name__)
 
 PUBMED_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 DAILYMED_BASE = "https://dailymed.nlm.nih.gov/dailymed/services/v2"
+CTGOV_BASE = "https://clinicaltrials.gov/api/v2"
 CACHE_TTL_DAYS = 7
 PUBMED_MAX_RESULTS = 20
+# Public, no API key. Searched by intervention name ONLY (no condition
+# filter) so the 7-day cache is valid regardless of which indication a later
+# caller asks about for the SAME drug — see fetch_clinicaltrials's docstring.
+CTGOV_MAX_RESULTS = 20
 
 # The regulatory-targeted query is a supplement, not a replacement: it adds a
 # small, high-signal tail to the primary PK result set. The combined cap bounds
@@ -135,6 +140,20 @@ class DailyMedRecord(TypedDict):
     setid: str
     title: str
     sections: dict[str, str]  # section_name → plain text
+
+
+class ClinicalTrialRecord(TypedDict):
+    nct_id: str
+    title: str
+    status: str                    # e.g. "COMPLETED", "RECRUITING", "TERMINATED"
+    phase: str                     # e.g. "PHASE3"; "" if not reported (observational)
+    conditions: list[str]
+    interventions: list[str]
+    sex: str                       # "ALL" | "MALE" | "FEMALE" | ""
+    minimum_age: str                # e.g. "18 Years"
+    maximum_age: str
+    healthy_volunteers: bool | None
+    eligibility_criteria: str      # raw free text, "Inclusion Criteria:\n...Exclusion Criteria:\n..."
 
 
 # ---------------------------------------------------------------------------
@@ -822,6 +841,39 @@ class LiteratureService:
         await self._save_dailymed_cache(drug.id, best)
         return best
 
+    async def fetch_clinicaltrials(self, drug_inn: str) -> list[ClinicalTrialRecord]:
+        """Return prior/registered trials for *drug_inn* from ClinicalTrials.gov,
+        using cache. Grounds inclusion/exclusion criteria in real precedent
+        (services/trial_precedent.py) rather than generic boilerplate — a
+        clinical pharmacologist's explicit requirement.
+
+        Searched by INTERVENTION NAME ONLY, with no condition/indication
+        filter, deliberately: the 7-day cache is keyed by (drug_id, source)
+        with no indication column (matching fetch_pubmed's cache shape), so a
+        query result must be valid for ANY caller asking about this drug,
+        regardless of which indication they need precedent for. Filtering the
+        cached list down to trials relevant to a SPECIFIC indication is
+        services/trial_precedent.py's job, done fresh on every call against
+        this cached-but-unfiltered raw list — the same "cache the retrieval,
+        filter downstream" split services/meta_analysis.py already uses for
+        population-specific filtering of cached PubMed results.
+
+        A US biosimilar-suffixed INN (e.g. "adalimumab-atto") is searched
+        under its BASE INN ("adalimumab") — real prior trials are registered
+        under the originator's generic or brand name, never under a
+        biosimilar suffix that did not exist when they were run.
+        """
+        drug = await self._resolve_drug(drug_inn)
+
+        cached = await self._get_cache(drug.id, LiteratureSource.ct_gov)
+        if cached:
+            return [_ctgov_row_to_record(r) for r in cached]
+
+        studies = await self._ctgov_search(_base_inn(drug_inn))
+        records = [rec for s in studies if (rec := _parse_ctgov_study(s)) is not None]
+        await self._save_ctgov_cache(drug.id, records)
+        return records
+
     # ------------------------------------------------------------------
     # Cache helpers
     # ------------------------------------------------------------------
@@ -884,6 +936,27 @@ class LiteratureService:
                 ttl_expires_at=ttl,
             )
         )
+        await self._session.commit()
+
+    async def _save_ctgov_cache(
+        self, drug_id: uuid.UUID, records: list[ClinicalTrialRecord]
+    ) -> None:
+        ttl = datetime.now(timezone.utc) + timedelta(days=CACHE_TTL_DAYS)
+        for rec in records:
+            self._session.add(
+                LiteratureCache(
+                    id=uuid.uuid4(),
+                    pmid=rec["nct_id"],        # NCT id stored in pmid column
+                    drug_id=drug_id,
+                    title=rec["title"],
+                    # Every OTHER field JSON-serialised into abstract, same
+                    # convention as _save_dailymed_cache's sections blob.
+                    abstract=json.dumps({k: v for k, v in rec.items() if k not in ("nct_id", "title")}),
+                    source=LiteratureSource.ct_gov,
+                    fetched_at=datetime.now(timezone.utc),
+                    ttl_expires_at=ttl,
+                )
+            )
         await self._session.commit()
 
     # ------------------------------------------------------------------
@@ -992,10 +1065,114 @@ class LiteratureService:
             resp.raise_for_status()
         return resp.text
 
+    # ------------------------------------------------------------------
+    # ClinicalTrials.gov
+    # ------------------------------------------------------------------
+
+    async def _ctgov_search(self, drug_inn: str) -> list[dict]:
+        """Search ClinicalTrials.gov v2 (public, no API key) by intervention
+        name and return the raw "studies" list. Only the fields this module
+        actually reads are requested (via ``fields=``), keeping the payload
+        small regardless of how verbose a study's other modules are."""
+        fields = ",".join([
+            "protocolSection.identificationModule.nctId",
+            "protocolSection.identificationModule.briefTitle",
+            "protocolSection.statusModule.overallStatus",
+            "protocolSection.conditionsModule.conditions",
+            "protocolSection.armsInterventionsModule.interventions",
+            "protocolSection.designModule.phases",
+            "protocolSection.eligibilityModule.eligibilityCriteria",
+            "protocolSection.eligibilityModule.sex",
+            "protocolSection.eligibilityModule.minimumAge",
+            "protocolSection.eligibilityModule.maximumAge",
+            "protocolSection.eligibilityModule.healthyVolunteers",
+        ])
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"{CTGOV_BASE}/studies",
+                params={
+                    "query.intr": drug_inn,
+                    "pageSize": CTGOV_MAX_RESULTS,
+                    "fields": fields,
+                },
+            )
+            resp.raise_for_status()
+
+        data = resp.json()
+        return data.get("studies", [])
+
 
 # ---------------------------------------------------------------------------
 # Pure parsing helpers (no I/O — easy to unit-test)
 # ---------------------------------------------------------------------------
+
+
+_BIOSIMILAR_SUFFIX_RE = re.compile(r"-[a-z]{4}$")
+
+
+def _base_inn(drug_inn: str) -> str:
+    """Strip a US biosimilar four-letter suffix (e.g. "-atto", "-adbm") from
+    an INN, so a search targets the originator's registered trials rather
+    than a suffix that postdates every one of them. Non-suffixed INNs (small
+    molecules, or a biosimilar referred to by its base INN already) pass
+    through unchanged."""
+    return _BIOSIMILAR_SUFFIX_RE.sub("", (drug_inn or "").strip().lower())
+
+
+def _parse_ctgov_study(study: dict) -> ClinicalTrialRecord | None:
+    """Parse one ClinicalTrials.gov v2 "study" object into a ClinicalTrialRecord.
+    Returns None for a study with no NCT id (malformed/unusable) — every other
+    field degrades to an honest empty/None value rather than raising, since a
+    real study can genuinely omit any of them (e.g. an observational study has
+    no phase; healthyVolunteers is frequently absent)."""
+    protocol = study.get("protocolSection") or {}
+    ident = protocol.get("identificationModule") or {}
+    nct_id = ident.get("nctId") or ""
+    if not nct_id:
+        return None
+
+    status = (protocol.get("statusModule") or {}).get("overallStatus") or ""
+    conditions = (protocol.get("conditionsModule") or {}).get("conditions") or []
+    interventions = [
+        i.get("name", "")
+        for i in (protocol.get("armsInterventionsModule") or {}).get("interventions") or []
+        if i.get("name")
+    ]
+    phases = (protocol.get("designModule") or {}).get("phases") or []
+    elig = protocol.get("eligibilityModule") or {}
+
+    return ClinicalTrialRecord(
+        nct_id=nct_id,
+        title=ident.get("briefTitle") or "",
+        status=status,
+        phase=phases[0] if phases else "",
+        conditions=list(conditions),
+        interventions=interventions,
+        sex=elig.get("sex") or "",
+        minimum_age=elig.get("minimumAge") or "",
+        maximum_age=elig.get("maximumAge") or "",
+        healthy_volunteers=elig.get("healthyVolunteers"),
+        eligibility_criteria=elig.get("eligibilityCriteria") or "",
+    )
+
+
+def _ctgov_row_to_record(row: "LiteratureCache") -> ClinicalTrialRecord:
+    """Reconstruct a ClinicalTrialRecord from a cached LiteratureCache row
+    (see LiteratureService._save_ctgov_cache for the storage convention)."""
+    extra = json.loads(row.abstract) if row.abstract else {}
+    return ClinicalTrialRecord(
+        nct_id=row.pmid,
+        title=row.title or "",
+        status=extra.get("status", ""),
+        phase=extra.get("phase", ""),
+        conditions=extra.get("conditions", []),
+        interventions=extra.get("interventions", []),
+        sex=extra.get("sex", ""),
+        minimum_age=extra.get("minimum_age", ""),
+        maximum_age=extra.get("maximum_age", ""),
+        healthy_volunteers=extra.get("healthy_volunteers"),
+        eligibility_criteria=extra.get("eligibility_criteria", ""),
+    )
 
 
 def _parse_pubmed_xml(xml_text: str) -> list[PubMedRecord]:

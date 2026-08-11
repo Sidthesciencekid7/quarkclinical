@@ -233,6 +233,18 @@ class ProtocolCreate(BaseModel):
     # Deterministic-engine hints (each engine degrades gracefully without them):
     #   dosing ('single'|'multiple'), dosing_interval_hours (tau, hours)
     #       -> services/sampling_schedule.py
+    #   additional_pk_timepoints_hours (free text, e.g. "36, 48, 72") — extra PK
+    #       draws in hours post-dose, added to the auto-computed schedule (not a
+    #       replacement). Numbers are extracted permissively; anything outside
+    #       the computed sampling horizon is disclosed as rejected, not silently
+    #       dropped. -> services/sampling_schedule.py's additional_timepoints_hours
+    #   additional_immunogenicity_timepoints_months (free text, e.g. "9, 15") —
+    #       extra ADA draws in months post-first-dose. Only meaningful for a
+    #       multiple-dose biosimilar patient study (the only design with a
+    #       comparative-period-linked ADA schedule at all).
+    #       -> services/comparative_safety.py's additional_immunogenicity_months,
+    #          threaded into services/sampling_schedule.py too so the two ADA
+    #          schedules this app computes never disagree.
     #   is_ind, is_applicable_clinical_trial, is_new_chemical_entity, radiolabeled
     #       -> services/safety_reporting.py (sponsor regulatory-affairs overrides)
     #   randomization_seed (int) -> services/randomization.py; recorded so the
@@ -248,8 +260,9 @@ class ProtocolCreate(BaseModel):
     # client (any client-supplied one is overwritten at creation): _sample_size,
     # _stratification, _design_decisions, _sampling_schedule, _ddi,
     # _safety_gating, _bioanalytical, _safety_reporting, _randomization,
-    # _crf_dmp, _icf, _label. They are stripped from the prompt's
-    # population_config and surfaced as their own locked-fact context keys.
+    # _crf_dmp, _icf, _label, _comparative_safety, _patient_population,
+    # _trial_precedent. They are stripped from the prompt's population_config
+    # and surfaced as their own locked-fact context keys.
     drug_id: uuid.UUID
     study_type: StudyType
     population_config: dict[str, Any] = {}

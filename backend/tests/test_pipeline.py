@@ -1170,3 +1170,307 @@ async def test_drug_search_reports_modality(api_client, seeded):
     assert resp.status_code == 200
     body = resp.json()
     assert body and body[0]["modality"] == "small_molecule"
+
+
+# ---------------------------------------------------------------------------
+# Requirement 10 - inclusion/exclusion criteria grounded in real prior trials
+# ---------------------------------------------------------------------------
+#
+# services/trial_precedent.py needs the indication services/patient_
+# population.py selects, so it is called from routers/protocols.py's
+# _augment_config_with_design() one step after that engine — these tests
+# exercise that real wiring directly (no HTTP/DB needed: the function is pure
+# Python over already-fetched inputs), proving the cross-engine consistency
+# a full end-to-end HTTP test could only assert indirectly.
+
+
+async def test_trial_precedent_fetch_is_gated_before_any_http_call(seeded):
+    """CONFIRMED requirement: fetching ClinicalTrials.gov data must NOT fire
+    for the vast majority of generations (BE studies, healthy-volunteer
+    biosimilar_pk studies) — only for a patient biosimilar_pk study, where
+    services/patient_population.py's own applicability gate also fires. A
+    stub LiteratureService whose fetch_clinicaltrials() raises if called
+    proves the gate short-circuits BEFORE any HTTP attempt, for both
+    dimensions of the gate independently."""
+    from routers.protocols import _fetch_trial_precedent_safe
+
+    class _ExplodingLitSvc:
+        async def fetch_clinicaltrials(self, drug_inn):
+            raise AssertionError("fetch_clinicaltrials must not be called here")
+
+    lit_svc = _ExplodingLitSvc()
+
+    # BE study, even with subject_type="patient" (nonsensical combination,
+    # but the study_type half of the gate must still hold on its own).
+    assert await _fetch_trial_precedent_safe(
+        lit_svc, "adalimumab", study_type="BE", subject_type="patient"
+    ) == []
+    # Healthy-volunteer biosimilar_pk study — the subject_type half of the
+    # gate must hold on its own too.
+    assert await _fetch_trial_precedent_safe(
+        lit_svc, "adalimumab", study_type="biosimilar_pk", subject_type="healthy"
+    ) == []
+
+
+async def test_trial_precedent_fetch_fires_only_for_patient_biosimilar(seeded, httpx_mock):
+    """The one combination that DOES need real ClinicalTrials.gov data."""
+    from routers.protocols import _fetch_trial_precedent_safe
+
+    httpx_mock.add_response(
+        method="GET",
+        url=re.compile(r"^https://clinicaltrials\.gov/api/v2/studies(\?.*)?$"),
+        json={"studies": []},
+    )
+    from services.literature_service import LiteratureService
+    lit_svc = LiteratureService(seeded.db)
+
+    result = await _fetch_trial_precedent_safe(
+        lit_svc, seeded.drug.inn, study_type="biosimilar_pk", subject_type="patient"
+    )
+    assert result == []  # empty mock response, but the call genuinely happened
+    assert len(httpx_mock.get_requests()) == 1
+
+
+def test_augment_config_wires_trial_precedent_to_the_selected_indication():
+    """End-to-end (pure Python, no I/O): the trial_precedent engine must
+    filter against whichever indication _patient_population ACTUALLY
+    selected for this drug, not an assumed one — proving the two engines
+    agree without hardcoding what patient_population.py would pick."""
+    from routers.protocols import _augment_config_with_design
+
+    trials = [
+        {"nct_id": "NCT_PSO", "title": "Psoriasis study", "status": "COMPLETED", "phase": "PHASE3",
+         "conditions": ["Plaque Psoriasis"], "interventions": ["Adalimumab"],
+         "sex": "ALL", "minimum_age": "18 Years", "maximum_age": "", "healthy_volunteers": False,
+         "eligibility_criteria": (
+             "Inclusion Criteria:\n\n1. Moderate to severe plaque psoriasis\n\n"
+             "Exclusion Criteria:\n\n1. Guttate or pustular psoriasis"
+         )},
+    ]
+
+    cfg = _augment_config_with_design(
+        population_config={"subject_type": "patient", "dosing": "multiple"},
+        study_type="biosimilar_pk",
+        drug_inn="adalimumab",
+        extracted=[],
+        pk_params=[],
+        label=None,
+        trial_records=trials,
+    )
+
+    pp = cfg["_patient_population"]
+    tp = cfg["_trial_precedent"]
+    assert tp["applicable"] is True
+    # Whatever indication patient_population actually recommended (curated
+    # for adalimumab without a real label, this is plaque psoriasis — see
+    # services/patient_population.py's _INDICATION_KB), trial_precedent must
+    # have filtered against exactly that indication, not a different one.
+    assert tp["indication"] == pp["recommended"]["indication"]
+    assert tp["precedent_found"] is True
+    assert tp["precedent_trials"][0]["nct_id"] == "NCT_PSO"
+
+
+def test_augment_config_finds_no_precedent_for_an_irrelevant_trial():
+    """Non-regression: real trial DATA being present is not enough — it must
+    also match the SELECTED indication, or precedent_found stays False."""
+    from routers.protocols import _augment_config_with_design
+
+    trials = [
+        {"nct_id": "NCT_RA", "title": "RA study", "status": "COMPLETED", "phase": "PHASE3",
+         "conditions": ["Rheumatoid Arthritis"], "interventions": ["Adalimumab"],
+         "sex": "ALL", "minimum_age": "18 Years", "maximum_age": "", "healthy_volunteers": False,
+         "eligibility_criteria": "Inclusion Criteria:\n\n1. RA\n\nExclusion Criteria:\n\n1. Infection"},
+    ]
+
+    cfg = _augment_config_with_design(
+        population_config={"subject_type": "patient", "dosing": "multiple"},
+        study_type="biosimilar_pk",
+        drug_inn="adalimumab",
+        extracted=[],
+        pk_params=[],
+        label=None,
+        trial_records=trials,
+    )
+
+    pp = cfg["_patient_population"]
+    tp = cfg["_trial_precedent"]
+    assert pp["recommended"]["indication"] != "Rheumatoid Arthritis"
+    assert tp["applicable"] is True
+    assert tp["precedent_found"] is False
+
+
+def test_augment_config_trial_precedent_absent_for_a_be_study():
+    """Non-regression: a conventional small-molecule study gets nothing from
+    either engine, and _augment_config_with_design must not crash when
+    trial_records is omitted entirely (the router only passes it for
+    biosimilar_pk/patient generations)."""
+    from routers.protocols import _augment_config_with_design
+
+    cfg = _augment_config_with_design(
+        population_config={},
+        study_type="BE",
+        drug_inn="ibuprofen",
+        extracted=[],
+        pk_params=[],
+        label=None,
+    )
+    assert cfg["_trial_precedent"]["applicable"] is False
+    assert cfg["_patient_population"]["applicable"] is False
+
+
+# ---------------------------------------------------------------------------
+# Additional PK/immunogenicity timepoint inputs — routers/protocols.py wiring
+# ---------------------------------------------------------------------------
+
+
+def test_parse_number_list_extracts_numbers_permissively():
+    from routers.protocols import _parse_number_list
+
+    assert _parse_number_list("36, 48, 72") == [36.0, 48.0, 72.0]
+    assert _parse_number_list("36h, 48 hrs, 72 hours") == [36.0, 48.0, 72.0]
+    assert _parse_number_list("garbage") == []
+    assert _parse_number_list("") == []
+    assert _parse_number_list(None) == []
+    assert _parse_number_list(-1.5) == []  # non-string input is not a crash
+    assert _parse_number_list("9.5, -1, 3") == [9.5, -1.0, 3.0]
+
+
+def test_augment_config_merges_additional_pk_and_immunogenicity_timepoints():
+    """End-to-end: both free-text fields flow from population_config through
+    _parse_number_list() into the two engines, land in BOTH PK profiles of a
+    dual-profile study, and out-of-range values are disclosed as rejected
+    rather than silently dropped or silently extending the horizon/period."""
+    from routers.protocols import _augment_config_with_design
+
+    cfg = _augment_config_with_design(
+        population_config={
+            "subject_type": "patient",
+            "dosing": "multiple",
+            "dosing_interval_hours": 336.0,
+            # 108h is confirmed NOT already present in this fixture's
+            # auto-computed schedule (unlike 48h, which coincides with an
+            # auto absorption-fraction point and would be correctly reported
+            # as "already covered" rather than "added" — see
+            # test_sampling_schedule.py's provenance-honesty tests).
+            "additional_pk_timepoints_hours": "108h, 500000",
+            "additional_immunogenicity_timepoints_months": "9, 50",
+        },
+        study_type="biosimilar_pk",
+        drug_inn="adalimumab",
+        extracted=[],
+        pk_params=[],
+        label=None,
+        trial_records=[],
+    )
+    sched = cfg["_sampling_schedule"]
+    comp = cfg["_comparative_safety"]
+
+    assert any(tp.get("user_added") and tp["hours"] == pytest.approx(108.0, abs=0.05)
+               for tp in sched["timepoints_first_dose"])
+    assert any(tp.get("user_added") for tp in sched["timepoints_steady_state"])
+    assert any(a["key"] == "additional_pk_timepoints_rejected" for a in sched["assumptions"])
+
+    assert 9.0 in comp["immunogenicity_timepoints_months"]
+    assert 50.0 not in comp["immunogenicity_timepoints_months"]
+
+
+def test_augment_config_additional_timepoint_fields_are_optional():
+    """Non-regression: omitting both fields entirely must not change
+    behaviour or crash — every existing biosimilar_pk test in this suite
+    relies on this."""
+    from routers.protocols import _augment_config_with_design
+
+    with_fields = _augment_config_with_design(
+        population_config={
+            "subject_type": "patient", "dosing": "multiple", "dosing_interval_hours": 336.0,
+        },
+        study_type="biosimilar_pk", drug_inn="adalimumab",
+        extracted=[], pk_params=[], label=None, trial_records=[],
+    )
+    without_fields = _augment_config_with_design(
+        population_config={
+            "subject_type": "patient", "dosing": "multiple", "dosing_interval_hours": 336.0,
+            "additional_pk_timepoints_hours": "",
+            "additional_immunogenicity_timepoints_months": "",
+        },
+        study_type="biosimilar_pk", drug_inn="adalimumab",
+        extracted=[], pk_params=[], label=None, trial_records=[],
+    )
+    assert with_fields["_sampling_schedule"]["timepoints"] == without_fields["_sampling_schedule"]["timepoints"]
+    assert (with_fields["_comparative_safety"]["immunogenicity_timepoints_months"]
+            == without_fields["_comparative_safety"]["immunogenicity_timepoints_months"])
+
+
+# ---------------------------------------------------------------------------
+# Blinding wiring fix — biosimilar patient studies get blinded dosing
+# ---------------------------------------------------------------------------
+#
+# CONFIRMED BUG: generate_allocation() was never given is_biologic/study_type/
+# route, so assess_blinding() (services/randomization.py) always fell through
+# to its open-label default regardless of study type — even though its own
+# documented decision logic already says a biologic/biosimilar_pk comparison
+# should get blinded dosing. User-scoped fix: biosimilar patient studies only
+# (conventional small-molecule BE keeps the standard, regulator-accepted
+# open-label-dosing-with-blinded-bioanalysis convention).
+
+
+def test_biosimilar_patient_study_gets_blinded_dosing_not_open_label():
+    from routers.protocols import _augment_config_with_design
+
+    # pd_endpoint forced to "None" so pd_coprimary=False — isolates the
+    # is_biologic/study_type wiring from the SEPARATE (already-correct)
+    # pd_coprimary path, which alone is already sufficient to force
+    # double-blind and would mask a regression in this specific fix.
+    cfg = _augment_config_with_design(
+        population_config={
+            "subject_type": "patient", "dosing": "multiple", "dosing_interval_hours": 336.0,
+        },
+        study_type="biosimilar_pk",
+        drug_inn="adalimumab",
+        extracted=[], pk_params=[], label=None, trial_records=[],
+        design_decisions=[{"key": "pd_endpoint", "value": "None", "label": "PD co-primary"}],
+    )
+    masking = cfg["_randomization"]["blinding"]["treatment_masking"]
+    assert masking["inputs_considered"]["biologic"] is True
+    assert masking["inputs_considered"]["pd_coprimary"] is False
+    assert masking["recommended"] != "open_label_dosing_with_blinded_bioanalysis"
+    assert masking["dosing_masked"] is True
+
+
+def test_conventional_be_study_keeps_the_open_label_convention():
+    """Non-regression: the user's explicit scope decision — this fix must
+    NOT change blinding for conventional small-molecule BE studies, which
+    have no established regulatory rationale for masking a purely
+    bioanalytically-measured PK endpoint."""
+    from routers.protocols import _augment_config_with_design
+
+    cfg = _augment_config_with_design(
+        population_config={"subject_type": "healthy"},
+        study_type="BE",
+        drug_inn="ibuprofen",
+        extracted=[], pk_params=[], label=None,
+    )
+    masking = cfg["_randomization"]["blinding"]["treatment_masking"]
+    assert masking["recommended"] == "open_label_dosing_with_blinded_bioanalysis"
+    assert masking["inputs_considered"]["biologic"] is False
+
+
+def test_allocation_concealment_is_asserted_regardless_of_masking_posture():
+    """Non-regression: allocation concealment (a SEPARATE, always-mandatory
+    guarantee from treatment masking) must not be affected by this fix
+    either way."""
+    from routers.protocols import _augment_config_with_design
+
+    for study_type, drug_inn, pop_extra in (
+        ("biosimilar_pk", "adalimumab", {"subject_type": "patient", "dosing": "multiple",
+                                          "dosing_interval_hours": 336.0}),
+        ("BE", "ibuprofen", {"subject_type": "healthy"}),
+    ):
+        cfg = _augment_config_with_design(
+            population_config=pop_extra,
+            study_type=study_type,
+            drug_inn=drug_inn,
+            extracted=[], pk_params=[], label=None,
+            trial_records=[] if study_type == "biosimilar_pk" else None,
+        )
+        assert cfg["_randomization"]["blinding"]["allocation_concealment"]["required"] is True

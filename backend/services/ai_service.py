@@ -32,6 +32,7 @@ from services.comparative_safety import comparative_safety_directive
 from services.meta_analysis import meta_analysis_directive
 from services.multiplicity import multiplicity_directive
 from services.patient_population import patient_population_directive
+from services.trial_precedent import trial_precedent_directive
 from services.randomization import randomization_directive
 from services.safety_gating import safety_gating_directive
 from services.safety_reporting import safety_reporting_directive
@@ -427,7 +428,7 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
         ),
         "context_keys": [
             "population_config", "sample_size", "ddi", "safety_gating", "stratification",
-            "randomization", "patient_population",
+            "randomization", "patient_population", "trial_precedent",
         ],
         "instructions": (
             "Write FOUR subsections using <h2> headings, in this exact order: "
@@ -435,7 +436,20 @@ _SECTION_CONFIGS: dict[str, dict[str, Any]] = {
             "process, then TWO <h3> sub-subsections 'Inclusion Criteria' and 'Exclusion Criteria'. "
             "Each MUST be its OWN separate <ol>...</ol> ordered list that starts numbering again "
             "at 1 — do NOT continue the inclusion numbering into exclusion, do NOT put both lists "
-            "in one <ol>, and do NOT add 'value'/'start' attributes. Inclusion MUST cover: age "
+            "in one <ol>, and do NOT add 'value'/'start' attributes. "
+            "WHEN a `trial_precedent` object is present in context or a LOCKED INCLUSION/EXCLUSION "
+            "CRITERIA PRECEDENT block is supplied AND real prior-trial precedent was found (not the "
+            "'NOT FOUND' variant of that block), the Inclusion Criteria and Exclusion Criteria lists "
+            "MUST be primarily grounded in that real precedent — draw specific criteria from the "
+            "cited trials, adapted to this study's own design (dosing, endpoints, comparator), and "
+            "cite the NCT number for a criterion drawn from a specific trial. The generic template "
+            "below (age/BMI bounds, contraception, standard exclusions) is what to fall back to for "
+            "any criterion the precedent trials do not address (e.g. this study's own washout/"
+            "concomitant-medication and safety-screening requirements), not a replacement for the "
+            "precedent-grounded criteria. When the LOCKED block instead states no real precedent was "
+            "found (or no `trial_precedent` object is present at all), use the generic template below "
+            "exactly as given, and if the 'NOT FOUND' block is present, state its disclosure sentence "
+            "plainly rather than silently falling back with no explanation. Inclusion MUST cover: age "
             "18-55 years inclusive (adjust per "
             "population_config), BMI 18.50-29.99 kg/m^2, healthy male/female. Female subjects of "
             "childbearing potential must be non-pregnant, non-lactating, and using one of these "
@@ -1756,6 +1770,10 @@ _ENGINE_DIRECTIVE_PLAN: dict[str, tuple[tuple[str, Any], ...]] = {
         # enrolled, so the indication choice and the criteria that deliver it
         # must not be split across sections.
         ("patient_population", patient_population_directive),
+        # Real prior-trial precedent for the Inclusion/Exclusion Criteria lists
+        # — placed right after patient_population since it grounds criteria
+        # for the SAME selected indication.
+        ("trial_precedent", trial_precedent_directive),
         ("ddi", ddi_directive),
         ("safety_gating", safety_gating_directive),
         # Eligibility criteria are written HERE, so the population section is
@@ -1861,6 +1879,7 @@ _ENGINE_CONTEXT_KEYS: tuple[str, ...] = (
     "patient_population",
     "comparative_safety",
     "multiplicity",
+    "trial_precedent",
 )
 
 # Top-level engine-result fields kept in the JSON context block. Anything not
@@ -1945,6 +1964,12 @@ _ENGINE_CONTEXT_FIELDS: dict[str, tuple[str, ...]] = {
     # directive already renders in the form the model should consume, so only
     # the summary line is carried as JSON. Same rationale as meta_analysis.
     "patient_population": ("summary",),
+    # Fully narrated by trial_precedent_directive(), including the NCT-cited
+    # excerpts of real eligibility text; the raw dict carries the full
+    # (length-bounded but still sizeable) precedent-trial text a second time,
+    # so only the summary line is carried as JSON — same rationale as
+    # patient_population/meta_analysis above.
+    "trial_precedent": ("summary",),
     "comparative_safety": ("safety_months", "doses_to_steady_state"),
     # Fully narrated by multiplicity_directive(); the raw dict adds only the
     # rationale strings the directive already renders.

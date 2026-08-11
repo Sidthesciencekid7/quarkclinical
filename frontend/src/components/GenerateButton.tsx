@@ -78,9 +78,13 @@ function ReviewTable({ drug, studyType, pop, guidelineLabel }: { drug: Drug; stu
     ['Age range', `${pop.age_min}–${pop.age_max} years`],
     ['Sex', SEX_LABELS[pop.sex]],
     ['Weight range', `${pop.weight_min}–${pop.weight_max} kg`],
-    ['Renal status', pop.renal_status],
-    ['Hepatic status', pop.hepatic_status],
     ['Guideline', guidelineLabel],
+    ...(pop.additional_pk_timepoints_hours?.trim()
+      ? [['Additional PK timepoints', `${pop.additional_pk_timepoints_hours} h`] as [string, string]]
+      : []),
+    ...(pop.additional_immunogenicity_timepoints_months?.trim()
+      ? [['Additional ADA timepoints', `${pop.additional_immunogenicity_timepoints_months} mo`] as [string, string]]
+      : []),
   ]
 
   return (

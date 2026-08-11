@@ -56,6 +56,7 @@ from services.comparative_safety import (
     build_duration_plan,
     comparative_safety_directive,
     doses_to_steady_state,
+    immunogenicity_schedule,
 )
 from services.guidelines import reference_product_term, regulatory_directive
 from services.multiplicity import (
@@ -980,6 +981,96 @@ def test_b2_healthy_volunteer_multiple_dose_does_not_get_a_patient_immunogenicit
 
 
 # ---------------------------------------------------------------------------
+# Additional immunogenicity (ADA) timepoints - user-requested extras
+# ---------------------------------------------------------------------------
+#
+# New user-facing input: extra ADA draws on top of the auto-computed
+# comparative-immunogenicity schedule. immunogenicity_schedule() is the
+# single source of truth both build_duration_plan() (here) and
+# services/sampling_schedule.py's own ADA-hours derivation call, so testing
+# the merge here also covers sampling_schedule.py's identical behaviour.
+
+
+def test_immunogenicity_schedule_merges_a_valid_additional_month():
+    base = immunogenicity_schedule(12)
+    with_extra = immunogenicity_schedule(12, additional_months=[10.5])
+    assert 10.5 not in base
+    assert 10.5 in with_extra
+    # Nothing else in the auto-computed schedule changes.
+    assert set(base) < set(with_extra)
+
+
+def test_immunogenicity_schedule_drops_an_out_of_range_additional_month():
+    """A value outside [0, months] would silently extend the comparative
+    period itself - dropped rather than extending it incidentally."""
+    result = immunogenicity_schedule(12, additional_months=[15.0, -1.0])
+    assert 15.0 not in result
+    assert -1.0 not in result
+    assert result == immunogenicity_schedule(12)
+
+
+def test_immunogenicity_schedule_ignores_unparseable_additional_values():
+    result = immunogenicity_schedule(12, additional_months=[None, "not a number"])  # type: ignore[list-item]
+    assert result == immunogenicity_schedule(12)
+
+
+def test_build_duration_plan_discloses_accepted_and_rejected_additional_months():
+    plan = _duration(additional_immunogenicity_months=[9.5, 50.0])
+    assert 9.5 in plan["immunogenicity_timepoints_months"]
+    assert 50.0 not in plan["immunogenicity_timepoints_months"]
+    joined = " ".join(plan["assumptions"])
+    assert "9.5" in joined
+    assert "50.0" in joined
+    directive = comparative_safety_directive(plan)
+    # The generic assumptions-rendering loop in comparative_safety_directive
+    # must surface both disclosures without any dedicated rendering code.
+    assert "9.5" in directive
+    assert "50.0" in directive
+
+
+def test_build_duration_plan_without_additional_months_is_unchanged():
+    """Non-regression: omitting the parameter must not alter the plan."""
+    plan_default = _duration()
+    plan_empty = _duration(additional_immunogenicity_months=[])
+    assert plan_default["immunogenicity_timepoints_months"] == plan_empty["immunogenicity_timepoints_months"]
+    assert plan_default["assumptions"] == plan_empty["assumptions"]
+
+
+def test_additional_immunogenicity_months_validated_against_the_post_extension_period_not_the_original():
+    """CONFIRMED test-coverage gap from adversarial review: no existing test
+    combined a genuinely-EXTENDED comparative period (B2's own readout-
+    completion fix) with a user-requested additional immunogenicity
+    timepoint through the real two-engine chain routers/protocols.py wires
+    together. A q6w-dosed long-half-life biologic (t_half = tau = 1008h)
+    pushes the EU default 12-month period out to 14 months; a requested
+    month (13) that would be invalid against the ORIGINAL 12-month period
+    but valid against the EXTENDED 14-month one must be ACCEPTED, and
+    services/sampling_schedule.py's own ADA-hours derivation (fed the
+    duration plan's OWN resolved safety_months, exactly as
+    routers/protocols.py wires it) must render the SAME final month set -
+    the two engines must never disagree, which is this whole module's
+    reason for existing (fix #23/CRITICAL, earlier this session)."""
+    plan = build_duration_plan(
+        study_type="biosimilar_pk", dosing="multiple", subject_type="patient",
+        t_half_hours=1008.0, tau_hours=1008.0, eu_reference_product=True,
+        additional_immunogenicity_months=[13.0],
+    )
+    assert plan["safety_months"] > SAFETY_MONTHS_EU  # genuinely extended past 12
+    assert any("EXTENDED" in a for a in plan["assumptions"])
+    assert 13.0 in plan["immunogenicity_timepoints_months"]  # invalid at 12mo, valid at the extended value
+
+    sched = compute_sampling_schedule(
+        1008.0, 240.0, "parallel", "biosimilar_pk", dosing="multiple",
+        subject_type="patient", tau_hours=1008.0,
+        safety_months=plan["safety_months"],
+        additional_immunogenicity_months=[13.0],
+    )
+    sched_months = sorted({round(tp["hours"] / (30.44 * 24.0), 2) for tp in sched["immunogenicity_timepoints"]})
+    plan_months = sorted(round(m, 2) for m in plan["immunogenicity_timepoints_months"])
+    assert sched_months == plan_months
+
+
+# ---------------------------------------------------------------------------
 # B3 + B7 - EU reference product, under FDA 351(k), with the bridge
 # ---------------------------------------------------------------------------
 
@@ -1409,9 +1500,10 @@ def test_b6_sample_size_still_comes_from_the_literature_meta_analysis():
 def test_engines_are_wired_into_the_per_section_path():
     from services.ai_service import _ENGINE_DIRECTIVE_PLAN, _SECTION_CONFIGS
     planned = {k for plan in _ENGINE_DIRECTIVE_PLAN.values() for k, _ in plan}
-    for engine in ("patient_population", "comparative_safety", "multiplicity"):
+    for engine in ("patient_population", "comparative_safety", "multiplicity", "trial_precedent"):
         assert engine in planned, f"{engine} missing from _ENGINE_DIRECTIVE_PLAN"
     assert "patient_population" in _SECTION_CONFIGS["population"]["context_keys"]
+    assert "trial_precedent" in _SECTION_CONFIGS["population"]["context_keys"]
     assert "comparative_safety" in _SECTION_CONFIGS["safety_monitoring"]["context_keys"]
     assert "multiplicity" in _SECTION_CONFIGS["statistical_analysis_plan"]["context_keys"]
 
@@ -1425,7 +1517,7 @@ def test_engines_are_wired_into_the_whole_document_path():
     from services.three_stage_pipeline import _ENGINE_DIRECTIVES, _PROMPT_EXCLUDED_ENGINES
 
     pipeline_keys = {k for k, _ in _ENGINE_DIRECTIVES}
-    for engine in ("patient_population", "comparative_safety", "multiplicity"):
+    for engine in ("patient_population", "comparative_safety", "multiplicity", "trial_precedent"):
         assert engine in pipeline_keys, f"{engine} missing from _ENGINE_DIRECTIVES"
     planned = {k for plan in _ENGINE_DIRECTIVE_PLAN.values() for k, _ in plan}
     assert not (planned - pipeline_keys - _PROMPT_EXCLUDED_ENGINES)
@@ -1435,6 +1527,6 @@ def test_new_engines_do_not_leak_raw_json_into_the_prompt():
     """Every engine whose directive is rendered must also have a curated
     projection, or its full raw dict reaches the model alongside the directive."""
     from services.ai_service import _ENGINE_CONTEXT_FIELDS, _ENGINE_CONTEXT_KEYS
-    for engine in ("patient_population", "comparative_safety", "multiplicity"):
+    for engine in ("patient_population", "comparative_safety", "multiplicity", "trial_precedent"):
         assert engine in _ENGINE_CONTEXT_KEYS
         assert engine in _ENGINE_CONTEXT_FIELDS

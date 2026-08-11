@@ -8,6 +8,7 @@ import functools
 import hashlib
 import json
 import logging
+import re
 import statistics
 import sys
 import uuid
@@ -82,6 +83,7 @@ from services.safety_gating import recommend_safety_gating
 from services.safety_reporting import build_safety_reporting_plan
 from services.sampling_schedule import compute_sampling_schedule
 from services.stratification import recommend_stratification
+from services.trial_precedent import select_trial_precedents
 from services.three_stage_pipeline import generate_protocol_via_pipeline
 from security import verify_password
 
@@ -326,6 +328,37 @@ def _truncate(value: str | None, max_len: int) -> str | None:
     if value is None:
         return None
     return value if len(value) <= max_len else value[: max_len - 1] + "…"
+
+
+_NUMBER_RE = re.compile(
+    # (?<!\d) blocks a '-' directly abutting a PRECEDING digit from being read
+    # as that number's sign — without it, a no-space range like "24-48" (a
+    # realistic way to type "add draws at 24 and 48") parsed as [24.0, -48.0]:
+    # the hyphen was read as a minus sign onto 48 instead of a separator. A
+    # genuine negative ("-5, 10", or "-5" at the start) is still captured,
+    # since there the character before '-' is whitespace/a separator/nothing,
+    # not a digit. [eE][-+]?\d+ supports scientific notation ("1e5") as ONE
+    # number (100000.0) instead of silently splitting it into the two
+    # unrelated numbers "1" and "5" a plain digit regex would extract.
+    r"(?<!\d)-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"
+)
+
+
+def _parse_number_list(raw: Any) -> list[float]:
+    """Extract every number out of a free-text field (e.g. "36, 48h, 72 hrs")
+    for the additional-PK/-immunogenicity-timepoint population_config inputs.
+
+    Deliberately permissive rather than a strict comma-split-and-cast: a user
+    typing units ("36h"), extra whitespace, or a stray separator should still
+    get their numbers through rather than have the whole field silently
+    dropped or the request rejected with a 422 over a formatting nit. Genuine
+    validation (is this number a SENSIBLE timepoint for this study) happens
+    downstream in the engine, which already discloses out-of-range values in
+    its own `assumptions` rather than raising.
+    """
+    if not raw or not isinstance(raw, str):
+        return []
+    return [float(m) for m in _NUMBER_RE.findall(raw)]
 
 
 _CV_METRIC_LABEL = {
@@ -586,6 +619,31 @@ async def _fetch_label_safe(
     return {k: v for k, v in label.items() if v}
 
 
+async def _fetch_trial_precedent_safe(
+    lit_svc: LiteratureService, drug_inn: str, *, study_type: str, subject_type: str
+) -> list[dict[str, Any]]:
+    """Fetch ClinicalTrials.gov records for the inclusion/exclusion-criteria
+    precedent engine (services/trial_precedent.py); never raises into the
+    pipeline. Gated on study_type/subject_type BEFORE the HTTP call, not
+    inside the (unconditionally-invoked) deterministic engine, so a BE study
+    or a healthy-volunteer biosimilar_pk study — the large majority of
+    generations — never issues this request at all: trial precedent is only
+    ever relevant when a specific indication is being selected
+    (services/patient_population.py's own applicability gate), and firing an
+    HTTP call this pipeline will not use just adds latency and an external
+    dependency with nothing to show for it.
+    """
+    is_patient = str(subject_type or "healthy").strip().lower() == "patient"
+    is_biosimilar = str(study_type or "").strip().lower() == "biosimilar_pk"
+    if not (is_patient and is_biosimilar):
+        return []
+    try:
+        return await lit_svc.fetch_clinicaltrials(drug_inn)
+    except Exception:
+        logger.exception("ClinicalTrials.gov fetch failed; continuing without trial precedent")
+        return []
+
+
 # Dedicated thread-pool capacity for _augment_config_with_design's blocking
 # call (below), separate from Starlette's shared default limiter that
 # auth.py's per-request JWT verification also runs on via run_in_threadpool.
@@ -659,6 +717,7 @@ def _augment_config_with_design(
     design_decisions: list[dict[str, Any]] | None = None,
     protocol_id: uuid.UUID | None = None,
     regulatory_sources: dict[str, Any] | None = None,
+    trial_records: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Run every deterministic engine ONCE and bake the results into the config.
 
@@ -801,6 +860,9 @@ def _augment_config_with_design(
         # puts the programme on the EU 12-month comparative-safety expectation.
         eu_reference_product=True,
         safety_months=cfg.get("comparative_safety_months"),
+        additional_immunogenicity_months=_parse_number_list(
+            cfg.get("additional_immunogenicity_timepoints_months")
+        ),
     )
 
     # --- 4b. PK blood-sampling schedule ------------------------------------
@@ -821,6 +883,10 @@ def _augment_config_with_design(
         # exists at all.
         safety_months=(cfg.get("_comparative_safety") or {}).get("safety_months"),
         subject_type=str(cfg.get("subject_type") or "healthy"),
+        additional_timepoints_hours=_parse_number_list(cfg.get("additional_pk_timepoints_hours")),
+        additional_immunogenicity_months=_parse_number_list(
+            cfg.get("additional_immunogenicity_timepoints_months")
+        ),
     )
     sched = cfg.get("_sampling_schedule")
 
@@ -839,6 +905,19 @@ def _augment_config_with_design(
         subject_type=str(cfg.get("subject_type") or "healthy"),
         label=label,
         meta_analysis=cfg.get("_meta_analysis") or {},
+    )
+
+    # --- 4d. Inclusion/exclusion criteria precedent (real prior trials) -----
+    # Runs AFTER _patient_population (immediately above): it needs the
+    # indication THAT engine selected to filter the drug-level (not
+    # indication-specific) ClinicalTrials.gov cache down to trials relevant
+    # to this specific study.
+    cfg["_trial_precedent"] = _safe_engine(
+        "trial_precedent",
+        select_trial_precedents,
+        drug_inn=drug_inn,
+        patient_population=cfg.get("_patient_population") or {},
+        trials=trial_records or [],
     )
 
     # --- 5. Drug-drug interaction screening (concomitant-medication rules) --
@@ -928,6 +1007,20 @@ def _augment_config_with_design(
             pd_coprimary=pd_coprimary,
             label=label,
             dosing=dosing,
+            # CONFIRMED BUG: without these three, assess_blinding() (called
+            # inside generate_allocation) never learns this is a biologic/
+            # biosimilar_pk comparison, so it always falls through to its
+            # open-label-dosing default — even for a biosimilar patient study,
+            # which its OWN documented decision logic already says should get
+            # blinded dosing. is_biologic/study_type are already computed
+            # above for every other engine in this function; route mirrors
+            # the same decision_values.get("route") lookup used elsewhere
+            # here (e.g. the safety_gating call). immunogenicity_assessed is
+            # deliberately left at its default (None): assess_blinding()
+            # already derives it correctly from is_biologic/study_type.
+            is_biologic=is_biologic,
+            study_type=study_type,
+            route=decision_values.get("route") or None,
         )
 
     # --- 10. CRF specification + Data Management Plan ----------------------
@@ -1072,6 +1165,13 @@ def _build_context(
     patient_pop = population_config.get("_patient_population")
     if patient_pop and patient_pop.get("applicable"):
         ctx["patient_population"] = patient_pop
+    # Inclusion/exclusion criteria precedent from real ClinicalTrials.gov
+    # trials in the selected indication. Same applicability gate as
+    # patient_population above — always True/False together, since this
+    # engine needs the indication THAT one selects.
+    trial_precedent = population_config.get("_trial_precedent")
+    if trial_precedent and trial_precedent.get("applicable"):
+        ctx["trial_precedent"] = trial_precedent
     # Doses to steady state + head-to-head comparative safety duration. Same
     # applicability gate: single-dose and non-biosimilar studies get nothing.
     comp_safety = population_config.get("_comparative_safety")
@@ -1385,6 +1485,11 @@ async def _run_generation_pipeline(
     lit_svc = LiteratureService(session)
     pubmed_records = await lit_svc.fetch_pubmed(drug.inn)
     label = await _fetch_label_safe(lit_svc, drug.inn)
+    trial_records = await _fetch_trial_precedent_safe(
+        lit_svc, drug.inn,
+        study_type=study_type,
+        subject_type=str(population_config.get("subject_type") or "healthy"),
+    )
 
     # Deterministic plan of which regulatory assessment-report programmes
     # (FDA/EMA/TGA/PMDA/NMPA) are actually referenced by the literature just
@@ -1488,6 +1593,7 @@ async def _run_generation_pipeline(
             design_decisions=design_decisions,
             protocol_id=protocol_id,
             regulatory_sources=regulatory_plan,
+            trial_records=trial_records,
         ),
         limiter=_DESIGN_THREAD_LIMITER,
     )

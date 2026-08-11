@@ -4,9 +4,7 @@ import type {
   DdiRow,
   DdiScreeningResult,
   Drug,
-  HepaticStatus,
   PopulationConfig,
-  RenalStatus,
   SexType,
   StudyType,
   SubjectType,
@@ -52,20 +50,6 @@ const PATHWAY_LABELS: Record<string, string> = {
   oatp: 'OATP',
   oct_mate: 'OCT/MATE',
 }
-
-const RENAL_OPTIONS: Array<{ value: RenalStatus; label: string }> = [
-  { value: 'normal', label: 'Normal' },
-  { value: 'mild', label: 'Mild (eGFR 60–89)' },
-  { value: 'moderate', label: 'Moderate (eGFR 30–59)' },
-  { value: 'severe', label: 'Severe (< 30)' },
-]
-
-const HEPATIC_OPTIONS: Array<{ value: HepaticStatus; label: string }> = [
-  { value: 'normal', label: 'Normal' },
-  { value: 'mild', label: 'Mild (Child-Pugh A)' },
-  { value: 'moderate', label: 'Moderate (Child-Pugh B)' },
-  { value: 'severe', label: 'Severe (Child-Pugh C)' },
-]
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
@@ -200,8 +184,6 @@ export default function PopulationBuilder({ value, onChange, drug, studyType }: 
       has ? value.exclusion_presets.filter(p => p !== preset) : [...value.exclusion_presets, preset],
     )
   }
-
-  const impaired = value.renal_status !== 'normal' || value.hepatic_status !== 'normal'
 
   // ── Drug-specific interaction screening ────────────────────────────────
   const [ddi, setDdi] = useState<DdiScreeningResult | null>(null)
@@ -362,48 +344,6 @@ export default function PopulationBuilder({ value, onChange, drug, studyType }: 
             </div>
           </div>
         </div>
-      </div>
-
-      <Divider />
-
-      {/* Organ function */}
-      <div>
-        <SectionLabel>Organ Function</SectionLabel>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-          <div>
-            <FieldLabel>Renal Status</FieldLabel>
-            <div className="flex flex-wrap gap-1.5">
-              {RENAL_OPTIONS.map(opt => (
-                <ToggleBtn key={opt.value} active={value.renal_status === opt.value} onClick={() => set('renal_status', opt.value)}>
-                  {opt.label}
-                </ToggleBtn>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <FieldLabel>Hepatic Status</FieldLabel>
-            <div className="flex flex-wrap gap-1.5">
-              {HEPATIC_OPTIONS.map(opt => (
-                <ToggleBtn key={opt.value} active={value.hepatic_status === opt.value} onClick={() => set('hepatic_status', opt.value)}>
-                  {opt.label}
-                </ToggleBtn>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {impaired && (
-          <div className="mt-4 flex items-start gap-2.5 p-3.5 bg-amber-50 border border-amber-200 rounded-xl">
-            <svg width="15" height="15" viewBox="0 0 15 15" fill="none" className="flex-shrink-0 mt-0.5">
-              <path d="M7.5 1.5L13.5 12H1.5L7.5 1.5z" stroke="#d97706" strokeWidth="1.5" strokeLinejoin="round" />
-              <path d="M7.5 5.5v3M7.5 10v.5" stroke="#d97706" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-            <p className="text-xs text-amber-700 leading-relaxed">
-              Impaired organ function will be reflected in eligibility criteria and safety monitoring sections. Dosing adjustment language will be included where applicable.
-            </p>
-          </div>
-        )}
       </div>
 
       <Divider />
@@ -740,6 +680,48 @@ export default function PopulationBuilder({ value, onChange, drug, studyType }: 
             reference scaling (e.g. warfarin, tacrolimus, levothyroxine).
           </span>
         </label>
+      </div>
+
+      <Divider />
+
+      {/* Additional sampling timepoints (optional) */}
+      <div>
+        <SectionLabel>Additional Sampling Timepoints — Optional</SectionLabel>
+        <p className="text-xs text-slate-400 mb-4 leading-relaxed">
+          Extra draws to add on top of the auto-computed schedule — the auto-computed
+          timepoints (dense early, peak-bracketed, log-spaced tail) are kept unchanged;
+          these are added alongside them, not a replacement.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
+          <div>
+            <FieldLabel>Additional PK timepoints (hours post-dose)</FieldLabel>
+            <input
+              type="text"
+              value={value.additional_pk_timepoints_hours ?? ''}
+              placeholder="e.g. 36, 48, 72"
+              onChange={e => set('additional_pk_timepoints_hours', e.target.value || undefined)}
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-400 transition-all"
+            />
+            <p className="text-[11px] text-slate-400 mt-1">
+              Comma-separated hours post-dose. Added to every PK profile drawn.
+            </p>
+          </div>
+
+          <div>
+            <FieldLabel>Additional immunogenicity (ADA) timepoints (months)</FieldLabel>
+            <input
+              type="text"
+              value={value.additional_immunogenicity_timepoints_months ?? ''}
+              placeholder="e.g. 9, 15"
+              onChange={e => set('additional_immunogenicity_timepoints_months', e.target.value || undefined)}
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-400 transition-all"
+            />
+            <p className="text-[11px] text-slate-400 mt-1">
+              Comma-separated months post-first-dose. Only applies when a comparative
+              immunogenicity schedule is generated (multiple-dose biosimilar, patients).
+            </p>
+          </div>
+        </div>
       </div>
     </div>
   )

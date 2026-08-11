@@ -54,6 +54,7 @@ from services.comparative_safety import comparative_safety_directive
 from services.meta_analysis import meta_analysis_directive
 from services.multiplicity import multiplicity_directive
 from services.patient_population import patient_population_directive
+from services.trial_precedent import trial_precedent_directive
 
 SONNET_MODEL = "claude-sonnet-4-6"
 
@@ -629,11 +630,15 @@ _ENGINE_DIRECTIVES: tuple[tuple[str, Any], ...] = (
     # narration. That exact drift already happened once with meta_analysis.
     #   patient_population - the selected indication + the naive/con-med
     #     eligibility criteria that deliver it (patient biosimilar only).
+    #   trial_precedent - real ClinicalTrials.gov prior-trial precedent for
+    #     the Inclusion/Exclusion Criteria lists, for the SAME selected
+    #     indication (patient biosimilar only).
     #   comparative_safety - doses to steady state, and the head-to-head
     #     safety/immunogenicity period that outlives the primary PK readout.
     #   multiplicity - co-primary alpha (unadjusted, with the reason) and the
     #     per-endpoint power needed to hold OVERALL power at target.
     ("patient_population", patient_population_directive),
+    ("trial_precedent", trial_precedent_directive),
     ("comparative_safety", comparative_safety_directive),
     ("multiplicity", multiplicity_directive),
     # NO ("icf", icf_directive) HERE, DELIBERATELY — must stay in lockstep with

@@ -274,6 +274,90 @@ def test_endpoint_override_reaches_the_objectives_section():
     assert "Cmax and AUC0-inf" in prompt
 
 
+# ---------------------------------------------------------------------------
+# Requirement 10 - inclusion/exclusion criteria grounded in real prior trials
+# ---------------------------------------------------------------------------
+#
+# A clinical pharmacologist's explicit requirement: inclusion/exclusion
+# criteria should be based on prior trials in the same indication (innovator
+# trial protocols and ClinicalTrials.gov), not generic BE-study boilerplate.
+# services/trial_precedent.py's directive must reach the "population" section
+# in BOTH prompt paths (this file's per-section path via _ENGINE_DIRECTIVE_
+# PLAN/context_keys; services/three_stage_pipeline.py's whole-document path
+# via its own independent _ENGINE_DIRECTIVES copy), and must never leak the
+# raw (potentially large) precedent-trial dict into the JSON context block.
+
+
+def test_population_section_context_keys_include_trial_precedent():
+    assert "trial_precedent" in _SECTION_CONFIGS["population"]["context_keys"]
+
+
+def test_population_engine_directive_plan_includes_trial_precedent():
+    keys = [k for k, _fn in _ENGINE_DIRECTIVE_PLAN["population"]]
+    assert "trial_precedent" in keys
+
+
+def test_trial_precedent_directive_reaches_the_population_section_prompt():
+    context = _minimal_context(sample_size=_sample_size("parallel"), randomization=None)
+    context["trial_precedent"] = {
+        "applicable": True,
+        "precedent_found": True,
+        "indication": "Rheumatoid arthritis",
+        "summary": "Inclusion/exclusion criteria are grounded in 1 real prior trial(s)...",
+        "precedent_trials": [{
+            "nct_id": "NCT01111111", "title": "RA study", "status": "COMPLETED", "phase": "PHASE3",
+            "sex": "ALL", "minimum_age": "18 Years", "maximum_age": "", "healthy_volunteers": False,
+            "inclusion_text": "Diagnosis of RA per ACR criteria", "exclusion_text": "Active infection",
+            "truncated": False,
+        }],
+        "assumptions": [],
+    }
+    prompt = _prompt_for("population", context)
+    assert "INCLUSION/EXCLUSION CRITERIA PRECEDENT" in prompt
+    assert "NCT01111111" in prompt
+    assert "Diagnosis of RA per ACR criteria" in prompt
+
+
+def test_trial_precedent_engine_result_does_not_leak_raw_json_when_rendered():
+    """The engine's raw dict (with the full precedent-trial text a second
+    time) must NOT also appear verbatim in the serialised JSON context block
+    once its directive has rendered — same anti-duplication rule as
+    patient_population/meta_analysis (_ENGINE_CONTEXT_FIELDS's thin
+    ('summary',) projection)."""
+    context = _minimal_context(sample_size=_sample_size("parallel"), randomization=None)
+    context["trial_precedent"] = {
+        "applicable": True,
+        "precedent_found": True,
+        "indication": "Rheumatoid arthritis",
+        "summary": "short summary",
+        "precedent_trials": [{
+            "nct_id": "NCT01111111", "title": "RA study", "status": "COMPLETED", "phase": "PHASE3",
+            "sex": "ALL", "minimum_age": "18 Years", "maximum_age": "", "healthy_volunteers": False,
+            "inclusion_text": "UNIQUE_MARKER_INCLUSION_TEXT_NOT_IN_DIRECTIVE_PROSE_TWICE",
+            "exclusion_text": "UNIQUE_MARKER_EXCLUSION_TEXT", "truncated": False,
+        }],
+        "assumptions": [],
+    }
+    prompt = _prompt_for("population", context)
+    # The marker text legitimately appears ONCE, via the rendered directive —
+    # but the raw dict (which would duplicate it) must not also serialise.
+    assert prompt.count("UNIQUE_MARKER_INCLUSION_TEXT_NOT_IN_DIRECTIVE_PROSE_TWICE") == 1
+    assert '"precedent_trials"' not in prompt
+
+
+def test_trial_precedent_absent_from_prompt_when_not_applicable():
+    """The section's own STATIC instructions text names the LOCKED block by
+    title (so the model knows to look for it when present) — that mention is
+    expected and always there. What must NOT appear when trial_precedent is
+    inapplicable is the RENDERED directive itself (its distinctive header,
+    or the NCT-cited reference-material body)."""
+    context = _minimal_context(sample_size=_sample_size("parallel"), randomization=None)
+    context["trial_precedent"] = {"applicable": False, "reason": "not a patient biosimilar study"}
+    prompt = _prompt_for("population", context)
+    assert "PRECEDENT - REAL PRIOR TRIALS" not in prompt
+    assert "PRECEDENT - NOT FOUND" not in prompt
+
+
 def test_endpoint_override_reaches_the_endpoints_section_and_covers_vz_cl():
     context = _minimal_context(sample_size=_dual_profile_sample_size(), randomization=None)
     context["study_type"] = "biosimilar_pk"

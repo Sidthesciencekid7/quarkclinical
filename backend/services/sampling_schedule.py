@@ -648,6 +648,8 @@ def compute_sampling_schedule(
     draw_volume_ml: float = PK_DRAW_VOLUME_ML,
     safety_months: Optional[int] = None,
     subject_type: str = "healthy",
+    additional_timepoints_hours: Optional[list[float]] = None,
+    additional_immunogenicity_months: Optional[list[float]] = None,
 ) -> dict[str, Any]:
     """Compute THE blood-sampling schedule for this study.
 
@@ -703,6 +705,28 @@ def compute_sampling_schedule(
         HEALTHY VOLUNTEER study is a time-boxed regimen and does not get the
         dual-profile schedule, the immunogenicity-period-linked ADA series,
         or the doubled blood-volume audit that only make sense for it.
+    additional_timepoints_hours:
+        Extra PK draws, in hours post-dose, requested by the user on top of
+        the auto-computed schedule (e.g. a site wants an extra 36 h and 72 h
+        draw). Merged into the SAME classification/windowing pass as every
+        other timepoint (so each gets a real phase and purpose, not a bare
+        "extra" label), then flagged ``user_added: True`` in its timepoint
+        dict and disclosed in ``assumptions`` so the schedule stays honest
+        about provenance. Values outside [0, horizon] are NOT added (adding
+        one would silently change the sampling horizon and therefore the
+        predicted AUC_%extrap this function computes) - each such value is
+        instead reported as a rejected addition in ``assumptions``. For a
+        dual-profile biosimilar study, every additional PK hour is added to
+        BOTH the first-dose and steady-state profiles (the within-interval
+        template both profiles share).
+    additional_immunogenicity_months:
+        Extra ADA sampling months requested by the user, ONLY consulted for
+        a dual-profile biosimilar patient study (the only case with an
+        immunogenicity-period-linked ADA series at all). Passed straight
+        through to services.comparative_safety.immunogenicity_schedule(),
+        the single source of truth this function and
+        services.comparative_safety.build_duration_plan() both call, so the
+        two never propose different ADA schedules for the same protocol.
 
     Returns
     -------
@@ -874,6 +898,75 @@ def compute_sampling_schedule(
     elimination_start = min(max(peak_end_raw, tmax), t_last)
     raw_times += _geometric_span(elimination_start, t_last, _ELIMINATION_RATIO)
 
+    # Snapshot of what the schedule would contain WITHOUT any user-requested
+    # additions, run through the exact same snap/force-append/terminal-density
+    # pipeline the final schedule goes through below. This is what makes the
+    # user_added flag (and the assumptions disclosure) HONEST rather than
+    # merely "did the user ask for a time in [0, t_last]": a requested time
+    # that happens to snap onto a slot the engine was going to schedule
+    # anyway (most simply, the horizon endpoint t_last itself, which is
+    # force-appended to every schedule regardless of user input two lines
+    # below) must not be reported as "added" when nothing was actually added.
+    _baseline_times = _dedupe([_snap(t) for t in raw_times])
+    if _baseline_times and _baseline_times[-1] < t_last - 1e-9:
+        _baseline_times = _dedupe(_baseline_times + [t_last])
+    _baseline_times = set(_ensure_terminal_density(_baseline_times, t_last, t_half, min_lambda_z))
+
+    # -- User-requested additional PK timepoints ---------------------------
+    # Merged into raw_times BEFORE snap/dedupe so each gets the SAME real
+    # phase/purpose classification as every auto-computed draw, rather than a
+    # bare "extra" label with no clinical framing. A value outside [0, t_last]
+    # is rejected rather than silently extending the horizon (which would
+    # invalidate the AUC_%extrap prediction computed below) - each accepted,
+    # already-covered, or rejected value is disclosed in `assumptions` so the
+    # schedule stays honest about what the user asked for and what actually
+    # happened to it.
+    user_added_snapped: set[float] = set()
+    if additional_timepoints_hours:
+        genuinely_new: list[float] = []
+        already_covered: list[float] = []
+        rejected: list[float] = []
+        for raw_t in additional_timepoints_hours:
+            try:
+                t = float(raw_t)
+            except (TypeError, ValueError):
+                continue
+            if 0.0 <= t <= t_last + 1e-9:
+                snapped = _snap(t)
+                if snapped in _baseline_times:
+                    already_covered.append(t)
+                else:
+                    genuinely_new.append(t)
+                    user_added_snapped.add(snapped)
+            else:
+                rejected.append(t)
+        raw_times += genuinely_new + already_covered
+        if genuinely_new:
+            assumptions.append({
+                "key": "additional_pk_timepoints_added",
+                "value": sorted(round(t, 2) for t in genuinely_new),
+                "basis": "User-requested additional PK draw(s), added to the auto-computed schedule.",
+            })
+        if already_covered:
+            assumptions.append({
+                "key": "additional_pk_timepoints_already_covered",
+                "value": sorted(round(t, 2) for t in already_covered),
+                "basis": (
+                    "The auto-computed schedule already draws at (or within rounding of) "
+                    "this/these time(s); no separate draw was added."
+                ),
+            })
+        if rejected:
+            assumptions.append({
+                "key": "additional_pk_timepoints_rejected",
+                "value": sorted(round(t, 2) for t in rejected),
+                "basis": (
+                    f"Outside the computed sampling horizon of 0-{_fmt_hours(t_last)} h and "
+                    f"was NOT added; extending the horizon would invalidate the AUC_%extrap "
+                    f"prediction. Re-run with a wider horizon if a later draw is genuinely needed."
+                ),
+            })
+
     times = _dedupe([_snap(t) for t in raw_times])
     if times and times[-1] < t_last - 1e-9:
         times = _dedupe(times + [t_last])
@@ -933,6 +1026,7 @@ def compute_sampling_schedule(
             "volume_ml": round(draw_volume_ml, 2),
             "cumulative_volume_ml": round(cumulative, 2),
             "purpose": purpose,
+            "user_added": t in user_added_snapped,
         })
 
     phase_counts = {
@@ -1171,7 +1265,12 @@ def compute_sampling_schedule(
             # determined" ADA schedule ending months earlier, for a design
             # whose comparative period runs 6-12+ months.
             months = safety_months if safety_months else SAFETY_MONTHS_EU
-            ada_hours = [m * 30.44 * 24.0 for m in _cs_immunogenicity_schedule(months)]
+            ada_hours = [
+                m * 30.44 * 24.0
+                for m in _cs_immunogenicity_schedule(
+                    months, additional_months=additional_immunogenicity_months,
+                )
+            ]
         else:
             ada_hours = list(_ADA_TIMEPOINTS_HOURS)
         for t in ada_hours:

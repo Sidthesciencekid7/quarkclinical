@@ -127,11 +127,26 @@ def doses_to_steady_state(
     return max(int(n), MIN_DOSES_FOR_STEADY_STATE)
 
 
-def immunogenicity_schedule(months: int) -> list[float]:
+def immunogenicity_schedule(
+    months: int, *, additional_months: Optional[list[float]] = None
+) -> list[float]:
     """Pre-dose ADA sampling months across the comparative period.
 
     Dense early (when treatment-emergent ADA appear) and then quarterly, always
     including the final visit so the end-of-study incidence is measurable.
+
+    ``additional_months`` are user-requested extra ADA draws (e.g. a site
+    wants an extra check at month 9.5), merged into the SAME schedule this
+    function is the single source of truth for — both build_duration_plan()
+    below and services/sampling_schedule.py's own ADA-hours derivation call
+    THIS function, so adding the merge here (rather than in each caller)
+    keeps both in agreement, which is exactly the "two engines independently
+    propose two ADA schedules" contradiction this module was written to
+    prevent. A value outside [0, months] is silently dropped (it would
+    otherwise extend the comparative-safety period itself, a much larger
+    consequence than adding one draw) — the caller is expected to validate
+    and disclose rejected values, since this function has no `assumptions`
+    list of its own to report them in.
     """
     base = [0.0, 1.0, 3.0, 6.0]
     pts = [m for m in base if m <= months]
@@ -141,6 +156,13 @@ def immunogenicity_schedule(months: int) -> list[float]:
         m += 3.0
     if float(months) not in pts:
         pts.append(float(months))
+    for extra in additional_months or []:
+        try:
+            m_extra = float(extra)
+        except (TypeError, ValueError):
+            continue
+        if 0.0 <= m_extra <= months:
+            pts.append(m_extra)
     return sorted(set(pts))
 
 
@@ -154,12 +176,20 @@ def build_duration_plan(
     tau_hours: Optional[float] = None,
     eu_reference_product: bool = True,
     safety_months: Optional[int] = None,
+    additional_immunogenicity_months: Optional[list[float]] = None,
 ) -> dict[str, Any]:
     """Resolve dose count to steady state and comparative-safety duration.
 
     Returns ``{"applicable": False, ...}`` for designs this does not govern
     (single-dose studies, non-biosimilar study types), so the caller can invoke
     it unconditionally.
+
+    ``additional_immunogenicity_months`` are user-requested extra ADA draws,
+    passed straight through to immunogenicity_schedule() (see its own
+    docstring for the merge/validation rule) so this plan and
+    services/sampling_schedule.py's own ADA-hours derivation — both call
+    immunogenicity_schedule() — never disagree about which months are
+    sampled.
     """
     is_biosimilar = str(study_type or "").strip().lower() == "biosimilar_pk"
     multiple = str(dosing or "single").strip().lower() in ("multiple", "multi", "repeat")
@@ -316,6 +346,28 @@ def build_duration_plan(
         "ongoing safety comparison."
     )
 
+    if additional_immunogenicity_months:
+        accepted_months = [
+            float(m) for m in additional_immunogenicity_months
+            if isinstance(m, (int, float)) and 0.0 <= float(m) <= months
+        ]
+        rejected_months = [
+            float(m) for m in additional_immunogenicity_months
+            if not (isinstance(m, (int, float)) and 0.0 <= float(m) <= months)
+        ]
+        if accepted_months:
+            assumptions.append(
+                f"User-requested additional immunogenicity timepoint(s) added: "
+                f"month(s) {sorted(accepted_months)}."
+            )
+        if rejected_months:
+            assumptions.append(
+                f"User-requested additional immunogenicity timepoint(s) "
+                f"{sorted(rejected_months)} fall outside the {months}-month comparative "
+                f"period and were NOT added; extending the period itself would require "
+                f"a deliberate scope decision, not an incidental one."
+            )
+
     return DurationPlan(
         applicable=True,
         t_half_hours=round(float(t_half_hours), 2) if t_half_hours else None,
@@ -329,7 +381,9 @@ def build_duration_plan(
         safety_floor_months=SAFETY_MONTHS_FLOOR,
         safety_basis=basis,
         primary_readout_note=primary_note,
-        immunogenicity_timepoints_months=immunogenicity_schedule(months),
+        immunogenicity_timepoints_months=immunogenicity_schedule(
+            months, additional_months=additional_immunogenicity_months,
+        ),
         assumptions=assumptions,
     ).to_dict()
 
