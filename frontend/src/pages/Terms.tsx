@@ -4,7 +4,7 @@ export default function Terms() {
   return (
     <LegalLayout title="Terms of Service" updated="July 12, 2026">
       <p>
-        These Terms of Service (&ldquo;Terms&rdquo;) govern access to and use of ProtocolAI (the
+        These Terms of Service (&ldquo;Terms&rdquo;) govern access to and use of Quark AI (the
         &ldquo;Service&rdquo;), operated as an enterprise, sales-assisted software subscription. By creating an
         account or using the Service, you agree to these Terms on behalf of yourself and, if applicable, the
         organization you represent.
@@ -12,10 +12,10 @@ export default function Terms() {
 
       <h2>1. The Service</h2>
       <p>
-        ProtocolAI is an AI-assisted drafting tool that helps regulatory and pharmacology teams produce
+        Quark AI is an AI-assisted drafting tool that helps regulatory and pharmacology teams produce
         bioequivalence and biosimilar study protocol drafts, computed sample-size calculations, and related
         exports (DOCX/PDF). The Service is licensed on an annual, per-organization basis with a seat allowance;
-        access is activated by ProtocolAI following a sales conversation, not by self-serve payment.
+        access is activated by Quark AI following a sales conversation, not by self-serve payment.
       </p>
 
       <h2>2. Not Regulatory or Legal Advice</h2>
@@ -25,7 +25,7 @@ export default function Terms() {
         <strong> not</strong> a substitute for review by qualified biostatisticians, clinical pharmacologists,
         regulatory affairs professionals, or legal counsel. You are solely responsible for reviewing, validating,
         and approving any content before it is relied upon, submitted to a regulatory authority, or used in the
-        conduct of a clinical study. ProtocolAI does not guarantee that generated content is complete, accurate,
+        conduct of a clinical study. Quark AI does not guarantee that generated content is complete, accurate,
         or compliant with any particular guideline, jurisdiction, or regulatory expectation.
       </p>
 
@@ -38,9 +38,9 @@ export default function Terms() {
 
       <h2>4. Licensing and Payment</h2>
       <p>
-        The Service is sold as an annual enterprise license negotiated directly with ProtocolAI (&ldquo;Contact
+        The Service is sold as an annual enterprise license negotiated directly with Quark AI (&ldquo;Contact
         sales&rdquo;). No self-serve card payment is processed by the Service. A newly created organization&rsquo;s
-        license begins in a pending state and is activated by ProtocolAI once payment terms are confirmed
+        license begins in a pending state and is activated by Quark AI once payment terms are confirmed
         out-of-band. Fees, seat counts, and renewal terms are as agreed in your specific order or invoice.
       </p>
 
@@ -63,27 +63,27 @@ export default function Terms() {
       <h2>7. Intellectual Property</h2>
       <p>
         You retain ownership of the drug, study, and protocol content you input and of the protocol drafts
-        generated for your organization. ProtocolAI retains ownership of the Service itself, including its
+        generated for your organization. Quark AI retains ownership of the Service itself, including its
         software, sample-size methodology, and underlying models and templates.
       </p>
 
       <h2>8. Disclaimer of Warranties</h2>
       <p>
         The Service is provided &ldquo;as is&rdquo; without warranties of any kind, express or implied, including
-        fitness for a particular purpose or non-infringement. ProtocolAI does not warrant that the Service will be
+        fitness for a particular purpose or non-infringement. Quark AI does not warrant that the Service will be
         uninterrupted, error-free, or that generated content will meet any specific regulatory standard.
       </p>
 
       <h2>9. Limitation of Liability</h2>
       <p>
-        To the maximum extent permitted by law, ProtocolAI will not be liable for indirect, incidental, special,
+        To the maximum extent permitted by law, Quark AI will not be liable for indirect, incidental, special,
         or consequential damages, or for any regulatory, clinical, or business outcome arising from reliance on
         generated content without independent professional review.
       </p>
 
       <h2>10. Termination</h2>
       <p>
-        Either party may terminate the license at the end of its annual term. ProtocolAI may suspend access for
+        Either party may terminate the license at the end of its annual term. Quark AI may suspend access for
         material breach of these Terms, including non-payment, after reasonable notice.
       </p>
 

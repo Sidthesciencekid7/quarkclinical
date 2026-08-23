@@ -19,7 +19,7 @@ function PendingLicenseScreen({ status }: { status: string }) {
         <p className="text-sm text-slate-500 leading-relaxed">
           {suspended
             ? 'Your organization’s license needs attention. Reach out to your account contact to resolve this.'
-            : 'Your organization was created, but ProtocolAI is sold as a sales-assisted annual license. We’ll activate your account as soon as your sales conversation is confirmed — usually within one business day.'}
+            : 'Your organization was created, but Quark AI is sold as a sales-assisted annual license. We’ll activate your account as soon as your sales conversation is confirmed — usually within one business day.'}
         </p>
       </div>
     </div>

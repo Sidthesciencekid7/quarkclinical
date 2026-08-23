@@ -121,7 +121,7 @@ function SignInGate() {
     >
       <div className="text-center max-w-sm">
         <h1 className="text-white text-2xl font-bold tracking-tight mb-2">Sign in to continue</h1>
-        <p className="text-slate-400 text-sm mb-8">You need an account to access ProtocolAI.</p>
+        <p className="text-slate-400 text-sm mb-8">You need an account to access Quark AI.</p>
         <div className="flex flex-col gap-3">
           <button
             onClick={login}

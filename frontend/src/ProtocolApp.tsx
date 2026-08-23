@@ -104,7 +104,7 @@ function Header({ view, onNavReports, onNavNew, onNavTeam }: {
           </div>
           <div className="hidden sm:block">
             <div className="flex items-center gap-2">
-              <h1 className="text-sm font-bold text-white leading-none tracking-tight">ProtocolAI</h1>
+              <h1 className="text-sm font-bold text-white leading-none tracking-tight">Quark AI</h1>
               <span className="text-[10px] font-semibold text-cyan-400/70 bg-cyan-400/10 border border-cyan-400/20 px-1.5 py-0.5 rounded-md leading-none">BETA</span>
             </div>
             <p className="text-[11px] text-slate-400 leading-tight mt-0.5">AI-assisted FDA-compliant protocol generation</p>

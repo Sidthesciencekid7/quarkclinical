@@ -16,10 +16,10 @@ export default function LegalLayout({
         <div className="max-w-3xl mx-auto px-5 h-16 flex items-center justify-between">
           <Link to="/" className="flex items-center gap-2.5">
             <span className="w-8 h-8 rounded-lg bg-cyan-50 border border-cyan-200 flex items-center justify-center text-cyan-600 text-sm font-extrabold">
-              P
+              Q
             </span>
             <span className="font-extrabold tracking-tight text-slate-900">
-              Protocol<span className="text-cyan-600">AI</span>
+              Quark <span className="text-cyan-600">AI</span>
             </span>
           </Link>
           <Link to="/" className="text-sm font-medium text-slate-500 hover:text-slate-900 transition-colors">

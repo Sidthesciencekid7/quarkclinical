@@ -104,7 +104,7 @@ function Nav({ onLogin, onSignup }: { onLogin: () => void; onSignup: () => void 
             {Icon.logo}
           </span>
           <span className="text-white font-extrabold tracking-tight text-[15px]">
-            Protocol<span className="text-cyan-300">AI</span>
+            Quark <span className="text-cyan-300">AI</span>
           </span>
         </a>
 
@@ -168,7 +168,7 @@ function Hero({ onLaunch }: { onLaunch: () => void }) {
             className="shimmer relative overflow-hidden inline-flex items-center gap-2 rounded-full border border-cyan-400/25 bg-white/5 backdrop-blur px-4 py-1.5 text-xs font-medium text-cyan-100 hover:border-cyan-300/50 transition-colors cursor-pointer mb-8"
           >
             <span className="text-cyan-300">{Icon.spark}</span>
-            Introducing ProtocolAI — exact-statistics protocol drafting
+            Introducing Quark AI — exact-statistics protocol drafting
             <span className="text-cyan-300">→</span>
           </button>
         </Reveal>
@@ -243,7 +243,7 @@ function ProductMockup() {
         <span className="w-2.5 h-2.5 rounded-full bg-red-400/70" />
         <span className="w-2.5 h-2.5 rounded-full bg-amber-400/70" />
         <span className="w-2.5 h-2.5 rounded-full bg-emerald-400/70" />
-        <span className="ml-3 text-[11px] text-slate-400 font-medium">ProtocolAI — Dulaglutide · Biosimilar PK</span>
+        <span className="ml-3 text-[11px] text-slate-400 font-medium">Quark AI — Dulaglutide · Biosimilar PK</span>
       </div>
       <div className="flex h-[320px]">
         {/* sidebar */}
@@ -363,7 +363,7 @@ function Features() {
     <section id="features" className="bg-slate-50 py-24">
       <div className="max-w-6xl mx-auto px-5">
         <Reveal>
-          <p className="text-center text-sm font-bold text-cyan-600 uppercase tracking-widest mb-3">Why ProtocolAI</p>
+          <p className="text-center text-sm font-bold text-cyan-600 uppercase tracking-widest mb-3">Why Quark AI</p>
           <h2 className="text-center text-3xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">Rigor where it matters most</h2>
           <p className="text-center text-slate-500 mt-4 max-w-2xl mx-auto text-lg">
             Not a chatbot wrapper. Real biostatistics, real literature, real regulatory structure — built for clinical pharmacology.
@@ -456,7 +456,7 @@ function Pricing() {
         <Reveal>
           <p className="text-center text-sm font-bold text-cyan-600 uppercase tracking-widest mb-3">Pricing</p>
           <h2 className="text-center text-3xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">One plan, built for teams</h2>
-          <p className="text-center text-slate-500 mt-4 text-lg">ProtocolAI is sold as an annual enterprise license — negotiated to fit your team.</p>
+          <p className="text-center text-slate-500 mt-4 text-lg">Quark AI is sold as an annual enterprise license — negotiated to fit your team.</p>
         </Reveal>
 
         <div className="mt-12 max-w-xl mx-auto">
@@ -501,7 +501,7 @@ const FAQS = [
   { q: 'Which study types are supported?', a: 'Small-molecule bioequivalence (BE) and biologic biosimilar PK. Biosimilar protocols automatically include a mandatory immunogenicity section with tiered ADA/NAb testing.' },
   { q: 'Can I edit the generated protocol?', a: 'Yes. Every section is editable in a rich text editor, can be regenerated independently, and shows its literature sources. The computed sample size stays locked as the single source of truth across all sections.' },
   { q: 'What can I export?', a: 'Formatted DOCX and PDF, including cover page, abbreviations, schedule of activities, sample-size determination tables, and a regulatory reference list appropriate to the study type.' },
-  { q: 'Is this a regulatory submission?', a: 'ProtocolAI produces high-quality drafts for investigational use. Every protocol should be reviewed and signed off by a qualified clinical pharmacologist before any regulatory use.' },
+  { q: 'Is this a regulatory submission?', a: 'Quark AI produces high-quality drafts for investigational use. Every protocol should be reviewed and signed off by a qualified clinical pharmacologist before any regulatory use.' },
 ]
 
 function FAQ() {
@@ -579,7 +579,7 @@ function Footer() {
         <div className="col-span-2 md:col-span-1">
           <div className="flex items-center gap-2.5 mb-3">
             <span className="w-9 h-9 rounded-xl bg-cyan-500/15 border border-cyan-400/30 flex items-center justify-center text-cyan-300">{Icon.logo}</span>
-            <span className="text-white font-extrabold tracking-tight">Protocol<span className="text-cyan-300">AI</span></span>
+            <span className="text-white font-extrabold tracking-tight">Quark <span className="text-cyan-300">AI</span></span>
           </div>
           <p className="text-sm leading-relaxed">AI-assisted, statistically-rigorous FDA-compliant protocol generation.</p>
         </div>
@@ -606,7 +606,7 @@ function Footer() {
       </div>
       <div className="border-t border-white/8">
         <div className="max-w-6xl mx-auto px-5 py-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
-          <p>© {new Date().getFullYear()} ProtocolAI. For investigational use only.</p>
+          <p>© {new Date().getFullYear()} Quark AI. For investigational use only.</p>
           <p>FDA BE 2014 · ICH E6(R2) GCP · 21 CFR Part 11</p>
         </div>
       </div>
