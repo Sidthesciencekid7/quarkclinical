@@ -1,9 +1,10 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Outlet } from 'react-router-dom'
 import Landing from './pages/Landing'
 import JoinOrg from './pages/JoinOrg'
 import Terms from './pages/Terms'
 import Privacy from './pages/Privacy'
 import AdminDashboard from './pages/AdminDashboard'
+import SuiteHome from './pages/SuiteHome'
 import ProtocolApp from './ProtocolApp'
 import { LaunchProvider, Protected, AdminProtected } from './lib/auth'
 import { ActingUserProvider } from './lib/actingUser'
@@ -23,13 +24,16 @@ export default function App() {
                 <ActingUserProvider>
                   <OrgProvider>
                     <OrgGate>
-                      <ProtocolApp />
+                      <Outlet />
                     </OrgGate>
                   </OrgProvider>
                 </ActingUserProvider>
               </Protected>
             }
-          />
+          >
+            <Route index element={<SuiteHome />} />
+            <Route path="protocol" element={<ProtocolApp />} />
+          </Route>
           <Route
             path="/join/:token"
             element={

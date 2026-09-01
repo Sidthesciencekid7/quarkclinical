@@ -10,6 +10,7 @@ import CSRView from './components/CSRView'
 import ReviewDesign from './components/ReviewDesign'
 import TeamView from './components/TeamView'
 import ProtocolEditor from './editor/ProtocolEditor'
+import QuarkLogo from './components/QuarkLogo'
 import { AccountButton } from './lib/auth'
 import { ActingUserPicker } from './lib/actingUser'
 import { api } from './api/client'
@@ -94,13 +95,9 @@ function Header({ view, onNavReports, onNavNew, onNavTeam }: {
   return (
     <header style={{ background: 'var(--navy)' }} className="border-b border-white/5 sticky top-0 z-30">
       <div className="max-w-5xl mx-auto px-6 py-3 flex items-center justify-between gap-4">
-        <Link to="/" className="flex items-center gap-3 group flex-shrink-0" title="Back to home">
+        <Link to="/app" className="flex items-center gap-3 group flex-shrink-0" title="Suite home">
           <div className="w-9 h-9 rounded-xl bg-cyan-500/15 border border-cyan-400/25 flex items-center justify-center flex-shrink-0 transition-transform duration-200 group-hover:scale-105">
-            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-              <path d="M4 3h9l4 4v11a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="#22d3ee" strokeWidth="1.5" strokeLinejoin="round" />
-              <path d="M13 3v5h4" stroke="#22d3ee" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-              <path d="M7 10h6M7 13h4" stroke="#22d3ee" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
+            <QuarkLogo size={20} stroke="#22d3ee" />
           </div>
           <div className="hidden sm:block">
             <div className="flex items-center gap-2">

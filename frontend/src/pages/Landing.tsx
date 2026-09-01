@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { useReveal, useCountUp, spotlightMove } from '../lib/useReveal'
 import { useLaunch } from '../lib/auth'
 import ContactSalesModal from '../components/ContactSalesModal'
+import QuarkLogo from '../components/QuarkLogo'
 
 /* ───────────────────────── helpers ───────────────────────── */
 
@@ -30,13 +31,7 @@ function Reveal({
 /* ───────────────────────── icons (Lucide-style, 1.5 stroke) ───────────────────────── */
 
 const Icon = {
-  logo: (
-    <svg width="22" height="22" viewBox="0 0 20 20" fill="none">
-      <path d="M4 3h9l4 4v11a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-      <path d="M13 3v5h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M7 11h6M7 14h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  ),
+  logo: <QuarkLogo size={22} />,
   arrow: (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="transition-transform duration-300 group-hover:translate-x-1">
       <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
