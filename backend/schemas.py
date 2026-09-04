@@ -9,7 +9,18 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, computed_field, field_validator
 
-from models import LiteratureSource, PKParameter, ProtocolStatus, StudyType, UserRole
+from models import (
+    BudgetBucket,
+    BudgetDiscountType,
+    BudgetLineSource,
+    BudgetLineStatus,
+    BudgetStatus,
+    LiteratureSource,
+    PKParameter,
+    ProtocolStatus,
+    StudyType,
+    UserRole,
+)
 from services.design_decisions import classify_drug_modality
 
 
@@ -561,3 +572,218 @@ class StudyReportSummary(BaseModel):
     has_results: bool = False
     verdict: Optional[str] = None
     created_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Budgets
+# ---------------------------------------------------------------------------
+
+
+class BudgetLineItemCreate(BaseModel):
+    label: str
+    quantity: Optional[float] = None
+    unit_cost: Optional[float] = None
+    unit_description: Optional[str] = None
+    # Independently settable: many real rows are lump sums with no unit math.
+    # OMIT the field entirely to let the server compute quantity*unit_cost;
+    # SEND it (even as null) and the server stores exactly what you sent.
+    total: Optional[float] = None
+    status: BudgetLineStatus = BudgetLineStatus.costed
+    note: Optional[str] = None
+    sort_order: Optional[int] = None
+    # `source` / `derivation_key` are deliberately absent — only the engine mints
+    # a protocol_derived row, so a client cannot fake the derived badge.
+
+
+class BudgetLineItemUpdate(BaseModel):
+    # Every field optional; the router applies model_dump(exclude_unset=True),
+    # so omitted = untouched and explicit null = cleared.
+    label: Optional[str] = None
+    quantity: Optional[float] = None
+    unit_cost: Optional[float] = None
+    unit_description: Optional[str] = None
+    total: Optional[float] = None
+    status: Optional[BudgetLineStatus] = None
+    note: Optional[str] = None
+    sort_order: Optional[int] = None
+    # Move the row to another category OF THE SAME BUDGET.
+    category_id: Optional[uuid.UUID] = None
+
+
+class BudgetLineItemRead(BaseModel):
+    id: uuid.UUID
+    category_id: uuid.UUID
+    label: str
+    quantity: Optional[float] = None
+    unit_cost: Optional[float] = None
+    unit_description: Optional[str] = None
+    total: Optional[float] = None
+    status: BudgetLineStatus
+    source: BudgetLineSource
+    derivation_key: Optional[str] = None
+    note: Optional[str] = None
+    sort_order: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BudgetCategoryCreate(BaseModel):
+    name: str
+    bucket: BudgetBucket = BudgetBucket.direct
+    note: Optional[str] = None
+    sort_order: Optional[int] = None
+
+
+class BudgetCategoryUpdate(BaseModel):
+    name: Optional[str] = None
+    bucket: Optional[BudgetBucket] = None
+    note: Optional[str] = None
+    sort_order: Optional[int] = None
+
+
+class BudgetCategoryRead(BaseModel):
+    id: uuid.UUID
+    budget_id: uuid.UUID
+    name: str
+    bucket: BudgetBucket
+    sort_order: int
+    note: Optional[str] = None
+    line_items: list[BudgetLineItemRead] = []
+    # Computed by budget_engine.category_subtotal — the router fills this in
+    # (see _category_read); it is never stored.
+    subtotal: float = 0.0
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BudgetRollup(BaseModel):
+    """The exact arithmetic of the reference signed budgets. Recomputed on every
+    read — never persisted, so it can never drift from the line items."""
+    direct_subtotal: float
+    discount_type: str
+    discount_value: float
+    discount_amount: float
+    total_direct_costs: float
+    subject_stipend_total: float
+    variable_total: float
+    pass_through_total: float
+    grand_total: float
+    category_subtotals: dict[str, float] = {}
+
+
+class BudgetCreate(BaseModel):
+    # A drug name alone is enough to produce a complete, fully-priced budget.
+    # `name` is derived from drug_inn when omitted; at least one of the two
+    # must be present (422 otherwise).
+    name: Optional[str] = None
+    drug_inn: Optional[str] = None
+    # Optional hint; when a protocol is linked its study_type wins unless the
+    # caller sent one explicitly. Must be a StudyType value ("BE",
+    # "biosimilar_pk", "food_effect") or 422.
+    study_type: Optional[str] = None
+    # OPTIONAL accuracy boost, NOT an either/or with drug_inn any more — a
+    # budget is fully usable with no protocol at all. When present, the
+    # protocol is org-checked and its real computed schedule seeds the
+    # Clinical Conduct cost drivers (and every other rate-card quantity that
+    # has a protocol-side source).
+    protocol_id: Optional[uuid.UUID] = None
+    sponsor_name: Optional[str] = None
+    cro_name: Optional[str] = None
+    currency: str = "USD"
+    # Study-level assumptions. Any value supplied here WINS over both the
+    # protocol and the rate card's per-study-type default.
+    n_enrolled: Optional[int] = None
+    n_sites: Optional[int] = None
+    n_dosing_groups: Optional[int] = None
+    project_duration_months: Optional[float] = None
+    screen_failure_rate_pct: Optional[float] = None
+    n_screen_failures: Optional[int] = None
+    n_alternates: Optional[int] = None
+    n_screened: Optional[int] = None
+    notes: Optional[str] = None
+
+
+class BudgetUpdate(BaseModel):
+    # NOTE: protocol_id is intentionally NOT here — linking/unlinking is a
+    # side-effecting operation (it derives line items), so it gets its own
+    # endpoint rather than hiding inside a generic field patch.
+    name: Optional[str] = None
+    sponsor_name: Optional[str] = None
+    cro_name: Optional[str] = None
+    currency: Optional[str] = None
+    status: Optional[BudgetStatus] = None
+    drug_inn: Optional[str] = None
+    study_type: Optional[str] = None
+    n_enrolled: Optional[int] = None
+    screen_failure_rate_pct: Optional[float] = None
+    n_screen_failures: Optional[int] = None
+    n_alternates: Optional[int] = None
+    n_screened: Optional[int] = None
+    n_sites: Optional[int] = None
+    n_dosing_groups: Optional[int] = None
+    project_duration_months: Optional[float] = None
+    discount_type: Optional[BudgetDiscountType] = None
+    discount_value: Optional[float] = None
+    notes: Optional[str] = None
+
+
+class BudgetLinkProtocol(BaseModel):
+    """null unlinks (line items are kept — they are real work already done)."""
+    protocol_id: Optional[uuid.UUID] = None
+
+
+class ReorderRequest(BaseModel):
+    ordered_ids: list[uuid.UUID]
+
+
+class BudgetRead(BaseModel):
+    """Full budget document. Hand-assembled in the router (no from_attributes)
+    because categories carry computed subtotals and the rollup is computed, not
+    stored — same reason ProtocolSummary/StudyReportSummary are hand-assembled."""
+    id: uuid.UUID
+    org_id: str
+    protocol_id: Optional[uuid.UUID] = None
+    name: str
+    sponsor_name: Optional[str] = None
+    cro_name: Optional[str] = None
+    currency: str
+    status: BudgetStatus
+    drug_inn: Optional[str] = None
+    study_type: Optional[str] = None
+    n_enrolled: Optional[int] = None
+    screen_failure_rate_pct: Optional[float] = None
+    n_screen_failures: Optional[int] = None
+    n_alternates: Optional[int] = None
+    n_screened: Optional[int] = None
+    n_sites: Optional[int] = None
+    n_dosing_groups: Optional[int] = None
+    project_duration_months: Optional[float] = None
+    discount_type: BudgetDiscountType
+    discount_value: float
+    notes: Optional[str] = None
+    derivation: dict[str, Any] = {}
+    categories: list[BudgetCategoryRead] = []
+    rollup: BudgetRollup
+    created_at: datetime
+    updated_at: datetime
+
+
+class BudgetSummary(BaseModel):
+    """Lightweight row for the budgets list tile — no line items, but the
+    grand total so the list can show money without a second fetch. Hand-assembled
+    in the router, no model_config (the ProtocolSummary convention)."""
+    id: uuid.UUID
+    name: str
+    protocol_id: Optional[uuid.UUID] = None
+    drug_inn: Optional[str] = None
+    study_type: Optional[str] = None
+    status: BudgetStatus
+    currency: str
+    n_enrolled: Optional[int] = None
+    category_count: int
+    line_item_count: int
+    grand_total: float
+    created_at: datetime
+    updated_at: datetime

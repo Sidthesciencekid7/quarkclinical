@@ -51,9 +51,10 @@ const TOOLS: Tool[] = [
   {
     id: 'budgeting',
     name: 'Budgeting Tool',
-    description: 'Plan and track study budgets across sites, vendors, and CROs.',
+    description: 'Build CRO-style study budgets, priced from your protocol.',
     icon: BudgetIcon,
-    status: 'coming_soon',
+    href: '/app/budgeting',
+    status: 'available',
   },
 ]
 

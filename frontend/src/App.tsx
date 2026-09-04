@@ -6,6 +6,7 @@ import Privacy from './pages/Privacy'
 import AdminDashboard from './pages/AdminDashboard'
 import SuiteHome from './pages/SuiteHome'
 import ProtocolApp from './ProtocolApp'
+import BudgetingApp from './BudgetingApp'
 import { LaunchProvider, Protected, AdminProtected } from './lib/auth'
 import { ActingUserProvider } from './lib/actingUser'
 import { OrgProvider } from './lib/org'
@@ -33,6 +34,7 @@ export default function App() {
           >
             <Route index element={<SuiteHome />} />
             <Route path="protocol" element={<ProtocolApp />} />
+            <Route path="budgeting" element={<BudgetingApp />} />
           </Route>
           <Route
             path="/join/:token"

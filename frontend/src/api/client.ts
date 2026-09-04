@@ -1,4 +1,4 @@
-import type { AdminOrgRow, AppUser, Comment, CoverageReport, CsrInputKind, CsrQCReport, DdiScreeningResult, DesignPreviewResponse, Drug, GeneratedProtocol, GuidelinesResponse, Lead, LeadCreatePayload, Org, OrgMember, PopulationConfig, ProtocolCreatePayload, ProtocolSummary, QCReport, RiskScore, SectionUpdateResult, StudyReport, StudyReportSummary, StudyType } from '../types'
+import type { AdminOrgRow, AppUser, Budget, BudgetCategory, BudgetCategoryCreatePayload, BudgetCategoryUpdatePayload, BudgetCreatePayload, BudgetLineItem, BudgetLineItemCreatePayload, BudgetLineItemUpdatePayload, BudgetRollup, BudgetSummary, BudgetUpdatePayload, Comment, CoverageReport, CsrInputKind, CsrQCReport, DdiScreeningResult, DesignPreviewResponse, Drug, GeneratedProtocol, GuidelinesResponse, Lead, LeadCreatePayload, Org, OrgMember, PopulationConfig, ProtocolCreatePayload, ProtocolSummary, QCReport, RiskScore, SectionUpdateResult, StudyReport, StudyReportSummary, StudyType } from '../types'
 import { getActingUserId } from '../lib/actingUser'
 
 /** API origin. Empty by default so calls are same-origin `/api/...`:
@@ -418,6 +418,124 @@ export const api = {
     request<RiskScore>(`/protocols/${protocolId}/risk`),
 
   adminListOrgs: () => request<AdminOrgRow[]>('/orgs/admin/list'),
+
+  // ── Budgeting Tool ───────────────────────────────────────────────────
+  // Org-scoped like everything else; no org id is ever sent. The server owns
+  // ALL budget arithmetic — after any write, re-read (getBudget) or refresh
+  // totals only (getBudgetRollup). Never sum on the client.
+
+  /** This org's budgets, newest-modified first (My Budgets list). */
+  listBudgets: () => request<BudgetSummary[]>('/budgets'),
+
+  /** Create a budget. `protocol_id` is OPTIONAL — omitting it is a
+   *  first-class standalone flow, not a degraded one. */
+  createBudget: (payload: BudgetCreatePayload) =>
+    request<Budget>('/budgets', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  /** Full budget: categories, line items and a freshly recomputed rollup. */
+  getBudget: (budgetId: string) => request<Budget>(`/budgets/${budgetId}`),
+
+  /** Patch budget-level fields. Omitted key = unchanged, explicit null =
+   *  cleared. `protocol_id` is not accepted here — use linkBudgetProtocol. */
+  updateBudget: (budgetId: string, payload: BudgetUpdatePayload) =>
+    request<Budget>(`/budgets/${budgetId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  deleteBudget: (budgetId: string) =>
+    request<void>(`/budgets/${budgetId}`, { method: 'DELETE' }),
+
+  /** Link, re-link (re-derives) or unlink (pass null) a protocol.
+   *  Re-linking updates derived quantities in place and NEVER overwrites a
+   *  unit_cost or total the user typed; unlinking KEEPS the line items. */
+  linkBudgetProtocol: (budgetId: string, protocolId: string | null) =>
+    request<Budget>(`/budgets/${budgetId}/link-protocol`, {
+      method: 'POST',
+      body: JSON.stringify({ protocol_id: protocolId }),
+    }),
+
+  /** Cheap totals-only refresh for the sticky footer after an inline edit.
+   *  Also carries category_subtotals, so one call refreshes every aggregate
+   *  on screen. */
+  getBudgetRollup: (budgetId: string) =>
+    request<BudgetRollup>(`/budgets/${budgetId}/rollup`),
+
+  /** The budget as a Word document: cover page, 1.0 Assumptions, 2.0 Summary
+   *  Study Budget, 3.0 Itemized Study Budget, 4.0 Basis of Estimate. GET, no
+   *  body — same shape as exportCsrDocx. */
+  exportBudgetDocx: (budgetId: string): Promise<Blob> =>
+    requestBlobGet(`/budgets/${budgetId}/export/docx`),
+
+  createBudgetCategory: (budgetId: string, payload: BudgetCategoryCreatePayload) =>
+    request<BudgetCategory>(`/budgets/${budgetId}/categories`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updateBudgetCategory: (
+    budgetId: string,
+    categoryId: string,
+    payload: BudgetCategoryUpdatePayload,
+  ) =>
+    request<BudgetCategory>(`/budgets/${budgetId}/categories/${categoryId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  /** Deletes the category's line items too. */
+  deleteBudgetCategory: (budgetId: string, categoryId: string) =>
+    request<void>(`/budgets/${budgetId}/categories/${categoryId}`, {
+      method: 'DELETE',
+    }),
+
+  /** `orderedIds` MUST list every category of this budget exactly once (422
+   *  otherwise). Returns the categories in the new order. */
+  reorderBudgetCategories: (budgetId: string, orderedIds: string[]) =>
+    request<BudgetCategory[]>(`/budgets/${budgetId}/categories/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ ordered_ids: orderedIds }),
+    }),
+
+  /** Create a line item. Omit `total` and pass both quantity and unit_cost to
+   *  let the server multiply; pass `total` (number or null) for a lump sum the
+   *  server stores verbatim and never recomputes. */
+  createBudgetLineItem: (
+    budgetId: string,
+    categoryId: string,
+    payload: BudgetLineItemCreatePayload,
+  ) =>
+    request<BudgetLineItem>(`/budgets/${budgetId}/categories/${categoryId}/line-items`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  /** NOTE the route shape: line items are flat under the BUDGET, not under
+   *  the category. Send `category_id` in the payload to move a row. */
+  updateBudgetLineItem: (
+    budgetId: string,
+    lineItemId: string,
+    payload: BudgetLineItemUpdatePayload,
+  ) =>
+    request<BudgetLineItem>(`/budgets/${budgetId}/line-items/${lineItemId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  deleteBudgetLineItem: (budgetId: string, lineItemId: string) =>
+    request<void>(`/budgets/${budgetId}/line-items/${lineItemId}`, {
+      method: 'DELETE',
+    }),
+
+  /** Same all-ids-exactly-once rule as reorderBudgetCategories. */
+  reorderBudgetLineItems: (budgetId: string, categoryId: string, orderedIds: string[]) =>
+    request<BudgetLineItem[]>(
+      `/budgets/${budgetId}/categories/${categoryId}/line-items/reorder`,
+      { method: 'POST', body: JSON.stringify({ ordered_ids: orderedIds }) },
+    ),
 
   // ── Clone / start-from-template ──────────────────────────────────────
   /**

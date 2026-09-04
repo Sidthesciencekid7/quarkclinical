@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from routers import audit, comments, drugs, export, guidelines, leads, literature, orgs, pipeline, protocols, risk, study_reports, users
+from routers import audit, budgets, comments, drugs, export, guidelines, leads, literature, orgs, pipeline, protocols, risk, study_reports, users
 
 
 def _init_sentry() -> None:
@@ -149,6 +149,7 @@ app.include_router(orgs.router)
 app.include_router(leads.router)
 app.include_router(comments.router)
 app.include_router(study_reports.router)
+app.include_router(budgets.router)
 
 
 # ---------------------------------------------------------------------------

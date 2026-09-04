@@ -555,3 +555,334 @@ export const CSR_SECTION_TITLES: Record<string, string> = {
   discussion_conclusions: 'Discussion and Overall Conclusions',
   references: 'References',
 }
+
+// ── Budgeting Tool ────────────────────────────────────────────────────────
+// Wire shapes for /api/budgets. Money is a JSON number or null throughout —
+// NEVER a string, and never recomputed on the client: the server owns every
+// subtotal, the discount, and the grand total (see BudgetRollup).
+
+export type BudgetStatus = 'draft' | 'final' | 'archived'
+
+/** Which rollup bucket a category feeds. Only `direct` is discountable. */
+export type BudgetBucket = 'direct' | 'stipend' | 'variable' | 'pass_through'
+
+export type BudgetDiscountType = 'none' | 'percent' | 'flat'
+
+/** Only `costed` rows carry money into a subtotal. The other five are the real
+ *  CRO vocabulary for "this row exists but has no total" and render as a status
+ *  label where the money would be. */
+export type BudgetLineStatus =
+  | 'costed'
+  | 'out_of_scope'
+  | 'not_applicable'
+  | 'not_planned'
+  | 'outsourced'
+  | 'actuals_only'
+
+/** `protocol_derived` = the system found this cost driver in the linked
+ *  protocol's computed schedule. `rate_card` = both quantity and unit cost
+ *  are calibrated approximations from the server's rate card. Never render
+ *  `rate_card` identically to `manual` (typed by a person) or to
+ *  `protocol_derived` (quantity came from a real linked protocol). */
+export type BudgetLineSource = 'manual' | 'protocol_derived' | 'rate_card'
+
+/** Namespaced, server-defined keys (e.g. "dm.edc_license",
+ *  "stipend.completed") — never a closed set, never matched against one. */
+export type BudgetDerivationKey = string
+
+export interface BudgetLineItem {
+  id: string
+  category_id: string
+  label: string
+  quantity: number | null
+  unit_cost: number | null
+  unit_description: string | null
+  total: number | null
+  status: BudgetLineStatus
+  source: BudgetLineSource
+  derivation_key: BudgetDerivationKey | null
+  note: string | null
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
+export interface BudgetCategory {
+  id: string
+  budget_id: string
+  name: string
+  bucket: BudgetBucket
+  sort_order: number
+  note: string | null
+  /** Already sorted by sort_order by the server. */
+  line_items: BudgetLineItem[]
+  /** Sum of `costed` line totals. Server-computed — see BudgetRollup for why
+   *  the UI reads `rollup.category_subtotals[id]` instead of this field after
+   *  a write. */
+  subtotal: number
+}
+
+export interface BudgetRollup {
+  direct_subtotal: number
+  discount_type: BudgetDiscountType
+  discount_value: number
+  discount_amount: number
+  total_direct_costs: number
+  subject_stipend_total: number
+  variable_total: number
+  pass_through_total: number
+  grand_total: number
+  /** category id -> subtotal. The single freshest source of every per-category
+   *  number after any line-item write. */
+  category_subtotals: Record<string, number>
+}
+
+/** One cost driver the protocol/rate-card produced, as the derivation record
+ *  reports it. `unit_cost`/`total`/`source`/`category`/`basis` are populated
+ *  for the auto-population engine's rows (both protocol_derived and
+ *  rate_card); a legacy protocol-only derivation may omit them. */
+export interface BudgetDerivationLine {
+  derivation_key: BudgetDerivationKey
+  label: string
+  quantity: number
+  unit_description: string | null
+  unit_cost?: number | null
+  total?: number | null
+  source?: BudgetLineSource
+  category?: string
+  basis?: string
+}
+
+/** One auto-populated field's provenance: what value was used, where it came
+ *  from, and a one-line human explanation (`basis`) safe to render verbatim. */
+export interface BudgetDerivationAssumption {
+  value: number | string | boolean | null
+  source: 'user' | 'protocol' | 'default' | 'computed' | 'inferred_from_modality'
+  basis: string
+}
+
+/** Provenance of the budget's figures — rendered as "how we got these
+ *  numbers". `warnings` are shown VERBATIM, never paraphrased. `protocol_id`
+ *  is null for a drug-name-only budget (no protocol involved at all). */
+export interface BudgetDerivation {
+  protocol_id: string | null
+  derived_at: string
+  n_enrolled: number | null
+  n_pk_timepoints: number | null
+  n_ada_timepoints: number | null
+  n_visit_days: number | null
+  design_key: string | null
+  periods: number | null
+  lines: BudgetDerivationLine[]
+  warnings: string[]
+  /** Always false now — do not branch on it. */
+  skipped: boolean
+  engine?: 'budget_auto_population'
+  rate_card_version?: string
+  mode?: 'create' | 'reconcile'
+  drug_inn?: string | null
+  modality?: 'biologic' | 'small_molecule' | 'unknown'
+  study_type?: string | null
+  complexity?: 'simple' | 'complex'
+  currency?: string
+  /** True only when a real protocol was linked — a drug-name-only budget has
+   *  a full derivation too, just with this false and protocol_id null. */
+  protocol_linked?: boolean
+  assumptions?: Record<string, BudgetDerivationAssumption>
+  conduct?: {
+    target_per_enrolled: number
+    pk_draw_rate: number
+    ada_draw_rate: number
+    visit_day_rate: number
+    itemized_per_enrolled: number
+    residual_per_enrolled: number
+    screen_failure_ratio: number
+    alternate_ratio: number
+  }
+  line_keys?: string[]
+  /** derivation_key -> the price the engine assigned. Compare a line's live
+   *  `unit_cost` against this (not `source`) to detect a user's correction —
+   *  PATCH refuses to change source/derivation_key, so a corrected rate_card
+   *  row keeps its "Estimated" badge forever. */
+  auto_priced?: Record<string, number | null>
+  user_removed_keys?: string[]
+  estimated_grand_total?: number
+  /** Rendered verbatim as the editor's top-of-page disclosure line. */
+  disclaimer?: string
+  discount_note?: string
+}
+
+export interface Budget {
+  id: string
+  org_id: string
+  protocol_id: string | null
+  name: string
+  sponsor_name: string | null
+  cro_name: string | null
+  currency: string
+  status: BudgetStatus
+  // Auto-estimated by the server on create; every one of these is editable.
+  drug_inn: string | null
+  study_type: StudyType | null
+  n_enrolled: number | null
+  screen_failure_rate_pct: number | null
+  n_screen_failures: number | null
+  n_alternates: number | null
+  n_screened: number | null
+  n_sites: number | null
+  n_dosing_groups: number | null
+  project_duration_months: number | null
+  discount_type: BudgetDiscountType
+  discount_value: number
+  notes: string | null
+  derivation: BudgetDerivation | null
+  categories: BudgetCategory[]
+  rollup: BudgetRollup
+  created_at: string
+  updated_at: string
+}
+
+export interface BudgetSummary {
+  id: string
+  name: string
+  protocol_id: string | null
+  drug_inn: string | null
+  study_type: StudyType | null
+  status: BudgetStatus
+  currency: string
+  n_enrolled: number | null
+  category_count: number
+  line_item_count: number
+  grand_total: number
+  created_at: string
+  updated_at: string
+}
+
+// ── Budget request payloads ──────────────────────────────────────────────
+// IMPORTANT for every payload below: `undefined` means "omit the key" and
+// `null` means "send an explicit null". `JSON.stringify` drops undefined keys,
+// so one object literal expresses both. Never write `total: maybeNumber` when
+// you mean "let the server compute it" — see BudgetLineItemCreatePayload.
+
+/** Give it a drug_inn (or a name) and the server returns a complete,
+ *  fully-priced budget. Any numeric field here overrides both the protocol
+ *  and the rate-card default. */
+export interface BudgetCreatePayload {
+  /** Optional now — omit it and the server names the budget
+   *  "<Drug> study budget". */
+  name?: string
+  /** THE primary input. A drug INN on its own produces a complete,
+   *  fully-priced budget. */
+  drug_inn?: string
+  study_type?: StudyType
+  protocol_id?: string | null
+  sponsor_name?: string | null
+  cro_name?: string | null
+  currency?: string
+  n_enrolled?: number | null
+  n_sites?: number | null
+  n_dosing_groups?: number | null
+  project_duration_months?: number | null
+  screen_failure_rate_pct?: number | null
+  n_screen_failures?: number | null
+  n_alternates?: number | null
+  n_screened?: number | null
+  notes?: string | null
+}
+
+/** Every key optional: omitted = unchanged, explicit null = cleared.
+ *  `protocol_id` is deliberately absent — link/unlink goes through
+ *  api.linkBudgetProtocol. A percent discount must be 0..100 (else 422), so
+ *  validate before sending. */
+export interface BudgetUpdatePayload {
+  name?: string
+  sponsor_name?: string | null
+  cro_name?: string | null
+  currency?: string
+  status?: BudgetStatus
+  drug_inn?: string | null
+  study_type?: StudyType | null
+  n_enrolled?: number | null
+  screen_failure_rate_pct?: number | null
+  n_screen_failures?: number | null
+  n_alternates?: number | null
+  n_screened?: number | null
+  n_sites?: number | null
+  n_dosing_groups?: number | null
+  project_duration_months?: number | null
+  discount_type?: BudgetDiscountType
+  discount_value?: number
+  notes?: string | null
+}
+
+export interface BudgetCategoryCreatePayload {
+  name: string
+  bucket: BudgetBucket
+  note?: string | null
+  /** Omit to append to the end. */
+  sort_order?: number | null
+}
+
+export interface BudgetCategoryUpdatePayload {
+  name?: string
+  bucket?: BudgetBucket
+  note?: string | null
+  sort_order?: number
+}
+
+/** THE TOTAL RULE, encoded:
+ *  - omit `total` entirely + send both quantity and unit_cost -> server
+ *    computes total = quantity * unit_cost;
+ *  - send `total` (number OR null) -> server stores exactly that, forever, and
+ *    never recomputes it. Use for lump-sum rows.
+ *  `source` / `derivation_key` are ignored if sent; created rows are always
+ *  source:"manual". */
+export interface BudgetLineItemCreatePayload {
+  label: string
+  quantity?: number | null
+  unit_cost?: number | null
+  unit_description?: string | null
+  total?: number | null
+  status?: BudgetLineStatus
+  note?: string | null
+  sort_order?: number | null
+}
+
+/** Same total rule: total recomputes ONLY when `total` is omitted AND
+ *  quantity and/or unit_cost are sent AND both merged values end up non-null.
+ *  `category_id` moves the row to another category of the SAME budget.
+ *  `source` and `derivation_key` are NOT patchable — omit them always. */
+export interface BudgetLineItemUpdatePayload {
+  label?: string
+  quantity?: number | null
+  unit_cost?: number | null
+  unit_description?: string | null
+  total?: number | null
+  status?: BudgetLineStatus
+  note?: string | null
+  sort_order?: number
+  category_id?: string
+}
+
+export interface BudgetReorderPayload {
+  /** MUST list every sibling id exactly once, or the server returns 422. */
+  ordered_ids: string[]
+}
+
+// ── Display maps (used by the budget components) ─────────────────────────
+
+export const BUDGET_LINE_STATUS_LABELS: Record<BudgetLineStatus, string> = {
+  costed: 'Costed',
+  out_of_scope: 'Out of scope',
+  not_applicable: 'Not applicable',
+  not_planned: 'Not planned',
+  outsourced: 'Outsourced',
+  actuals_only: 'Actuals only',
+}
+
+export const BUDGET_BUCKET_LABELS: Record<BudgetBucket, string> = {
+  direct: 'Direct cost',
+  stipend: 'Subject stipend',
+  variable: 'Variable',
+  pass_through: 'Pass-through',
+}

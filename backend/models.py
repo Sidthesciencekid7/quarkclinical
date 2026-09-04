@@ -86,6 +86,82 @@ class LeadStatus(str, enum.Enum):
     lost = "lost"
 
 
+class BudgetBucket(str, enum.Enum):
+    """Which rollup line a category feeds. The rollup math keys on THIS, never
+    on the category's name — so a renamed or user-added category still totals
+    correctly."""
+    direct = "direct"
+    stipend = "stipend"
+    variable = "variable"
+    pass_through = "pass_through"
+
+
+class BudgetLineStatus(str, enum.Enum):
+    """Why a line does or does not carry a dollar figure.
+
+    Only `costed` rows are summed. The other five are the real, observed CRO
+    vocabulary for "this row exists but has no total": they must be first-class
+    states, not a null total with no explanation.
+      costed         — a real cost to be priced/summed. Every costed row is
+                       created fully priced by the rate-card auto-population
+                       engine (services/budget_engine.py); the user may edit
+                       it afterwards.
+      out_of_scope   — "Out of Scope for <CRO>"
+      not_applicable — "Not Applicable"
+      not_planned    — "Not Planned"
+      outsourced     — "Outsourced to Vendor"
+      actuals_only   — "Actuals incurred" (rate-card only; the whole
+                       CRO/Vendor Variable and Pass-Through categories)
+    """
+    costed = "costed"
+    out_of_scope = "out_of_scope"
+    not_applicable = "not_applicable"
+    not_planned = "not_planned"
+    outsourced = "outsourced"
+    actuals_only = "actuals_only"
+
+
+class BudgetLineSource(str, enum.Enum):
+    """Where this row's numbers came from.
+      manual           — the user typed this row (or moved/renamed one)
+      protocol_derived — the QUANTITY came from the linked protocol's real
+                         computed sampling/visit schedule. Its unit cost is
+                         still a rate-card approximation; the row's note and
+                         Budget.derivation say so.
+      rate_card        — both quantity and unit cost are approximations from
+                         services/budget_rate_card.py, calibrated against real
+                         signed CRO budgets. Editable, and traceable via
+                         Budget.derivation["assumptions"] / ["lines"].
+
+    "The user has since edited it by hand" is deliberately NOT a fourth value:
+    `source` is a provenance badge that must survive an edit (see
+    tests/test_budgets.py::test_patch_cannot_change_source_or_derivation_key).
+    Edited-ness is instead answered by comparing a row's current unit_cost to
+    Budget.derivation["auto_priced"][derivation_key].
+    """
+    manual = "manual"
+    protocol_derived = "protocol_derived"
+    rate_card = "rate_card"
+
+
+class BudgetDiscountType(str, enum.Enum):
+    """`none` exists because the rollup formula has an explicit else-branch
+    (discount_amount = 0). Modelling 'no discount' as a state rather than as a
+    percent of 0 keeps the UI honest about whether a discount was negotiated."""
+    none = "none"
+    percent = "percent"
+    flat = "flat"
+
+
+class BudgetStatus(str, enum.Enum):
+    """Lifecycle of the budget document itself. (This is the ONE enum beyond the
+    four the brief listed — it is additive, not an alternative to anything
+    specified, and mirrors ProtocolStatus/LicenseStatus house practice.)"""
+    draft = "draft"
+    final = "final"
+    archived = "archived"
+
+
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
@@ -449,3 +525,196 @@ class StudyReportVersion(Base):
     )
 
     study_report: Mapped["StudyReport"] = relationship("StudyReport", back_populates="versions")
+
+
+class Budget(Base):
+    """A clinical study budget — the second tool in the Quark AI suite.
+
+    Standalone by design: `protocol_id` is OPTIONAL — a drug name alone is
+    enough for services/budget_engine.py to produce a complete, fully-priced
+    budget from services/budget_rate_card.py. When a protocol IS linked, the
+    engine derives REAL cost-driver quantities from that protocol's
+    already-computed visit/sampling schedule and prices them the same way.
+    Every dollar figure is an approximation calibrated against real signed CRO
+    budgets, never left blank — and `derivation` records exactly which
+    assumption produced which figure, so every number stays traceable and
+    editable.
+
+    ondelete="SET NULL" on protocol_id (deliberately NOT CASCADE): a budget is a
+    commercial document with its own life; deleting the source protocol must
+    orphan the link, not destroy the budget.
+    """
+    __tablename__ = "budgets"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # Plain indexed string holding the org SLUG — NEVER an FK to organizations.id.
+    # Compared directly as budget.org_id == actor.org_id, exactly like Protocol/StudyReport.
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    protocol_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("protocols.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    sponsor_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    cro_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    currency: Mapped[str] = mapped_column(String(8), nullable=False, server_default="USD")
+    status: Mapped[BudgetStatus] = mapped_column(
+        Enum(BudgetStatus, name="budget_status", native_enum=False, length=20),
+        nullable=False, default=BudgetStatus.draft,
+    )
+
+    # -- Study-level assumptions (the header block of every real CRO budget) --
+    # drug_inn / study_type / n_enrolled are AUTO-FILLED from a linked protocol
+    # (and remain user-editable afterwards). The rest are ALWAYS user-entered:
+    # there is no site-count, screen-failure, alternate-subject, dosing-group or
+    # project-duration concept anywhere in the protocol engine, so deriving them
+    # would be invention. n_screened / n_screen_failures are stored EXACTLY as
+    # typed and are never back-computed from screen_failure_rate_pct.
+    drug_inn: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    study_type: Mapped[str | None] = mapped_column(String(32), nullable=True)   # display string, e.g. "BE"
+    n_enrolled: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    screen_failure_rate_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    n_screen_failures: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    n_alternates: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    n_screened: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    n_sites: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    n_dosing_groups: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    project_duration_months: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # -- Discount (applies to the DIRECT bucket subtotal only) ---------------
+    discount_type: Mapped[BudgetDiscountType] = mapped_column(
+        Enum(BudgetDiscountType, name="budget_discount_type", native_enum=False, length=20),
+        nullable=False, default=BudgetDiscountType.none,
+    )
+    discount_value: Mapped[float] = mapped_column(Float, nullable=False, server_default="0", default=0.0)
+
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Provenance of the last protocol-derivation run: which protocol, when, the
+    # exact counts used (n_enrolled, PK timepoints, ADA timepoints, visit days)
+    # and any honesty warnings. Mirrors the platform-wide "show your work"
+    # principle used by _sample_size / _sampling_schedule.
+    derivation: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    protocol: Mapped["Protocol | None"] = relationship("Protocol")
+    categories: Mapped[list["BudgetCategory"]] = relationship(
+        "BudgetCategory",
+        back_populates="budget",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="BudgetCategory.sort_order",
+    )
+
+
+class BudgetCategory(Base):
+    """One cost section of a budget (Recruiting, Clinical Conduct, ...).
+
+    Seeded from budget_engine.DEFAULT_CATEGORIES — a starting TEMPLATE, not a
+    hardcoded enum: every row is renameable, re-bucketable, reorderable and
+    deletable. `bucket` is what the rollup math keys on, not the name.
+
+    No org_id of its own: isolation is enforced through the parent Budget via
+    get_budget_scoped, exactly like Comment does through Protocol.
+    """
+    __tablename__ = "budget_categories"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    budget_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("budgets.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    bucket: Mapped[BudgetBucket] = mapped_column(
+        Enum(BudgetBucket, name="budget_bucket", native_enum=False, length=20),
+        nullable=False, default=BudgetBucket.direct,
+    )
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0", default=0)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    budget: Mapped["Budget"] = relationship("Budget", back_populates="categories")
+    line_items: Mapped[list["BudgetLineItem"]] = relationship(
+        "BudgetLineItem",
+        back_populates="category",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="BudgetLineItem.sort_order",
+    )
+
+
+class BudgetLineItem(Base):
+    """One priced (or explicitly un-priced) row of a budget category.
+
+    Every money field is NULLABLE, but only because some rows carry NO dollar
+    figure BY DESIGN — only a status: "Out of Scope", "Not Applicable", "Not
+    Planned", "Outsourced to Vendor", "Actuals incurred" (the CRO-Variable and
+    Pass-Through categories are ENTIRELY rate-card, with no knowable total
+    until incurred). Every `costed` row, by contrast, is created fully priced
+    by services/budget_engine.py's rate-card auto-population — quantity AND
+    unit_cost AND total are all filled in automatically, from a linked
+    protocol's real schedule when there is one and from calibrated per-study
+    defaults when there is not. `total` is INDEPENDENTLY SETTABLE and is never
+    force-recomputed by the server afterwards: many real rows are lump sums
+    with no visible quantity x unit_cost arithmetic.
+
+    `source` distinguishes a row whose QUANTITY the system found in the linked
+    protocol's real computed schedule ('protocol_derived') from one priced
+    purely off the rate card ('rate_card') from one the user typed from
+    scratch ('manual') — see BudgetLineSource. Editedness is NOT part of
+    `source`: compare a row's current unit_cost against
+    Budget.derivation["auto_priced"][derivation_key] instead.
+    """
+    __tablename__ = "budget_line_items"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    category_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("budget_categories.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    label: Mapped[str] = mapped_column(String(512), nullable=False)
+    quantity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    unit_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Free text exactly as seen in real budgets: "Per study", "per screened
+    # subject", "per subject", "per week", "per month", "per year", "per dose",
+    # "per amendment", "per visit", "per draw".
+    unit_description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    total: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[BudgetLineStatus] = mapped_column(
+        Enum(BudgetLineStatus, name="budget_line_status", native_enum=False, length=20),
+        nullable=False, default=BudgetLineStatus.costed,
+    )
+    source: Mapped[BudgetLineSource] = mapped_column(
+        Enum(BudgetLineSource, name="budget_line_source", native_enum=False, length=20),
+        nullable=False, default=BudgetLineSource.manual,
+    )
+    # Stable key identifying WHICH derivation produced this row
+    # ("pk_draws" | "ada_draws" | "subject_visits"); NULL for manual rows.
+    # Re-derivation matches on this so a user-entered price is never clobbered.
+    derivation_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Free-text rationale AND revision history — real budgets use this column
+    # literally ("Changed as subject number increased from 172 to 176",
+    # "Removed the cost", "Added additional lab data transmissions").
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0", default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    category: Mapped["BudgetCategory"] = relationship("BudgetCategory", back_populates="line_items")

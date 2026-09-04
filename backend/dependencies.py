@@ -30,6 +30,8 @@ from sqlalchemy.orm import selectinload
 from database import AsyncSessionLocal
 from models import (
     AuditLog,
+    Budget,
+    BudgetCategory,
     License,
     LicenseStatus,
     Organization,
@@ -46,6 +48,7 @@ _PATH_TO_RESOURCE: dict[str, str] = {
     "export": "export",
     "audit": "audit",
     "orgs": "organization",
+    "budgets": "budget",
 }
 
 _LOG_METHODS = frozenset({"POST", "PATCH", "PUT", "DELETE"})
@@ -262,6 +265,37 @@ async def get_study_report_scoped(
             403, detail="Study report belongs to a different organization."
         )
     return report
+
+
+async def get_budget_scoped(
+    db: AsyncSession, budget_id: uuid.UUID, actor: User, *, load_tree: bool = False,
+) -> Budget:
+    """Fetch a budget, 404 if missing, 403 if it belongs to a different org
+    than the actor's — the same IDOR guard as get_protocol_scoped /
+    get_study_report_scoped. A budget carries a customer's negotiated CRO
+    pricing, which is commercially sensitive; cross-org reads must be
+    impossible even with a guessed or leaked UUID, so every budget-scoped
+    route fetches through this instead of a bare db.get(Budget, ...).
+
+    ``load_tree`` eagerly loads categories -> line items. Pass it for any
+    route that touches the tree or computes rollups: these relationships are
+    lazy, and touching them un-loaded raises MissingGreenlet under the async
+    session.
+    """
+    stmt = select(Budget).where(Budget.id == budget_id)
+    if load_tree:
+        stmt = stmt.options(
+            selectinload(Budget.categories).selectinload(BudgetCategory.line_items)
+        )
+    result = await db.execute(stmt)
+    budget = result.scalar_one_or_none()
+    if not budget:
+        raise HTTPException(404, detail="Budget not found.")
+    if budget.org_id != actor.org_id:
+        raise HTTPException(
+            403, detail="Budget belongs to a different organization."
+        )
+    return budget
 
 
 def _admin_emails() -> set[str]:
