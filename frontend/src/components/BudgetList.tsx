@@ -31,6 +31,18 @@ const STUDY_BADGE: Record<StudyType, string> = {
   food_effect: 'bg-amber-50 text-amber-700 border-amber-200',
 }
 
+// Subject-profile pill, next to the study-type pill — a 22-category patient
+// budget and a 17-category healthy one look identical until this tells you
+// which is which.
+const PROFILE_PILL: Record<'healthy' | 'patient', string> = {
+  healthy: 'bg-slate-50 text-slate-600 border-slate-200',
+  patient: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+}
+const PROFILE_LABEL: Record<'healthy' | 'patient', string> = {
+  healthy: 'Healthy',
+  patient: 'Patient',
+}
+
 const STATUS_PILL: Record<BudgetStatus, string> = {
   draft: 'bg-slate-100 text-slate-600 border-slate-200',
   final: 'bg-emerald-50 text-emerald-700 border-emerald-200',
@@ -303,6 +315,11 @@ export default function BudgetList({ onOpen, onNew, openingId, openError, onDism
                         {b.study_type && (
                           <span className={`text-[10px] font-bold border px-1.5 py-0.5 rounded-md ${STUDY_BADGE[b.study_type]}`}>
                             {STUDY_LABELS[b.study_type]}
+                          </span>
+                        )}
+                        {b.subject_profile && (
+                          <span className={`text-[10px] font-bold border px-1.5 py-0.5 rounded-md ${PROFILE_PILL[b.subject_profile]}`}>
+                            {PROFILE_LABEL[b.subject_profile]}
                           </span>
                         )}
                       </div>

@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { api } from '../api/client'
 import BudgetDerivationPanel from './BudgetDerivationPanel'
+import BudgetSourcesPanel from './BudgetSourcesPanel'
 import BudgetSettingsCard from './BudgetSettingsCard'
 import BudgetCategorySection from './BudgetCategorySection'
 import BudgetRollupCard from './BudgetRollupCard'
@@ -19,7 +20,7 @@ interface Props {
 }
 
 const STATUSES: BudgetStatus[] = ['draft', 'final', 'archived']
-const BUCKETS: BudgetBucket[] = ['direct', 'stipend', 'variable', 'pass_through']
+const BUCKETS: BudgetBucket[] = ['direct', 'stipend', 'variable', 'pass_through', 'investigator_grants', 'software']
 
 function LeftArrowIcon() {
   return (
@@ -55,6 +56,14 @@ export default function BudgetEditor({ budget: initialBudget, onBack, onChanged,
   const [newCategoryBucket, setNewCategoryBucket] = useState<BudgetBucket>('direct')
   const [showReady, setShowReady] = useState(!!justCreated)
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
+  const [sourcesExpanded, setSourcesExpanded] = useState(false)
+  const sourcesRef = useRef<HTMLDivElement>(null)
+
+  function openSources() {
+    setSourcesExpanded(true)
+    // Wait a tick for the panel to actually expand before scrolling to it.
+    window.setTimeout(() => sourcesRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+  }
 
   function toggleCategory(id: string) {
     setExpandedIds(prev => {
@@ -285,6 +294,10 @@ export default function BudgetEditor({ budget: initialBudget, onBack, onChanged,
 
         <BudgetDerivationPanel budget={budget} onBudgetUpdated={applyBudget} onError={setError} />
 
+        <div ref={sourcesRef}>
+          <BudgetSourcesPanel budget={budget} expanded={sourcesExpanded} onToggle={() => setSourcesExpanded(s => !s)} />
+        </div>
+
         <BudgetSettingsCard budget={budget} onBudgetUpdated={applyBudget} onError={setError} />
 
         <div className="flex items-center justify-between gap-3">
@@ -352,7 +365,7 @@ export default function BudgetEditor({ budget: initialBudget, onBack, onChanged,
           </button>
         )}
 
-        <BudgetRollupCard budget={budget} rollup={rollup} variant="full" onBudgetUpdated={applyBudget} onError={setError} />
+        <BudgetRollupCard budget={budget} rollup={rollup} variant="full" onBudgetUpdated={applyBudget} onError={setError} onOpenSources={openSources} />
       </div>
 
       <BudgetRollupCard budget={budget} rollup={rollup} variant="sticky" />

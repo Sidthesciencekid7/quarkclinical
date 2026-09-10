@@ -1,4 +1,4 @@
-import type { AdminOrgRow, AppUser, Budget, BudgetCategory, BudgetCategoryCreatePayload, BudgetCategoryUpdatePayload, BudgetCreatePayload, BudgetLineItem, BudgetLineItemCreatePayload, BudgetLineItemUpdatePayload, BudgetRollup, BudgetSummary, BudgetUpdatePayload, Comment, CoverageReport, CsrInputKind, CsrQCReport, DdiScreeningResult, DesignPreviewResponse, Drug, GeneratedProtocol, GuidelinesResponse, Lead, LeadCreatePayload, Org, OrgMember, PopulationConfig, ProtocolCreatePayload, ProtocolSummary, QCReport, RiskScore, SectionUpdateResult, StudyReport, StudyReportSummary, StudyType } from '../types'
+import type { AdminOrgRow, AppUser, Budget, BudgetCategory, BudgetCategoryCreatePayload, BudgetCategoryUpdatePayload, BudgetCreatePayload, BudgetLineItem, BudgetLineItemCreatePayload, BudgetLineItemUpdatePayload, BudgetProfilePreview, BudgetRateCardMeta, BudgetRollup, BudgetSubjectProfile, BudgetSummary, BudgetUpdatePayload, Comment, CoverageReport, CsrInputKind, CsrQCReport, DdiScreeningResult, DesignPreviewResponse, Drug, GeneratedProtocol, GuidelinesResponse, Lead, LeadCreatePayload, Org, OrgMember, PopulationConfig, ProtocolCreatePayload, ProtocolSummary, QCReport, RiskScore, SectionUpdateResult, StudyReport, StudyReportSummary, StudyType } from '../types'
 import { getActingUserId } from '../lib/actingUser'
 
 /** API origin. Empty by default so calls are same-origin `/api/...`:
@@ -469,6 +469,26 @@ export const api = {
    *  body — same shape as exportCsrDocx. */
   exportBudgetDocx: (budgetId: string): Promise<Blob> =>
     requestBlobGet(`/budgets/${budgetId}/export/docx`),
+
+  /** Re-prices every auto-priced, still-untouched line against the budget's
+   *  CURRENT drivers (n_sites, the five phase durations, etc.) and the
+   *  profile-appropriate rate card. A plain PATCH never moves a total — call
+   *  this after editing a footprint/timeline field so the numbers don't go
+   *  stale. Body is always `{}`. Returns the full budget. */
+  repriceBudget: (budgetId: string) =>
+    request<Budget>(`/budgets/${budgetId}/reprice`, { method: 'POST', body: JSON.stringify({}) }),
+
+  /** Cheap, read-only, no DB write, no AI call — powers the create-view's
+   *  inline "here's what we'll build" hint while the user is still just
+   *  typing a drug name. `drugInn` may be partial/blank; the caller should
+   *  debounce (~400ms) and ignore a blank query rather than calling this. */
+  budgetProfilePreview: (drugInn: string) =>
+    request<BudgetProfilePreview>(`/budgets/profile-preview?drug_inn=${encodeURIComponent(drugInn)}`),
+
+  /** Static rate-card metadata (category list, buckets, provenance-tier
+   *  copy, geography factors) for building UI without hardcoding the card. */
+  budgetRateCardMeta: (subjectProfile: BudgetSubjectProfile) =>
+    request<BudgetRateCardMeta>(`/budgets/rate-card-meta?subject_profile=${subjectProfile}`),
 
   createBudgetCategory: (budgetId: string, payload: BudgetCategoryCreatePayload) =>
     request<BudgetCategory>(`/budgets/${budgetId}/categories`, {

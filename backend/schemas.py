@@ -15,6 +15,7 @@ from models import (
     BudgetLineSource,
     BudgetLineStatus,
     BudgetStatus,
+    BudgetSubjectProfile,
     LiteratureSource,
     PKParameter,
     ProtocolStatus,
@@ -669,11 +670,93 @@ class BudgetRollup(BaseModel):
     subject_stipend_total: float
     variable_total: float
     pass_through_total: float
+    # NEW (spec §2.0/§7.5) — always 0.0 for a healthy-volunteer budget, since
+    # no healthy-card category ever uses either bucket.
+    investigator_grants_total: float = 0.0
+    software_total: float = 0.0
     grand_total: float
     category_subtotals: dict[str, float] = {}
 
 
-class BudgetCreate(BaseModel):
+# Patient/oncology rate-card fields shared verbatim between BudgetCreate and
+# BudgetUpdate (spec §7.2/§7.3) — every field optional, so omitting all of
+# them preserves today's exact healthy-volunteer behaviour. Mixed into both
+# via multiple inheritance rather than duplicated.
+class _BudgetPatientProfileFields(BaseModel):
+    # Plain str (not the enum type) so an invalid value reaches the router as
+    # ordinary text and gets the exact spec-worded 422 message — the same
+    # pattern `study_type` already uses — rather than pydantic's own enum
+    # error text.
+    subject_profile: Optional[str] = None
+    therapeutic_area: Optional[str] = None
+    indication: Optional[str] = None
+    n_countries: Optional[int] = None
+    n_sites_selected: Optional[int] = None
+    dropout_rate_pct: Optional[float] = None
+    startup_months: Optional[float] = None
+    recruitment_months: Optional[float] = None
+    treatment_months: Optional[float] = None
+    followup_months: Optional[float] = None
+    closeout_months: Optional[float] = None
+    n_expected_saes: Optional[int] = None
+    n_expected_susars: Optional[int] = None
+    n_monitoring_visits_onsite: Optional[int] = None
+    n_monitoring_visits_remote: Optional[int] = None
+    n_pharmacy_visits: Optional[int] = None
+    n_visits_per_patient: Optional[int] = None
+    n_protocol_amendments: Optional[int] = None
+    geography_profile: Optional[str] = None
+    geography_factor: Optional[float] = None
+    archival_retention_years: Optional[int] = None
+    bicr_required: Optional[bool] = None
+    comparator_sourced_by_sponsor: Optional[bool] = None
+    comparator_arm_fraction: Optional[float] = None
+
+    # -- 422 validation (spec §7.2) ------------------------------------------
+    @field_validator("geography_factor")
+    @classmethod
+    def _validate_geography_factor(cls, v: Optional[float]) -> Optional[float]:
+        if v is not None and not (0.05 <= v <= 2.0):
+            raise ValueError("geography_factor must be between 0.05 and 2.0.")
+        return v
+
+    @field_validator("dropout_rate_pct")
+    @classmethod
+    def _validate_dropout_rate_pct(cls, v: Optional[float]) -> Optional[float]:
+        if v is not None and not (0 <= v <= 100):
+            raise ValueError("dropout_rate_pct must be between 0 and 100.")
+        return v
+
+    @field_validator("comparator_arm_fraction")
+    @classmethod
+    def _validate_comparator_arm_fraction(cls, v: Optional[float]) -> Optional[float]:
+        if v is not None and not (0 <= v <= 1):
+            raise ValueError("comparator_arm_fraction must be between 0 and 1.")
+        return v
+
+    @field_validator(
+        "startup_months", "recruitment_months", "treatment_months",
+        "followup_months", "closeout_months",
+    )
+    @classmethod
+    def _validate_phase_months_nonneg(cls, v: Optional[float], info) -> Optional[float]:
+        if v is not None and v < 0:
+            raise ValueError(f"{info.field_name} cannot be negative.")
+        return v
+
+    @field_validator(
+        "n_countries", "n_sites_selected", "n_expected_saes", "n_expected_susars",
+        "n_monitoring_visits_onsite", "n_monitoring_visits_remote", "n_pharmacy_visits",
+        "n_visits_per_patient", "n_protocol_amendments", "archival_retention_years",
+    )
+    @classmethod
+    def _validate_patient_ints_nonneg(cls, v: Optional[int], info) -> Optional[int]:
+        if v is not None and v < 0:
+            raise ValueError(f"{info.field_name} cannot be negative.")
+        return v
+
+
+class BudgetCreate(_BudgetPatientProfileFields):
     # A drug name alone is enough to produce a complete, fully-priced budget.
     # `name` is derived from drug_inn when omitted; at least one of the two
     # must be present (422 otherwise).
@@ -705,7 +788,7 @@ class BudgetCreate(BaseModel):
     notes: Optional[str] = None
 
 
-class BudgetUpdate(BaseModel):
+class BudgetUpdate(_BudgetPatientProfileFields):
     # NOTE: protocol_id is intentionally NOT here — linking/unlinking is a
     # side-effecting operation (it derives line items), so it gets its own
     # endpoint rather than hiding inside a generic field patch.
@@ -738,7 +821,7 @@ class ReorderRequest(BaseModel):
     ordered_ids: list[uuid.UUID]
 
 
-class BudgetRead(BaseModel):
+class BudgetRead(_BudgetPatientProfileFields):
     """Full budget document. Hand-assembled in the router (no from_attributes)
     because categories carry computed subtotals and the rollup is computed, not
     stored — same reason ProtocolSummary/StudyReportSummary are hand-assembled."""
@@ -760,6 +843,8 @@ class BudgetRead(BaseModel):
     n_sites: Optional[int] = None
     n_dosing_groups: Optional[int] = None
     project_duration_months: Optional[float] = None
+    # Server-computed for a patient budget (§3.2); None on a healthy one.
+    n_completed: Optional[int] = None
     discount_type: BudgetDiscountType
     discount_value: float
     notes: Optional[str] = None
@@ -782,8 +867,63 @@ class BudgetSummary(BaseModel):
     status: BudgetStatus
     currency: str
     n_enrolled: Optional[int] = None
+    # Plain str (not the enum type) so an invalid value reaches the router as
+    # ordinary text and gets the exact spec-worded 422 message — the same
+    # pattern `study_type` already uses — rather than pydantic's own enum
+    # error text.
+    subject_profile: Optional[str] = None
+    therapeutic_area: Optional[str] = None
+    n_sites: Optional[int] = None
+    n_countries: Optional[int] = None
     category_count: int
     line_item_count: int
     grand_total: float
     created_at: datetime
     updated_at: datetime
+
+
+class BudgetProfilePreviewDefaults(BaseModel):
+    """The `defaults` sub-object of BudgetProfilePreview (spec §7.4)."""
+    n_enrolled: Optional[int] = None
+    n_sites: Optional[int] = None
+    n_countries: Optional[int] = None
+    project_duration_months: Optional[float] = None
+    startup_months: Optional[float] = None
+    recruitment_months: Optional[float] = None
+    treatment_months: Optional[float] = None
+    followup_months: Optional[float] = None
+    closeout_months: Optional[float] = None
+    n_expected_saes: Optional[int] = None
+    geography_profile: Optional[str] = None
+
+
+class BudgetProfilePreview(BaseModel):
+    """GET /api/budgets/profile-preview?drug_inn=<str> — spec §7.4. Cheap,
+    read-only, no DB write, no AI call: powers the create-view hint by running
+    the SAME resolution/pricing the create endpoint would, against a
+    transient, never-persisted Budget."""
+    drug_inn: str
+    modality: str
+    allowed_study_types: list[str]
+    study_type: str
+    subject_profile: BudgetSubjectProfile
+    subject_profile_source: str
+    subject_profile_basis: str
+    therapeutic_area: str
+    profile_key: Optional[str] = None
+    defaults: BudgetProfilePreviewDefaults
+    estimated_grand_total: float
+    category_count: int
+
+
+class BudgetRateCardMeta(BaseModel):
+    """GET /api/budgets/rate-card-meta?subject_profile=<healthy|patient> —
+    spec §7.4. Static metadata for building UI without hardcoding the card."""
+    subject_profile: BudgetSubjectProfile
+    rate_card_version: str
+    currency: str
+    disclaimer: str
+    categories: list[dict[str, Any]]
+    buckets: list[str]
+    provenance_tiers: dict[str, str]
+    geography_profiles: dict[str, float]

@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import BudgetProtocolPicker from './BudgetProtocolPicker'
-import type { Budget, BudgetCreatePayload, ProtocolSummary, StudyType } from '../types'
+import type { Budget, BudgetCreatePayload, BudgetGeographyProfile, BudgetProfilePreview, BudgetSubjectProfile, ProtocolSummary, StudyType } from '../types'
 
 interface Props {
   /** The full budget the server returned, handed straight to the editor —
@@ -18,6 +18,33 @@ const STUDY_LABELS: Record<StudyType, string> = {
   biosimilar_pk: 'Biosimilar PK',
   food_effect: 'Food Effect',
 }
+
+/** 'auto' sends subject_profile: undefined — the server resolves it from the
+ *  drug KB / linked protocol. The other two are an explicit override. */
+type PopulationChoice = 'auto' | BudgetSubjectProfile
+
+const POPULATION_OPTIONS: { id: PopulationChoice; label: string }[] = [
+  { id: 'auto', label: 'Auto-detect' },
+  { id: 'healthy', label: 'Healthy volunteers' },
+  { id: 'patient', label: 'Patients' },
+]
+
+type TherapeuticAreaChoice = '' | 'oncology' | 'other'
+
+const GEOGRAPHY_LABELS: Record<BudgetGeographyProfile, string> = {
+  us_only: 'United States only',
+  eu_west: 'Western Europe',
+  eu_east: 'Eastern Europe',
+  latam: 'Latin America',
+  apac: 'Asia-Pacific',
+  china: 'China',
+  india: 'India',
+  global_emerging_mixed: 'Global — emerging markets mix',
+  global_developed_mixed: 'Global — developed markets mix',
+}
+const GEOGRAPHY_OPTIONS: BudgetGeographyProfile[] = [
+  'global_emerging_mixed', 'global_developed_mixed', 'us_only', 'eu_west', 'eu_east', 'latam', 'apac', 'china', 'india',
+]
 
 function LeftArrowIcon() {
   return (
@@ -50,6 +77,16 @@ function ChevronIcon({ open }: { open: boolean }) {
   )
 }
 
+function InfoIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 20 20" fill="none" className="flex-shrink-0 mt-0.5">
+      <circle cx="10" cy="10" r="7.25" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M10 9v4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <circle cx="10" cy="6.5" r="0.9" fill="currentColor" />
+    </svg>
+  )
+}
+
 function Spinner({ size = 28 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 16 16" fill="none" className="animate-spin mx-auto">
@@ -57,6 +94,28 @@ function Spinner({ size = 28 }: { size?: number }) {
       <path d="M8 2a6 6 0 016 6" stroke="#0891b2" strokeWidth="2.5" strokeLinecap="round" />
     </svg>
   )
+}
+
+/** The inline "here's what we'll build" hint under the Population control.
+ *  Composed from the profile-preview response rather than any hardcoded
+ *  drug-specific copy, so it works for every drug the KB knows about. */
+function previewHint(drugInn: string, preview: BudgetProfilePreview): string {
+  const d = preview.defaults
+  const drugLabel = drugInn.trim() ? drugInn.trim()[0].toUpperCase() + drugInn.trim().slice(1) : 'This drug'
+  if (preview.subject_profile === 'patient') {
+    const bits = [
+      d.n_sites != null ? `~${d.n_sites} sites` : null,
+      d.n_countries != null ? `${d.n_countries} countries` : null,
+      d.project_duration_months != null ? `${d.project_duration_months} months` : null,
+    ].filter(Boolean).join(', ')
+    return `${drugLabel} — ${preview.subject_profile_basis} We'll build a patient study budget${bits ? ` (${bits})` : ''}.`
+  }
+  const bits = [
+    d.n_sites != null ? `${d.n_sites} site${d.n_sites === 1 ? '' : 's'}` : null,
+    d.n_enrolled != null ? `${d.n_enrolled} subjects` : null,
+    d.project_duration_months != null ? `${d.project_duration_months} months` : null,
+  ].filter(Boolean).join(', ')
+  return `${drugLabel} — ${preview.subject_profile_basis} We'll build a healthy-volunteer budget${bits ? ` (${bits})` : ''}.`
 }
 
 export default function BudgetCreateView({ onCreated, onCancel }: Props) {
@@ -73,9 +132,46 @@ export default function BudgetCreateView({ onCreated, onCancel }: Props) {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // ── Population (§6.2) ────────────────────────────────────────────────
+  const [population, setPopulation] = useState<PopulationChoice>('auto')
+  const [preview, setPreview] = useState<BudgetProfilePreview | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const debounceRef = useRef<number | null>(null)
+  const previewSeq = useRef(0)
+
+  // Patient-only optional block — collapsed by default, genuinely optional:
+  // every field falls back to the profile default when left blank.
+  const [showPatientDetails, setShowPatientDetails] = useState(false)
+  const [indication, setIndication] = useState('')
+  const [therapeuticArea, setTherapeuticArea] = useState<TherapeuticAreaChoice>('')
+  const [nSitesSelected, setNSitesSelected] = useState('')
+  const [nCountries, setNCountries] = useState('')
+  const [nEnrolledPatients, setNEnrolledPatients] = useState('')
+  const [geographyProfile, setGeographyProfile] = useState<BudgetGeographyProfile | ''>('')
+
   const trimmedDrug = drugInn.trim()
   const trimmedName = name.trim()
   const canSubmit = (trimmedDrug.length > 0 || trimmedName.length > 0) && !submitting
+
+  // Debounced, credit-free profile-preview lookup while the user types a
+  // drug name — the key UX move so a typed drug name never surprises the
+  // user with a multi-million-dollar budget.
+  useEffect(() => {
+    if (debounceRef.current) window.clearTimeout(debounceRef.current)
+    if (!trimmedDrug) {
+      setPreview(null)
+      setPreviewLoading(false)
+      return
+    }
+    setPreviewLoading(true)
+    debounceRef.current = window.setTimeout(() => {
+      const seq = ++previewSeq.current
+      api.budgetProfilePreview(trimmedDrug)
+        .then(p => { if (seq === previewSeq.current) { setPreview(p); setPreviewLoading(false) } })
+        .catch(() => { if (seq === previewSeq.current) { setPreview(null); setPreviewLoading(false) } })
+    }, 400)
+    return () => { if (debounceRef.current) window.clearTimeout(debounceRef.current) }
+  }, [trimmedDrug])
 
   function handleProtocolChange(id: string | null, summary: ProtocolSummary | null) {
     setProtocolId(id)
@@ -92,6 +188,13 @@ export default function BudgetCreateView({ onCreated, onCancel }: Props) {
     setProtocolLabel(null)
   }
 
+  function numOrUndefined(raw: string): number | undefined {
+    const t = raw.trim()
+    if (t === '') return undefined
+    const n = Number(t)
+    return Number.isFinite(n) ? n : undefined
+  }
+
   async function handleSubmit() {
     if (!canSubmit) return
     setSubmitting(true)
@@ -106,6 +209,18 @@ export default function BudgetCreateView({ onCreated, onCancel }: Props) {
       sponsor_name: sponsorName.trim() || undefined,
       cro_name: croName.trim() || undefined,
       currency,
+      subject_profile: population === 'auto' ? undefined : population,
+    }
+    if (population === 'patient') {
+      if (indication.trim()) payload.indication = indication.trim()
+      if (therapeuticArea) payload.therapeutic_area = therapeuticArea
+      const sites = numOrUndefined(nSitesSelected)
+      if (sites !== undefined) payload.n_sites_selected = sites
+      const countries = numOrUndefined(nCountries)
+      if (countries !== undefined) payload.n_countries = countries
+      const enrolled = numOrUndefined(nEnrolledPatients)
+      if (enrolled !== undefined) payload.n_enrolled = enrolled
+      if (geographyProfile) payload.geography_profile = geographyProfile
     }
     try {
       const budget = await api.createBudget(payload)
@@ -118,6 +233,10 @@ export default function BudgetCreateView({ onCreated, onCancel }: Props) {
 
   const namePlaceholder = trimmedDrug ? `Auto: "${trimmedDrug} study budget"` : 'Auto: "<drug> study budget"'
 
+  const spinnerCopy = population === 'patient' || preview?.subject_profile === 'patient'
+    ? 'Seeding 22 categories, pricing every line and citing the researched rates…'
+    : 'Seeding 17 categories, pricing every line from the rate card…'
+
   return (
     <main className="app-canvas min-h-[calc(100vh-57px)]">
       <div className="max-w-3xl mx-auto px-5 py-10 space-y-5 fade-up">
@@ -129,7 +248,8 @@ export default function BudgetCreateView({ onCreated, onCancel }: Props) {
         <div>
           <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">New Budget</h1>
           <p className="text-sm text-slate-500 mt-1">
-            Enter a drug name. We build the full 17-category CRO budget, priced end to end, in one step.
+            Enter a drug name. We build the full CRO budget — 17 categories for a healthy-volunteer study, 22 for a
+            patient study — priced end to end, in one step.
           </p>
         </div>
 
@@ -143,7 +263,7 @@ export default function BudgetCreateView({ onCreated, onCancel }: Props) {
             <h2 className="text-lg font-bold text-slate-900 mt-4">
               Building your {trimmedDrug || 'study'} budget
             </h2>
-            <p className="text-sm text-slate-500 mt-1.5">Seeding 17 categories, pricing every line from the rate card…</p>
+            <p className="text-sm text-slate-500 mt-1.5">{spinnerCopy}</p>
           </div>
         ) : (
           <>
@@ -163,6 +283,122 @@ export default function BudgetCreateView({ onCreated, onCancel }: Props) {
                   That&apos;s all we need — everything else is estimated and stays editable.
                 </p>
               </div>
+
+              {/* Population — a three-state segmented control, defaulting to
+                  Auto-detect. Separate from the (unchanged) study-type gate
+                  for biologics below. */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-1.5">Population</label>
+                <div className="inline-flex rounded-xl border border-slate-200 p-0.5 flex-wrap">
+                  {POPULATION_OPTIONS.map(opt => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => { setPopulation(opt.id); if (opt.id !== 'patient') setShowPatientDetails(false) }}
+                      className={`text-xs font-semibold px-3 py-1.5 rounded-lg cursor-pointer transition-colors ${
+                        population === opt.id ? 'bg-cyan-500/15 text-cyan-700' : 'text-slate-500 hover:bg-slate-50'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+
+                {(previewLoading || preview) && trimmedDrug && (
+                  <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-slate-500 mt-2">
+                    <InfoIcon />
+                    {previewLoading && !preview ? (
+                      <span className="text-slate-400">Checking {trimmedDrug}&apos;s safety profile…</span>
+                    ) : preview ? (
+                      <span>{previewHint(trimmedDrug, preview)}</span>
+                    ) : null}
+                  </p>
+                )}
+              </div>
+
+              {population === 'patient' && (
+                <div className="rounded-xl border border-slate-200 bg-slate-50/60 px-4 py-3.5">
+                  <button
+                    type="button"
+                    onClick={() => setShowPatientDetails(s => !s)}
+                    className="w-full flex items-center justify-between gap-2 text-left cursor-pointer"
+                  >
+                    <div>
+                      <p className="text-xs font-semibold text-slate-700">Patient study details</p>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        Optional — every field falls back to the profile default.
+                      </p>
+                    </div>
+                    <ChevronIcon open={showPatientDetails} />
+                  </button>
+
+                  {showPatientDetails && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 mt-3.5 pt-3.5 border-t border-slate-200">
+                      <div className="sm:col-span-2">
+                        <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">Indication</label>
+                        <input
+                          type="text"
+                          value={indication}
+                          onChange={e => setIndication(e.target.value)}
+                          placeholder="e.g. unresectable or metastatic melanoma"
+                          className="input-base"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">Therapeutic area</label>
+                        <select
+                          value={therapeuticArea}
+                          onChange={e => setTherapeuticArea(e.target.value as TherapeuticAreaChoice)}
+                          className="input-base cursor-pointer"
+                        >
+                          <option value="">Auto-detect</option>
+                          <option value="oncology">Oncology</option>
+                          <option value="other">Other</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">Geography</label>
+                        <select
+                          value={geographyProfile}
+                          onChange={e => setGeographyProfile(e.target.value as BudgetGeographyProfile | '')}
+                          className="input-base cursor-pointer"
+                        >
+                          <option value="">Auto-detect</option>
+                          {GEOGRAPHY_OPTIONS.map(g => <option key={g} value={g}>{GEOGRAPHY_LABELS[g]}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">Sites (activated)</label>
+                        <input
+                          value={nSitesSelected}
+                          onChange={e => setNSitesSelected(e.target.value)}
+                          placeholder="40"
+                          className="input-base tabular-nums"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">Countries</label>
+                        <input
+                          value={nCountries}
+                          onChange={e => setNCountries(e.target.value)}
+                          placeholder="7"
+                          className="input-base tabular-nums"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-600 mb-1.5">Patients enrolled</label>
+                        <input
+                          value={nEnrolledPatients}
+                          onChange={e => setNEnrolledPatients(e.target.value)}
+                          placeholder="128"
+                          className="input-base tabular-nums"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-semibold text-slate-600 mb-1.5">

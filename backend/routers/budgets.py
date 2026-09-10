@@ -58,6 +58,7 @@ from models import (
     BudgetDiscountType,
     BudgetLineItem,
     BudgetLineSource,
+    BudgetSubjectProfile,
     StudyType,
 )
 from routers.export import _content_disposition, _DOCX_MEDIA_TYPE
@@ -70,13 +71,49 @@ from schemas import (
     BudgetLineItemRead,
     BudgetLineItemUpdate,
     BudgetLinkProtocol,
+    BudgetProfilePreview,
+    BudgetProfilePreviewDefaults,
+    BudgetRateCardMeta,
     BudgetRead,
     BudgetRollup,
     BudgetSummary,
     BudgetUpdate,
     ReorderRequest,
 )
-from services import budget_docx_export, budget_engine
+from services import budget_docx_export, budget_engine, budget_rate_card
+from services.design_decisions import allowed_study_types, classify_drug_modality
+
+# The full set of new patient/oncology fields (spec §1.3/§7.2/§7.3) — shared
+# between create and update so both stay in lock-step with the schema.
+_PATIENT_PROFILE_FIELDS = (
+    "subject_profile", "therapeutic_area", "indication", "n_countries",
+    "n_sites_selected", "dropout_rate_pct", "startup_months", "recruitment_months",
+    "treatment_months", "followup_months", "closeout_months", "n_expected_saes",
+    "n_expected_susars", "n_monitoring_visits_onsite", "n_monitoring_visits_remote",
+    "n_pharmacy_visits", "n_visits_per_patient", "n_protocol_amendments",
+    "geography_profile", "geography_factor", "archival_retention_years",
+    "bicr_required", "comparator_sourced_by_sponsor", "comparator_arm_fraction",
+)
+
+_SUBJECT_PROFILE_VALUES = {p.value for p in BudgetSubjectProfile}
+
+
+def _validate_subject_profile(value: str | None) -> None:
+    if value is not None and value not in _SUBJECT_PROFILE_VALUES:
+        raise HTTPException(
+            422,
+            detail=f"Unknown subject_profile '{value}'. Expected one of: "
+                   + ", ".join(sorted(_SUBJECT_PROFILE_VALUES)),
+        )
+
+
+def _validate_geography_profile(value: str | None) -> None:
+    if value is not None and value not in budget_rate_card.GEOGRAPHY_FACTORS:
+        raise HTTPException(
+            422,
+            detail=f"Unknown geography_profile '{value}'. Expected one of: "
+                   + ", ".join(sorted(budget_rate_card.GEOGRAPHY_FACTORS)),
+        )
 
 router = APIRouter(
     prefix="/api/budgets",
@@ -103,6 +140,7 @@ def _budget_read(budget: Budget) -> BudgetRead:
         discount_type=budget.discount_type,
         discount_value=budget.discount_value,
     )
+    subject_profile = budget.subject_profile
     return BudgetRead(
         **{
             k: getattr(budget, k)
@@ -111,10 +149,12 @@ def _budget_read(budget: Budget) -> BudgetRead:
                 "currency", "status", "drug_inn", "study_type", "n_enrolled",
                 "screen_failure_rate_pct", "n_screen_failures", "n_alternates",
                 "n_screened", "n_sites", "n_dosing_groups",
-                "project_duration_months", "discount_type", "discount_value",
+                "project_duration_months", "n_completed", "discount_type", "discount_value",
                 "notes", "created_at", "updated_at",
             )
         },
+        subject_profile=(subject_profile.value if subject_profile is not None else None),
+        **{k: getattr(budget, k) for k in _PATIENT_PROFILE_FIELDS if k != "subject_profile"},
         derivation=budget.derivation or {},
         categories=[_category_read(c) for c in cats],
         rollup=BudgetRollup(**rollup),
@@ -159,6 +199,10 @@ async def list_budgets(request: Request, db: AsyncSession = Depends(get_db)):
                 status=b.status,
                 currency=b.currency,
                 n_enrolled=b.n_enrolled,
+                subject_profile=(b.subject_profile.value if b.subject_profile is not None else None),
+                therapeutic_area=b.therapeutic_area,
+                n_sites=b.n_sites,
+                n_countries=b.n_countries,
                 category_count=len(b.categories),
                 line_item_count=sum(len(c.line_items) for c in b.categories),
                 grand_total=rollup["grand_total"],
@@ -197,6 +241,20 @@ async def create_budget(
     if study_type is None and protocol is not None and protocol.study_type:
         study_type = protocol.study_type.value
 
+    _validate_subject_profile(payload.subject_profile)
+    _validate_geography_profile(payload.geography_profile)
+    if payload.dropout_rate_pct is not None and not (0 <= payload.dropout_rate_pct <= 100):
+        raise HTTPException(422, detail="dropout_rate_pct must be between 0 and 100.")
+    for field in ("startup_months", "recruitment_months", "treatment_months",
+                  "followup_months", "closeout_months"):
+        v = getattr(payload, field)
+        if v is not None and v < 0:
+            raise HTTPException(422, detail=f"{field} cannot be negative.")
+    if payload.comparator_arm_fraction is not None and not (0 <= payload.comparator_arm_fraction <= 1):
+        raise HTTPException(422, detail="comparator_arm_fraction must be between 0 and 1.")
+    if payload.geography_factor is not None and not (0.05 <= payload.geography_factor <= 2.0):
+        raise HTTPException(422, detail="geography_factor must be between 0.05 and 2.0.")
+
     name = (payload.name or "").strip()
     if not name:
         if not drug_inn:
@@ -230,20 +288,129 @@ async def create_budget(
         n_screen_failures=payload.n_screen_failures,
         notes=payload.notes,
         derivation={},
+        subject_profile=(BudgetSubjectProfile(payload.subject_profile) if payload.subject_profile else None),
+        # Only the fields the caller actually SENT (not None) — several of
+        # these columns (comparator_sourced_by_sponsor) are NOT NULL with a
+        # server-side default, so explicitly passing None would insert NULL
+        # instead of letting that default apply.
+        **{
+            k: getattr(payload, k) for k in _PATIENT_PROFILE_FIELDS
+            if k != "subject_profile" and getattr(payload, k) is not None
+        },
     )
     db.add(budget)
 
-    # ALWAYS seed the 17-category template — no toggle any more. Then price
-    # every one of them from the rate card, using the linked protocol's real
-    # schedule when there is one and the per-study-type defaults when there
-    # is not: a caller should never get back an empty-shell budget again.
-    budget.categories.extend(budget_engine.seed_default_categories(budget.id))
+    # subject_profile must be resolved BEFORE seeding categories — a patient
+    # budget and a healthy-volunteer budget seed structurally DIFFERENT
+    # category sets (22 vs 17), almost entirely disjoint by name (spec §2).
+    # This call is pure/read-only (resolve_subject_profile does not touch the
+    # DB); auto_populate_budget below re-resolves everything for real,
+    # idempotently arriving at the same answer since nothing has changed
+    # between the two calls.
+    resolved_profile, _ = budget_engine.resolve_subject_profile(budget, protocol, {})
+    budget.categories.extend(
+        budget_engine.seed_default_categories(budget.id, subject_profile=resolved_profile)
+    )
     budget_engine.auto_populate_budget(budget, protocol)
 
     await db.commit()
     budget = await get_budget_scoped(db, budget.id, actor, load_tree=True)
     request.state.audit_resource_id = str(budget.id)
     return _budget_read(budget)
+
+
+# ===========================================================================
+# 2b. Profile preview / rate-card meta (spec §7.4) — declared BEFORE their
+# sibling "/{budget_id}" GET route, same reason the /reorder routes below are
+# declared before theirs: a UUID path param would otherwise never lose the
+# match race against these two static sub-paths of the collection.
+# ===========================================================================
+
+
+@router.get(
+    "/profile-preview", response_model=BudgetProfilePreview, dependencies=[Depends(require_user)],
+)
+async def profile_preview(
+    drug_inn: str, request: Request, db: AsyncSession = Depends(get_db),
+):
+    """Cheap, read-only, no DB write, no AI call — powers the create-view
+    hint. Runs the exact same resolution/pricing auto_populate_budget would,
+    against a transient Budget that is never added to the session."""
+    actor = await _authenticate_actor(request, db)
+    drug_inn = (drug_inn or "").strip()
+
+    tmp = Budget(
+        id=uuid.uuid4(), org_id=actor.org_id, name="profile preview",
+        created_by=actor.id, drug_inn=drug_inn, currency="USD", derivation={},
+        # Transient (never added to the session), so SQLAlchemy's column
+        # defaults never apply — set explicitly rather than relying on them.
+        discount_type=BudgetDiscountType.none, discount_value=0.0,
+        comparator_sourced_by_sponsor=False,
+    )
+
+    modality = classify_drug_modality(drug_inn)
+    allowed = allowed_study_types(drug_inn)
+
+    resolved_profile, profile_assumption = budget_engine.resolve_subject_profile(tmp, None, {})
+    tmp.categories = budget_engine.seed_default_categories(tmp.id, subject_profile=resolved_profile)
+    derivation = budget_engine.auto_populate_budget(tmp, None)
+    rollup = budget_engine.compute_rollups(
+        tmp.categories, discount_type=tmp.discount_type, discount_value=tmp.discount_value,
+    )
+
+    defaults = BudgetProfilePreviewDefaults(
+        n_enrolled=tmp.n_enrolled, n_sites=tmp.n_sites, n_countries=tmp.n_countries,
+        project_duration_months=tmp.project_duration_months,
+        startup_months=tmp.startup_months, recruitment_months=tmp.recruitment_months,
+        treatment_months=tmp.treatment_months, followup_months=tmp.followup_months,
+        closeout_months=tmp.closeout_months, n_expected_saes=tmp.n_expected_saes,
+        geography_profile=tmp.geography_profile,
+    )
+
+    return BudgetProfilePreview(
+        drug_inn=drug_inn,
+        modality=modality,
+        allowed_study_types=list(allowed) if allowed else [st.value for st in StudyType],
+        study_type=tmp.study_type or "",
+        subject_profile=BudgetSubjectProfile(resolved_profile),
+        subject_profile_source=profile_assumption["source"],
+        subject_profile_basis=profile_assumption["basis"],
+        therapeutic_area=tmp.therapeutic_area or "unknown",
+        profile_key=derivation.get("profile_key"),
+        defaults=defaults,
+        estimated_grand_total=rollup["grand_total"],
+        category_count=len(tmp.categories),
+    )
+
+
+@router.get(
+    "/rate-card-meta", response_model=BudgetRateCardMeta, dependencies=[Depends(require_user)],
+)
+async def rate_card_meta(
+    request: Request, subject_profile: str = "healthy", db: AsyncSession = Depends(get_db),
+):
+    """Static metadata for building UI without hardcoding the card. No auth
+    beyond require_user (mirrors the module's role-gating rationale)."""
+    await _authenticate_actor(request, db)
+    _validate_subject_profile(subject_profile)
+    is_patient = subject_profile == "patient"
+    card = budget_rate_card.PATIENT_RATE_CARD if is_patient else budget_rate_card.RATE_CARD
+
+    return BudgetRateCardMeta(
+        subject_profile=BudgetSubjectProfile(subject_profile),
+        rate_card_version=(
+            budget_rate_card.PATIENT_RATE_CARD_VERSION if is_patient else budget_rate_card.RATE_CARD_VERSION
+        ),
+        currency=budget_rate_card.RATE_CARD_CURRENCY,
+        disclaimer=budget_rate_card.PATIENT_DISCLAIMER if is_patient else budget_rate_card.DISCLAIMER,
+        categories=[
+            {"name": c.name, "bucket": c.bucket.value, "sort_order": c.sort_order, "line_count": len(c.lines)}
+            for c in card
+        ],
+        buckets=sorted({c.bucket.value for c in card}),
+        provenance_tiers=dict(budget_rate_card.PROVENANCE_TIERS) if is_patient else {},
+        geography_profiles=dict(budget_rate_card.GEOGRAPHY_FACTORS) if is_patient else {},
+    )
 
 
 # ===========================================================================
@@ -280,6 +447,18 @@ async def update_budget(
         raise HTTPException(
             422, detail="A percentage discount must be between 0 and 100."
         )
+
+    # Patient/oncology field validation (spec §7.3 — "same 422 rules" as create).
+    # Range checks (dropout_rate_pct, comparator_arm_fraction, geography_factor,
+    # phase-month/int non-negativity) already ran as pydantic field_validators
+    # on BudgetUpdate; only the two enum-shaped fields need a router-side check
+    # (kept plain str on the schema so the error text matches the spec exactly).
+    if "subject_profile" in updates:
+        _validate_subject_profile(updates["subject_profile"])
+        if updates["subject_profile"] is not None:
+            updates["subject_profile"] = BudgetSubjectProfile(updates["subject_profile"])
+    if "geography_profile" in updates:
+        _validate_geography_profile(updates["geography_profile"])
 
     for field, value in updates.items():
         setattr(budget, field, value)
@@ -333,6 +512,35 @@ async def link_protocol(
         protocol = await get_protocol_scoped(db, payload.protocol_id, actor, load_drug=True)
         budget_engine.apply_protocol_derivation(budget, protocol)
 
+    await db.commit()
+    budget = await get_budget_scoped(db, budget_id, actor, load_tree=True)
+    return _budget_read(budget)
+
+
+# ===========================================================================
+# 6b. Re-price (spec §7.4) — re-runs auto-population in "reconcile" mode
+# against the budget's CURRENT drivers, e.g. after a PATCH changed n_sites,
+# a phase duration, or the discount. A plain PATCH does not move any total by
+# itself (see BudgetUpdate's docstring note); this is how the frontend asks
+# for that re-price explicitly.
+# ===========================================================================
+
+
+@router.post(
+    "/{budget_id}/reprice", response_model=BudgetRead, dependencies=[Depends(require_user)],
+)
+async def reprice_budget(
+    budget_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db),
+):
+    actor = await _authenticate_actor(request, db)
+    budget = await get_budget_scoped(db, budget_id, actor, load_tree=True)
+
+    protocol = None
+    if budget.protocol_id:
+        protocol = await get_protocol_scoped(db, budget.protocol_id, actor, load_drug=True)
+
+    budget_engine.auto_populate_budget(budget, protocol, mode="reconcile")
+    _touch(budget)
     await db.commit()
     budget = await get_budget_scoped(db, budget_id, actor, load_tree=True)
     return _budget_read(budget)

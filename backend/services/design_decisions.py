@@ -154,6 +154,60 @@ def classify_drug_modality(drug_inn: str) -> StudyModality:
     return "unknown"
 
 
+def requires_patient_population(drug_inn: str) -> Optional[bool]:
+    """True if the curated safety KB says this product is NOT safe for
+    single-dose administration in healthy volunteers (must be studied in
+    patients); False if it says the product IS NHV-safe; None if the drug
+    isn't in the curated KB (unknown — caller should not infer either way).
+
+    Mirrors the same `not nhv_single_dose_safe` test _population_decision()
+    uses for the "Population" design-decision rule, so a drug's healthy-vs-
+    patient classification is identical whether it flows through the wizard's
+    design-decision engine or the budget engine's subject_profile inference.
+    """
+    key = (drug_inn or "").strip().lower()
+    if key not in _KB:
+        return None
+    return not _KB[key].nhv_single_dose_safe
+
+
+# Curated oncology INN list — the checkpoint inhibitors, oncology mAbs, and
+# classical cytotoxics already in the KB above. Kept as a plain set (not a
+# DrugProfile field) since therapeutic-area classification is a budgeting/
+# pricing concern, not a study-design one.
+_ONCOLOGY_INN = {
+    "pembrolizumab", "nivolumab", "cetuximab", "rituximab", "obinutuzumab",
+    "trastuzumab", "bevacizumab", "doxorubicin", "paclitaxel",
+}
+
+_ONCOLOGY_INDICATION_KEYWORDS = (
+    "cancer", "tumor", "tumour", "oncology", "carcinoma", "lymphoma",
+    "leukemia", "leukaemia", "melanoma", "sarcoma", "neoplasm", "malignan",
+)
+
+
+def classify_therapeutic_area(drug_inn: str, indication: Optional[str] = None) -> str:
+    """"oncology" | "other" | "unknown" for the given drug/indication, used by
+    the budget engine to pick the patient rate-card profile (§1.5 step 4).
+
+    Curated oncology INN list is authoritative; else an oncology-keyword scan
+    of the free-text indication; else "other" for any drug we recognise in
+    the curated safety KB (a known-but-non-oncology product); else "unknown"
+    for a drug we have no information about at all (the caller treats
+    "unknown" as "other" for pricing but records that it isn't classifiable).
+    """
+    key = (drug_inn or "").strip().lower()
+    if key in _ONCOLOGY_INN:
+        return "oncology"
+    if indication:
+        low = indication.strip().lower()
+        if any(kw in low for kw in _ONCOLOGY_INDICATION_KEYWORDS):
+            return "oncology"
+    if key in _KB:
+        return "other"
+    return "unknown"
+
+
 def allowed_study_types(drug_inn: str) -> Optional[tuple[str, ...]]:
     """Study types selectable for this drug, or None if unrestricted (modality
     unknown). E.g. a biologic (mAb, insulin, therapeutic protein) may only run

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import { formatMoney, formatQty, parseMoneyInput } from './budgetFormat'
 import { BUDGET_LINE_STATUS_LABELS } from '../types'
-import type { BudgetDerivation, BudgetLineItem, BudgetLineItemUpdatePayload, BudgetLineSource, BudgetLineStatus } from '../types'
+import type { BudgetDerivation, BudgetLineItem, BudgetLineItemUpdatePayload, BudgetLineSource, BudgetLineStatus, BudgetProvenanceTier, BudgetSourceRecord } from '../types'
 
 interface Props {
   budgetId: string
@@ -60,12 +60,14 @@ const STATUS_HELP: Record<BudgetLineStatus, string> = {
   actuals_only: 'Billed at actual cost when incurred — no estimate is carried in this budget.',
 }
 
-// Three-way provenance badge. `rate_card` is the overwhelming majority of
-// rows in an auto-populated budget, so it gets the QUIETEST treatment — a
-// grey badge and a plain grey rail, no background tint. A 60-row wall of
-// amber/cyan would read as 60 problems instead of the normal, expected
-// content it is. Cyan is reserved for the rarer, better-provenanced
+// Four-way provenance badge. `rate_card` is the majority of rows in an
+// auto-populated healthy-volunteer budget, so it stays the QUIETEST
+// treatment — a grey badge and a plain grey rail, no background tint. A
+// 60-row wall of amber/cyan would read as 60 problems instead of the normal,
+// expected content it is. Cyan is reserved for the rarer, better-provenanced
 // protocol rows; amber is reserved solely for a human-edited price/qty.
+// `researched` inverts that hierarchy — on a patient budget "this number has
+// a citation" is the signal worth finding, so it is the LOUDEST of the four.
 const SOURCE_BADGE: Record<BudgetLineSource, { label: string; cls: string; title: string } | null> = {
   rate_card: {
     label: 'Estimated',
@@ -82,11 +84,120 @@ const SOURCE_BADGE: Record<BudgetLineSource, { label: string; cls: string; title
     cls: 'text-slate-600 bg-white border-slate-200',
     title: 'You created this row.',
   },
+  researched: {
+    label: 'Sourced',
+    cls: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+    title: 'This unit cost is a real published rate. Click to see the citation.',
+  },
 }
 const SOURCE_RAIL: Record<BudgetLineSource, string> = {
   rate_card: 'border-slate-200',
   protocol_derived: 'border-cyan-300 bg-cyan-50/30',
   manual: 'border-transparent',
+  researched: 'border-emerald-300 bg-emerald-50/30',
+}
+
+/** Within `researched`, the provenance TIER further modulates the badge so a
+ *  `derived` triangulation is never passed off as a `published_rate`
+ *  benchmark, a `bid_calibrated` rate reads as one vendor's price rather than
+ *  a market rate, and `estimate` (no citation exists at all) falls back to
+ *  the same quiet grey as a plain rate-card row. */
+const RESEARCHED_TIER_BADGE: Record<BudgetProvenanceTier, { label: string; cls: string; title: string }> = {
+  published_rate: {
+    label: 'Sourced',
+    cls: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+    title: 'A real, published rate. Click to see the citation.',
+  },
+  derived: {
+    label: 'Derived',
+    cls: 'text-amber-800 bg-emerald-50/70 border-amber-200',
+    title: 'Triangulated by us from two or more published figures — not itself a published benchmark. Click to see the sources.',
+  },
+  bid_calibrated: {
+    label: 'CRO bid',
+    cls: 'text-indigo-700 bg-indigo-50 border-indigo-200',
+    title: 'Taken from a real CRO bid for a comparable study — one vendor’s price, not a market benchmark. Click for details.',
+  },
+  estimate: {
+    label: 'Estimated',
+    cls: 'text-slate-500 bg-slate-100 border-slate-200',
+    title: 'No public figure exists for this item — a rate-card approximation.',
+  },
+}
+
+/** Plain-English meaning of each provenance tier, shown at the top of the
+ *  source popover. Mirrors the backend's PROVENANCE_TIERS copy verbatim. */
+const PROVENANCE_TIER_COPY: Record<BudgetProvenanceTier, string> = {
+  published_rate: 'Published rate — read directly from an official fee schedule, manufacturer price list, government schedule or peer-reviewed benchmark.',
+  derived: 'Derived — triangulated by us from two or more published figures. Not itself a published benchmark.',
+  bid_calibrated: 'Bid-calibrated — a unit rate taken from a real CRO bid for a comparable study. A single vendor’s price, not a market benchmark.',
+  estimate: 'Estimate — a rate-card approximation. No public figure exists for this item; treat it as an assumption to be replaced by a quote.',
+}
+
+/** Short label for a geography profile, used only in a tooltip naming what
+ *  the geography factor scales. */
+const GEOGRAPHY_LABEL: Record<string, string> = {
+  us_only: 'United States only',
+  eu_west: 'Western Europe',
+  eu_east: 'Eastern Europe',
+  latam: 'Latin America',
+  apac: 'Asia-Pacific',
+  china: 'China',
+  india: 'India',
+  global_emerging_mixed: 'Global — emerging markets mix',
+  global_developed_mixed: 'Global — developed markets mix',
+}
+
+/** The citation popover behind the "Sourced" / "Derived" / "CRO bid" badge.
+ *  Everything it needs is already in the budget payload — no fetch. */
+function SourcePopover({ source, onClose }: { source: BudgetSourceRecord; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    function handleOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
+    }
+    document.addEventListener('mousedown', handleOutside)
+    return () => document.removeEventListener('mousedown', handleOutside)
+  }, [onClose])
+
+  return (
+    <div
+      ref={ref}
+      role="dialog"
+      aria-label="Source citation"
+      className="absolute z-50 top-full left-0 mt-1.5 w-80 max-w-[85vw] rounded-xl border border-slate-200 bg-white shadow-lg p-4 text-left normal-case cursor-default"
+    >
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <span className="tag text-[10px] capitalize">{source.tier.replace(/_/g, ' ')}</span>
+        <button
+          onClick={onClose}
+          aria-label="Close"
+          className="text-slate-400 hover:text-slate-600 cursor-pointer font-bold leading-none flex-shrink-0"
+        >
+          ×
+        </button>
+      </div>
+      <p className="text-[11px] text-slate-500 mb-2.5">{PROVENANCE_TIER_COPY[source.tier]}</p>
+      <p className="text-sm font-bold text-slate-900 mb-1.5">{source.figure}</p>
+      <p className="text-xs text-slate-600 leading-relaxed mb-2">{source.citation}</p>
+      {source.url && (
+        <a
+          href={source.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="block text-xs font-semibold text-cyan-700 hover:text-cyan-800 break-all mb-1"
+        >
+          {source.url}
+        </a>
+      )}
+      <p className="text-[11px] text-slate-400">Accessed {source.accessed}</p>
+      {source.caveat && (
+        <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2 mt-2 leading-relaxed">
+          {source.caveat}
+        </p>
+      )}
+    </div>
+  )
 }
 
 function Spinner({ size = 13 }: { size?: number }) {
@@ -157,6 +268,7 @@ export default function BudgetLineItemRow({
   const [total, setTotal] = useState(item.total != null ? String(item.total) : '')
   const [saving, setSaving] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [showSourcePopover, setShowSourcePopover] = useState(false)
   const labelRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -266,8 +378,17 @@ export default function BudgetLineItemRow({
   const isEditedQty = derivationLine != null && item.quantity !== derivationLine.quantity
   const isEdited = isEditedPrice || isEditedQty
 
-  const badge = SOURCE_BADGE[item.source]
+  const provenanceTier = derivationLine?.provenance_tier ?? null
+  const badge = item.source === 'researched' && provenanceTier
+    ? RESEARCHED_TIER_BADGE[provenanceTier]
+    : SOURCE_BADGE[item.source]
   const showBadge = item.source !== 'manual' || showManualBadge
+  const sourceRecord = item.source === 'researched' && derivationLine?.source_id && derivation?.sources
+    ? derivation.sources[derivationLine.source_id] ?? null
+    : null
+  const isGeoScaled = derivationLine?.unit_cost_published != null
+    && derivationLine.geography_factor != null
+    && derivationLine.unit_cost_published !== item.unit_cost
 
   const isNonCosted = item.status !== 'costed'
 
@@ -300,12 +421,28 @@ export default function BudgetLineItemRow({
             className="font-semibold text-slate-900 bg-transparent border border-transparent hover:border-slate-200 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/40 rounded-lg px-2 py-1 min-w-[160px] w-full max-w-[320px]"
           />
           {showBadge && badge && (
-            <span
-              className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap border ${badge.cls}`}
-              title={badge.title}
-            >
-              {badge.label}
-            </span>
+            sourceRecord ? (
+              <span className="relative inline-block">
+                <button
+                  type="button"
+                  onClick={() => setShowSourcePopover(s => !s)}
+                  className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap border cursor-pointer ${badge.cls}`}
+                  title={badge.title}
+                >
+                  {badge.label}
+                </button>
+                {showSourcePopover && (
+                  <SourcePopover source={sourceRecord} onClose={() => setShowSourcePopover(false)} />
+                )}
+              </span>
+            ) : (
+              <span
+                className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap border ${badge.cls}`}
+                title={badge.title}
+              >
+                {badge.label}
+              </span>
+            )
           )}
           {isEdited && (
             <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full whitespace-nowrap" title={editedTitle}>
@@ -346,6 +483,14 @@ export default function BudgetLineItemRow({
           placeholder="—"
           className={`w-full text-right tabular-nums font-semibold text-slate-900 border border-transparent hover:border-slate-200 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/40 rounded-lg px-2 py-1 ${fieldMuted}`}
         />
+        {isGeoScaled && (
+          <div
+            className="text-[10px] text-slate-400 text-right pr-2"
+            title={`Scaled for the ${GEOGRAPHY_LABEL[derivation?.geography_profile ?? ''] ?? 'selected'} geography profile.`}
+          >
+            ({derivationLine!.unit_cost_published!.toLocaleString()} × {derivationLine!.geography_factor} geo)
+          </div>
+        )}
       </td>
 
       <td className="px-2 py-2.5 align-top">

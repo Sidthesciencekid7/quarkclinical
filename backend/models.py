@@ -89,11 +89,26 @@ class LeadStatus(str, enum.Enum):
 class BudgetBucket(str, enum.Enum):
     """Which rollup line a category feeds. The rollup math keys on THIS, never
     on the category's name — so a renamed or user-added category still totals
-    correctly."""
+    correctly.
+
+    investigator_grants and software (added for the patient/oncology rate
+    card, services/budget_rate_card.PATIENT_RATE_CARD) are ALWAYS 0.00 for a
+    healthy-volunteer budget — no healthy-card category ever uses them — so
+    adding them changes no existing total. They are kept separate from
+    `pass_through` and `direct` deliberately: all three real oncology CRO
+    bids this card is calibrated against (Novotech, PPD/Emmes, IQVIA) present
+    investigator grants/site fees and software/hosting licensing as their own
+    line items, outside professional fees and outside vendor pass-through,
+    and the CRO discount applies to professional fees only — never to grants
+    or software licences. Two new buckets keep that arithmetic honest with no
+    special-casing in the rollup.
+    """
     direct = "direct"
     stipend = "stipend"
     variable = "variable"
     pass_through = "pass_through"
+    investigator_grants = "investigator_grants"
+    software = "software"
 
 
 class BudgetLineStatus(str, enum.Enum):
@@ -142,6 +157,24 @@ class BudgetLineSource(str, enum.Enum):
     manual = "manual"
     protocol_derived = "protocol_derived"
     rate_card = "rate_card"
+    researched = "researched"
+
+    # researched — the UNIT COST is a real, cited, externally-published figure
+    #     (an institutional fee schedule, a manufacturer list price, a
+    #     peer-reviewed benchmark, a government rate) or a documented
+    #     triangulation of such figures, not an approximation. The full
+    #     citation, its provenance tier and any caveat live in
+    #     Budget.derivation["sources"][source_id]; the line's own derivation
+    #     record carries source_id. Like every other value here this is a
+    #     provenance badge that SURVIVES a user edit — once the user retypes
+    #     the price, "edited-ness" is still answered by comparing unit_cost to
+    #     Budget.derivation["auto_priced"][derivation_key], never by this
+    #     field. See services/budget_rate_card.RateCardSource /
+    #     PROVENANCE_TIERS / SOURCE_REGISTRY for the patient rate card's
+    #     citations. Precedence when a row could be more than one thing:
+    #     protocol_derived (quantity from the linked protocol) wins over
+    #     researched (a cited unit cost) wins over rate_card (uncited
+    #     approximation).
 
 
 class BudgetDiscountType(str, enum.Enum):
@@ -160,6 +193,31 @@ class BudgetStatus(str, enum.Enum):
     draft = "draft"
     final = "final"
     archived = "archived"
+
+
+class BudgetSubjectProfile(str, enum.Enum):
+    """Which RATE CARD prices this budget — orthogonal to `study_type`.
+
+    `study_type` (BE / food_effect / biosimilar_pk) keeps selecting the
+    *scientific* shape of the study. This selects the *commercial* shape:
+
+      healthy — the existing, frozen 17-category healthy-volunteer card
+                (services/budget_rate_card.HEALTHY_RATE_CARD, alias
+                RATE_CARD). Single clinic, CRO-run, stipend-paying, no
+                investigator grants, no SAEs assumed.
+      patient — the new 22-category patient card
+                (services/budget_rate_card.PATIENT_RATE_CARD). Multi-site,
+                multi-country, phase-priced, investigator-grant-dominated.
+
+    A biosimilar_pk study can be either healthy or patient (e.g. an
+    oncology biosimilar cannot ethically run in healthy volunteers) — the
+    two axes are independent and both are recorded on every budget.
+
+    Defaults to `healthy` on every pre-existing row (see migration 010's
+    backfill) so no historic budget is ever silently re-classified.
+    """
+    healthy = "healthy"
+    patient = "patient"
 
 
 # ---------------------------------------------------------------------------
@@ -579,7 +637,64 @@ class Budget(Base):
     n_screened: Mapped[int | None] = mapped_column(Integer, nullable=True)
     n_sites: Mapped[int | None] = mapped_column(Integer, nullable=True)
     n_dosing_groups: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # For a healthy-volunteer budget this IS the whole study duration, as
+    # before. For a patient budget it is DERIVED as the sum of the five phase
+    # durations below (services/budget_engine resolves and writes it back);
+    # editing it directly on a patient budget scales the five phases
+    # proportionally rather than being treated as an independent input.
     project_duration_months: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # -- Patient/oncology rate-card profile (all NULLABLE; every column here is
+    # untouched — NULL — on every existing healthy-volunteer budget, and the
+    # 010 migration backfills subject_profile='healthy' on every pre-existing
+    # row so no historic budget can ever be silently re-classified as a
+    # patient budget). See services/budget_rate_card.PATIENT_RATE_CARD and
+    # PATIENT_STUDY_PROFILES for how these drive the patient card's pricing.
+    subject_profile: Mapped[BudgetSubjectProfile | None] = mapped_column(
+        Enum(BudgetSubjectProfile, name="budget_subject_profile", native_enum=False, length=16),
+        nullable=True,
+    )
+    therapeutic_area: Mapped[str | None] = mapped_column(String(64), nullable=True)   # "oncology" | "other" | "unknown"
+    indication: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    n_countries: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Sites CONTRACTED (n_sites, above, is sites ACTIVATED — the two differ in
+    # a real multi-country patient study; they are the same number for the
+    # single-clinic healthy-volunteer card).
+    n_sites_selected: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    dropout_rate_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    n_completed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Phase-based durations (patient studies are priced per phase-month, not
+    # against one flat duration): start-up, recruitment, treatment, follow-up,
+    # close-out. Their sum is project_duration_months, above.
+    startup_months: Mapped[float | None] = mapped_column(Float, nullable=True)
+    recruitment_months: Mapped[float | None] = mapped_column(Float, nullable=True)
+    treatment_months: Mapped[float | None] = mapped_column(Float, nullable=True)
+    followup_months: Mapped[float | None] = mapped_column(Float, nullable=True)
+    closeout_months: Mapped[float | None] = mapped_column(Float, nullable=True)
+    n_expected_saes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    n_expected_susars: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    n_monitoring_visits_onsite: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    n_monitoring_visits_remote: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    n_pharmacy_visits: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    n_visits_per_patient: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    n_protocol_amendments: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # e.g. "us_only" | "eu_west" | "eu_east" | "latam" | "apac" | "china" |
+    # "india" | "global_emerging_mixed" | "global_developed_mixed" — see
+    # services/budget_rate_card.GEOGRAPHY_FACTORS.
+    geography_profile: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Derived from geography_profile by default; a direct user edit overrides
+    # the profile lookup (recorded with derivation source "user").
+    geography_factor: Mapped[float | None] = mapped_column(Float, nullable=True)
+    archival_retention_years: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bicr_required: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Comparator drug acquisition (e.g. reference-product nivolumab for a
+    # biosimilar PK-similarity arm) defaults OFF: it is a potentially
+    # multi-million-dollar line that must be a deliberate opt-in, never a
+    # silent default — see services/budget_rate_card.COMPARATOR_PRICE_KB.
+    comparator_sourced_by_sponsor: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False,
+    )
+    comparator_arm_fraction: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # -- Discount (applies to the DIRECT bucket subtotal only) ---------------
     discount_type: Mapped[BudgetDiscountType] = mapped_column(
@@ -634,7 +749,9 @@ class BudgetCategory(Base):
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     bucket: Mapped[BudgetBucket] = mapped_column(
-        Enum(BudgetBucket, name="budget_bucket", native_enum=False, length=20),
+        # length=32 (widened from 20 by migration 010): "investigator_grants"
+        # is 19 characters, one short of the old VARCHAR(20) limit.
+        Enum(BudgetBucket, name="budget_bucket", native_enum=False, length=32),
         nullable=False, default=BudgetBucket.direct,
     )
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0", default=0)
@@ -698,7 +815,8 @@ class BudgetLineItem(Base):
         nullable=False, default=BudgetLineStatus.costed,
     )
     source: Mapped[BudgetLineSource] = mapped_column(
-        Enum(BudgetLineSource, name="budget_line_source", native_enum=False, length=20),
+        # length=32 (widened from 20 by migration 010) for "researched".
+        Enum(BudgetLineSource, name="budget_line_source", native_enum=False, length=32),
         nullable=False, default=BudgetLineSource.manual,
     )
     # Stable key identifying WHICH derivation produced this row

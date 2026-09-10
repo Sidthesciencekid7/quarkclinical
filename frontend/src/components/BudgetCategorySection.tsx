@@ -29,7 +29,20 @@ interface Props {
   onError: (msg: string) => void
 }
 
-const BUCKETS: BudgetBucket[] = ['direct', 'stipend', 'variable', 'pass_through']
+const BUCKETS: BudgetBucket[] = ['direct', 'stipend', 'variable', 'pass_through', 'investigator_grants', 'software']
+
+// Distinguishes the six buckets at a glance down a 22-category patient-study
+// page. `direct`/`stipend`/`variable`/`pass_through` keep the original quiet
+// slate treatment; the two patient-study buckets get their own hue so they
+// read as a different KIND of row, not just another category.
+const BUCKET_CHIP: Record<BudgetBucket, string> = {
+  direct: 'bg-slate-100 border-slate-200 text-slate-600',
+  stipend: 'bg-slate-100 border-slate-200 text-slate-600',
+  variable: 'bg-slate-100 border-slate-200 text-slate-600',
+  pass_through: 'bg-slate-100 border-slate-200 text-slate-600',
+  investigator_grants: 'bg-emerald-50 border-emerald-200 text-emerald-700',
+  software: 'bg-violet-50 border-violet-200 text-violet-700',
+}
 
 function ChevronUpIcon() {
   return (
@@ -185,7 +198,7 @@ export default function BudgetCategorySection({
           value={category.bucket}
           onChange={e => handleBucketChange(e.target.value as BudgetBucket)}
           aria-label="Category bucket"
-          className="text-xs font-semibold text-slate-600 bg-slate-100 border border-slate-200 rounded-lg px-2 py-1 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60"
+          className={`text-xs font-semibold rounded-lg px-2 py-1 cursor-pointer border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60 ${BUCKET_CHIP[category.bucket]}`}
         >
           {BUCKETS.map(b => <option key={b} value={b}>{BUDGET_BUCKET_LABELS[b]}</option>)}
         </select>

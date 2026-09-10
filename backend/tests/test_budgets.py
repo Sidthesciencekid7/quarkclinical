@@ -1157,3 +1157,310 @@ def test_compute_rollups_none_discount_applies_zero():
     )
     assert rollup["discount_amount"] == 0.0
     assert rollup["total_direct_costs"] == 500.0
+
+
+# ===========================================================================
+# M. Patient / oncology rate-card profile (PROFILE SELECTION AND MODEL
+# CHANGES / THE PATIENT RATE CARD / QUANTITY BASES / PROVENANCE DESIGN / API
+# CONTRACT). Sections A-L above are ALL still exercising the healthy-volunteer
+# path; this section adds explicit "still healthy, still 17 categories, new
+# buckets stay at 0.00" assertions rather than rewriting them, plus the new
+# patient-profile coverage.
+# ===========================================================================
+
+
+async def test_healthy_volunteer_budget_still_prices_exactly_as_before(api_client, seeded):
+    """Hard regression: a healthy-volunteer budget (a drug NOT in the
+    cytotoxic/biologic-unsafe curated list) must resolve subject_profile to
+    'healthy' and price with the untouched 17-category healthy card — the
+    two new rollup buckets never move for it."""
+    body = await _create_budget(api_client, seeded.user, name=None, drug_inn="metformin")
+    assert body["subject_profile"] == "healthy"
+    assert len(body["categories"]) == 17
+    assert body["rollup"]["investigator_grants_total"] == 0.0
+    assert body["rollup"]["software_total"] == 0.0
+    buckets = {c["bucket"] for c in body["categories"]}
+    assert "investigator_grants" not in buckets
+    assert "software" not in buckets
+
+
+async def test_biologic_kb_safe_drug_still_resolves_healthy(api_client, seeded):
+    """abatacept is in the curated safety KB as NHV-safe — the drug-KB
+    inference (spec §1.2 step 3) must resolve it to 'healthy', not
+    'patient', even though it is a biologic. The pre-existing reference
+    numbers (test_biologic_drug_name_defaults_to_biosimilar_pk_profile) are
+    unaffected by this work — spot-checked again here."""
+    body = await _create_budget(api_client, seeded.user, name=None, drug_inn="abatacept")
+    assert body["subject_profile"] == "healthy"
+    assert body["study_type"] == "biosimilar_pk"
+    assert len(body["categories"]) == 17
+    assert body["n_enrolled"] == 60
+
+
+async def test_cytotoxic_drug_name_alone_infers_patient_profile(api_client, seeded):
+    """The spec's headline scenario: the user types 'nivolumab' and nothing
+    else -> a fully-priced 22-category patient/oncology budget, no protocol,
+    no manual pricing step."""
+    body = await _create_budget(api_client, seeded.user, name=None, drug_inn="nivolumab")
+
+    assert body["subject_profile"] == "patient"
+    assert body["derivation"]["assumptions"]["subject_profile"]["source"] == "inferred_from_safety_profile"
+    assert body["study_type"] == "biosimilar_pk"
+    assert body["therapeutic_area"] == "oncology"
+    assert body["n_enrolled"] == 128
+    assert body["n_sites"] == 40
+    assert body["n_countries"] == 7
+    assert body["geography_profile"] == "global_emerging_mixed"
+    assert body["bicr_required"] is True
+    assert body["comparator_sourced_by_sponsor"] is False
+
+    assert len(body["categories"]) == 22
+    line_item_count = sum(len(c["line_items"]) for c in body["categories"])
+    assert line_item_count > 100
+
+    # Every one of the 22 categories actually got priced (spec's "every
+    # category populated" requirement) — no empty shell for any of them.
+    for cat in body["categories"]:
+        assert len(cat["line_items"]) > 0, f"category '{cat['name']}' has no line items"
+
+    for cat in body["categories"]:
+        for li in cat["line_items"]:
+            if li["status"] == "costed":
+                assert li["unit_cost"] is not None
+                assert li["total"] is not None
+
+    # The rollup reconciles: the two new buckets are populated, and the
+    # comparator drug (opt-in, default OFF) contributes nothing by default.
+    rollup = body["rollup"]
+    assert rollup["investigator_grants_total"] > 0.0
+    assert rollup["software_total"] > 0.0
+    assert rollup["pass_through_total"] > 0.0
+    assert rollup["grand_total"] == pytest.approx(
+        rollup["total_direct_costs"] + rollup["subject_stipend_total"] + rollup["variable_total"]
+        + rollup["pass_through_total"] + rollup["investigator_grants_total"] + rollup["software_total"],
+        abs=0.01,
+    )
+    comparator_cat = next(c for c in body["categories"] if c["name"] == "Comparator Drug Sourcing")
+    assert comparator_cat["subtotal"] == 0.0
+
+    # Derivation audit trail (spec §4.4/§7.5).
+    deriv = body["derivation"]
+    assert deriv["subject_profile"] == "patient"
+    assert deriv["profile_key"] == "biosimilar_pk_oncology"
+    assert deriv["phases"]["total_months"] == body["project_duration_months"]
+    assert len(deriv["sources"]) > 0
+    assert "provenance_summary" in deriv
+    assert "bid_reconciliation" in deriv
+    assert "cross_checks" in deriv
+    researched = [ln for ln in deriv["lines"] if ln["source"] == "researched"]
+    assert researched, "expected at least one researched (cited) line on the patient card"
+    for ln in researched:
+        assert ln["source_id"] in deriv["sources"]
+
+
+async def test_patient_budget_user_can_override_subject_profile_explicitly(api_client, seeded):
+    """User-authoritative override (spec §1.2 step 1) wins over everything,
+    including a drug the KB would otherwise leave healthy."""
+    body = await _create_budget(
+        api_client, seeded.user, name=None, drug_inn="metformin", subject_profile="patient",
+    )
+    assert body["subject_profile"] == "patient"
+    assert len(body["categories"]) == 22
+
+
+async def test_invalid_subject_profile_is_422(api_client, seeded):
+    resp = await api_client.post(
+        "/api/budgets", json={"drug_inn": "metformin", "subject_profile": "made_up"},
+        headers=_as(seeded.user),
+    )
+    assert resp.status_code == 422, resp.text
+
+
+async def test_invalid_geography_profile_is_422(api_client, seeded):
+    resp = await api_client.post(
+        "/api/budgets", json={"drug_inn": "nivolumab", "geography_profile": "mars"},
+        headers=_as(seeded.user),
+    )
+    assert resp.status_code == 422, resp.text
+
+
+async def test_dropout_rate_out_of_range_is_422(api_client, seeded):
+    resp = await api_client.post(
+        "/api/budgets", json={"drug_inn": "nivolumab", "dropout_rate_pct": 150},
+        headers=_as(seeded.user),
+    )
+    assert resp.status_code == 422, resp.text
+
+
+async def test_comparator_gate_defaults_off_and_can_be_opted_in(api_client, seeded):
+    """spec §1.6 — a sponsor-sourced reference product can be a $10M+ line,
+    so it must be a deliberate opt-in, never a silent default."""
+    off_body = await _create_budget(api_client, seeded.user, name=None, drug_inn="nivolumab")
+    comp_cat = next(c for c in off_body["categories"] if c["name"] == "Comparator Drug Sourcing")
+    comp_drug = next(li for li in comp_cat["line_items"] if li["derivation_key"] == "comp.drug")
+    assert comp_drug["status"] == "actuals_only"
+    assert comp_drug["quantity"] == 0
+    assert comp_drug["total"] is None
+    assert comp_drug["unit_cost"] is not None  # shown, just not summed
+
+    on_body = await _create_budget(
+        api_client, seeded.user, name=None, drug_inn="nivolumab", comparator_sourced_by_sponsor=True,
+    )
+    on_comp_cat = next(c for c in on_body["categories"] if c["name"] == "Comparator Drug Sourcing")
+    on_comp_drug = next(li for li in on_comp_cat["line_items"] if li["derivation_key"] == "comp.drug")
+    assert on_comp_drug["status"] == "costed"
+    assert on_comp_drug["quantity"] > 0
+    assert on_comp_drug["total"] is not None
+    assert on_body["rollup"]["grand_total"] > off_body["rollup"]["grand_total"]
+
+
+async def test_reprice_endpoint_reprices_after_driver_change(api_client, seeded):
+    """spec §7.4 — a plain PATCH does not move any total by itself; the new
+    /reprice endpoint is how a caller asks for that re-price explicitly."""
+    body = await _create_budget(api_client, seeded.user, name=None, drug_inn="nivolumab")
+    original_total = body["rollup"]["grand_total"]
+
+    patch_resp = await api_client.patch(
+        f"/api/budgets/{body['id']}", json={"n_sites": 80}, headers=_as(seeded.user),
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+    patched = patch_resp.json()
+    assert patched["n_sites"] == 80
+    assert patched["rollup"]["grand_total"] == pytest.approx(original_total, abs=0.01)
+
+    reprice_resp = await api_client.post(
+        f"/api/budgets/{body['id']}/reprice", headers=_as(seeded.user),
+    )
+    assert reprice_resp.status_code == 200, reprice_resp.text
+    repriced = reprice_resp.json()
+    assert repriced["n_sites"] == 80
+    assert repriced["rollup"]["grand_total"] != pytest.approx(original_total, abs=0.01)
+    assert repriced["rollup"]["grand_total"] > 0.0
+
+
+async def test_profile_preview_endpoint(api_client, seeded):
+    resp = await api_client.get(
+        "/api/budgets/profile-preview", params={"drug_inn": "nivolumab"}, headers=_as(seeded.user),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["subject_profile"] == "patient"
+    assert body["subject_profile_source"] == "inferred_from_safety_profile"
+    assert body["therapeutic_area"] == "oncology"
+    assert body["category_count"] == 22
+    assert body["estimated_grand_total"] > 0.0
+    assert body["defaults"]["n_sites"] == 40
+
+    healthy_resp = await api_client.get(
+        "/api/budgets/profile-preview", params={"drug_inn": "metformin"}, headers=_as(seeded.user),
+    )
+    assert healthy_resp.status_code == 200, healthy_resp.text
+    healthy_body = healthy_resp.json()
+    assert healthy_body["subject_profile"] == "healthy"
+    assert healthy_body["category_count"] == 17
+
+
+async def test_rate_card_meta_endpoint(api_client, seeded):
+    patient_resp = await api_client.get(
+        "/api/budgets/rate-card-meta", params={"subject_profile": "patient"}, headers=_as(seeded.user),
+    )
+    assert patient_resp.status_code == 200, patient_resp.text
+    patient_meta = patient_resp.json()
+    assert len(patient_meta["categories"]) == 22
+    assert "investigator_grants" in patient_meta["buckets"]
+    assert "software" in patient_meta["buckets"]
+    assert patient_meta["geography_profiles"]["global_emerging_mixed"] == pytest.approx(0.45)
+
+    healthy_resp = await api_client.get(
+        "/api/budgets/rate-card-meta", params={"subject_profile": "healthy"}, headers=_as(seeded.user),
+    )
+    assert healthy_resp.status_code == 200, healthy_resp.text
+    healthy_meta = healthy_resp.json()
+    assert len(healthy_meta["categories"]) == 17
+    assert "investigator_grants" not in healthy_meta["buckets"]
+
+
+async def test_budget_summary_list_carries_patient_fields(api_client, seeded):
+    await _create_budget(api_client, seeded.user, name=None, drug_inn="nivolumab")
+    resp = await api_client.get("/api/budgets", headers=_as(seeded.user))
+    assert resp.status_code == 200, resp.text
+    rows = resp.json()
+    row = next(r for r in rows if r["drug_inn"] == "nivolumab")
+    assert row["subject_profile"] == "patient"
+    assert row["therapeutic_area"] == "oncology"
+    assert row["n_sites"] == 40
+    assert row["n_countries"] == 7
+
+
+# ---------------------------------------------------------------------------
+# M2. Pure-unit tests (no DB) — budget_engine.py's new resolvers
+# ---------------------------------------------------------------------------
+
+
+def _bare_budget(**overrides):
+    from models import Budget, BudgetDiscountType
+
+    defaults = dict(
+        id=uuid.uuid4(), org_id="test-org", name="t", created_by=uuid.uuid4(),
+        currency="USD", derivation={}, discount_type=BudgetDiscountType.none,
+        discount_value=0.0, comparator_sourced_by_sponsor=False,
+    )
+    defaults.update(overrides)
+    return Budget(**defaults)
+
+
+def test_resolve_subject_profile_user_wins_over_everything():
+    from models import BudgetSubjectProfile
+
+    budget = _bare_budget(drug_inn="nivolumab", subject_profile=BudgetSubjectProfile.healthy)
+    profile, assumption = budget_engine.resolve_subject_profile(budget, None, {})
+    assert profile == "healthy"
+    assert assumption["source"] == "user"
+
+
+def test_resolve_subject_profile_drug_kb_infers_patient_for_cytotoxic():
+    budget = _bare_budget(drug_inn="nivolumab")
+    profile, assumption = budget_engine.resolve_subject_profile(budget, None, {})
+    assert profile == "patient"
+    assert assumption["source"] == "inferred_from_safety_profile"
+
+
+def test_resolve_subject_profile_drug_kb_stays_healthy_for_nhv_safe_biologic():
+    budget = _bare_budget(drug_inn="trastuzumab")
+    profile, assumption = budget_engine.resolve_subject_profile(budget, None, {})
+    assert profile == "healthy"
+    assert assumption["source"] == "inferred_from_safety_profile"
+
+
+def test_resolve_subject_profile_unknown_drug_defaults_healthy():
+    budget = _bare_budget(drug_inn="some-made-up-molecule-xyz")
+    profile, assumption = budget_engine.resolve_subject_profile(budget, None, {})
+    assert profile == "healthy"
+    assert assumption["source"] == "default"
+
+
+def test_compute_rollups_investigator_grants_and_software_buckets():
+    categories = [
+        _FakeCategory(bucket="direct", line_items=[_FakeLineItem(total=1000)]),
+        _FakeCategory(bucket="investigator_grants", line_items=[_FakeLineItem(total=500)]),
+        _FakeCategory(bucket="software", line_items=[_FakeLineItem(total=250)]),
+    ]
+    rollup = budget_engine.compute_rollups(categories)
+    assert rollup["investigator_grants_total"] == 500.0
+    assert rollup["software_total"] == 250.0
+    assert rollup["grand_total"] == 1750.0
+
+
+def test_patient_rate_card_seed_categories_match_patient_rate_card():
+    from services import budget_rate_card
+
+    cats = budget_engine.seed_default_categories(uuid.uuid4(), subject_profile="patient")
+    assert len(cats) == 22
+    assert [c.name for c in cats] == [c.name for c in budget_rate_card.PATIENT_RATE_CARD]
+
+
+def test_healthy_seed_categories_unaffected_by_default_argument():
+    cats_default = budget_engine.seed_default_categories(uuid.uuid4())
+    cats_explicit = budget_engine.seed_default_categories(uuid.uuid4(), subject_profile="healthy")
+    assert [c.name for c in cats_default] == [c.name for c in cats_explicit]
+    assert len(cats_default) == 17

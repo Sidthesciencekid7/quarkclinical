@@ -563,10 +563,40 @@ export const CSR_SECTION_TITLES: Record<string, string> = {
 
 export type BudgetStatus = 'draft' | 'final' | 'archived'
 
-/** Which rollup bucket a category feeds. Only `direct` is discountable. */
-export type BudgetBucket = 'direct' | 'stipend' | 'variable' | 'pass_through'
+/** Which rollup bucket a category feeds. Only `direct` is discountable.
+ *  `investigator_grants` and `software` are patient-study buckets — they are
+ *  always 0.0 on a healthy-volunteer budget. */
+export type BudgetBucket =
+  | 'direct'
+  | 'stipend'
+  | 'variable'
+  | 'pass_through'
+  | 'investigator_grants'
+  | 'software'
 
 export type BudgetDiscountType = 'none' | 'percent' | 'flat'
+
+/** 'healthy' (the only kind that existed before this) or 'patient'. Drives a
+ *  whole second rate card, extra budget-level drivers (§ below) and two extra
+ *  rollup buckets. Server-resolved from the drug KB when omitted at create. */
+export type BudgetSubjectProfile = 'healthy' | 'patient'
+
+/** How aggressively a unit cost is discounted from a US baseline for
+ *  non-US-heavy enrollment. Only meaningful for patient budgets. */
+export type BudgetGeographyProfile =
+  | 'us_only'
+  | 'eu_west'
+  | 'eu_east'
+  | 'latam'
+  | 'apac'
+  | 'china'
+  | 'india'
+  | 'global_emerging_mixed'
+  | 'global_developed_mixed'
+
+/** How solid a `researched` line's unit cost actually is. Only meaningful
+ *  when `source === 'researched'` — null otherwise. */
+export type BudgetProvenanceTier = 'published_rate' | 'derived' | 'bid_calibrated' | 'estimate'
 
 /** Only `costed` rows carry money into a subtotal. The other five are the real
  *  CRO vocabulary for "this row exists but has no total" and render as a status
@@ -581,10 +611,16 @@ export type BudgetLineStatus =
 
 /** `protocol_derived` = the system found this cost driver in the linked
  *  protocol's computed schedule. `rate_card` = both quantity and unit cost
- *  are calibrated approximations from the server's rate card. Never render
- *  `rate_card` identically to `manual` (typed by a person) or to
- *  `protocol_derived` (quantity came from a real linked protocol). */
-export type BudgetLineSource = 'manual' | 'protocol_derived' | 'rate_card'
+ *  are calibrated approximations from the server's rate card. `researched` =
+ *  the unit cost is a real, cited, externally-published figure (or a
+ *  documented triangulation of such figures) — see `derivation.sources` for
+ *  the citation, tier and caveat, referenced by the line's `source_id`. Like
+ *  every other value here this is a provenance badge that SURVIVES a user
+ *  edit; "edited-ness" is answered separately by comparing `unit_cost` to
+ *  `derivation.auto_priced[derivation_key]`. Never render `rate_card`
+ *  identically to `manual` (typed by a person) or to `protocol_derived`
+ *  (quantity came from a real linked protocol). */
+export type BudgetLineSource = 'manual' | 'protocol_derived' | 'rate_card' | 'researched'
 
 /** Namespaced, server-defined keys (e.g. "dm.edc_license",
  *  "stipend.completed") — never a closed set, never matched against one. */
@@ -605,6 +641,20 @@ export interface BudgetLineItem {
   sort_order: number
   created_at: string
   updated_at: string
+}
+
+/** A real, citable external figure backing one or more `researched` lines.
+ *  Stored once per source in `budget.derivation.sources`, keyed by id, and
+ *  referenced from each line's derivation record via `source_id`. */
+export interface BudgetSourceRecord {
+  tier: BudgetProvenanceTier
+  /** The figure AS PUBLISHED, e.g. "USD 675 per site per year". */
+  figure: string
+  citation: string
+  url: string | null
+  accessed: string
+  /** What the figure is NOT, in the author's own words — rendered in amber. */
+  caveat: string | null
 }
 
 export interface BudgetCategory {
@@ -631,6 +681,10 @@ export interface BudgetRollup {
   subject_stipend_total: number
   variable_total: number
   pass_through_total: number
+  /** Patient-study bucket. 0.0 on every healthy-volunteer budget. */
+  investigator_grants_total: number
+  /** Patient-study bucket. 0.0 on every healthy-volunteer budget. */
+  software_total: number
   grand_total: number
   /** category id -> subtotal. The single freshest source of every per-category
    *  number after any line-item write. */
@@ -651,13 +705,38 @@ export interface BudgetDerivationLine {
   source?: BudgetLineSource
   category?: string
   basis?: string
+  /** Provenance tier of a `researched` line's unit cost. Null for anything
+   *  else — never render a tier badge when this is null. */
+  provenance_tier?: BudgetProvenanceTier | null
+  /** Key into `derivation.sources`. Null when the tier is `estimate` (no
+   *  citation exists) or the line isn't `researched` at all. */
+  source_id?: string | null
+  /** The published rate BEFORE the geography factor was applied. Null when
+   *  the line isn't geography-scaled — compare against `unit_cost` to decide
+   *  whether to render the "(26,000 × 0.45 geo)" suffix at all. */
+  unit_cost_published?: number | null
+  /** The geography factor actually applied to this line, if any. */
+  geography_factor?: number | null
 }
 
 /** One auto-populated field's provenance: what value was used, where it came
- *  from, and a one-line human explanation (`basis`) safe to render verbatim. */
+ *  from, and a one-line human explanation (`basis`) safe to render verbatim.
+ *  `inferred_from_safety_profile` = the subject_profile was resolved from the
+ *  drug's safety KB (e.g. "not NHV-safe"). `phase_scaled` = derived by
+ *  scaling a per-month or per-visit rate across the study's phase durations.
+ *  `kb_default` = a knowledge-base default for a drug not otherwise in the
+ *  safety KB. */
 export interface BudgetDerivationAssumption {
   value: number | string | boolean | null
-  source: 'user' | 'protocol' | 'default' | 'computed' | 'inferred_from_modality'
+  source:
+    | 'user'
+    | 'protocol'
+    | 'default'
+    | 'computed'
+    | 'inferred_from_modality'
+    | 'inferred_from_safety_profile'
+    | 'phase_scaled'
+    | 'kb_default'
   basis: string
 }
 
@@ -710,6 +789,73 @@ export interface BudgetDerivation {
   /** Rendered verbatim as the editor's top-of-page disclosure line. */
   disclaimer?: string
   discount_note?: string
+
+  // ── Patient-study additions (absent/null on a healthy budget) ──────────
+  subject_profile?: BudgetSubjectProfile
+  therapeutic_area?: string | null
+  indication?: string | null
+  /** Which patient rate-card profile priced this budget, e.g.
+   *  "biosimilar_pk_oncology". */
+  profile_key?: string | null
+  geography_profile?: BudgetGeographyProfile | null
+  geography_factor?: number | null
+
+  /** Phase-duration math behind every per-month-priced line. */
+  phases?: {
+    startup_months: number
+    recruitment_months: number
+    treatment_months: number
+    followup_months: number
+    closeout_months: number
+    total_months: number
+    active_months: number
+    site_months_startup: number
+    site_months_active: number
+    site_months_closeout: number
+    site_years: number
+    ramp_factors: { startup: number; active: number; closeout: number }
+  }
+
+  /** One entry per citation referenced by a `researched` line, keyed by the
+   *  same `source_id` the line carries. Rendered verbatim — never paraphrase
+   *  a citation or caveat. */
+  sources?: Record<string, BudgetSourceRecord>
+
+  provenance_summary?: {
+    researched_lines: number
+    researched_value: number
+    derived_lines: number
+    derived_value: number
+    bid_calibrated_lines: number
+    bid_calibrated_value: number
+    estimate_lines: number
+    estimate_value: number
+    researched_share_of_grand_total: number
+  }
+
+  /** Patient budgets only: the honesty block comparing this estimate against
+   *  real CRO bids for a comparable reference study. Disclosure, not an
+   *  error — render with an amber border, never red. */
+  bid_reconciliation?: {
+    reference_study: string
+    bids: { cro: string; grand_total: number | null; note?: string }[]
+    this_estimate: number
+    delta_vs_highest_bid_pct: number
+    explained_by: string[]
+    disclaimer: string
+  }
+
+  /** Deterministic sanity checks against published cost-share benchmarks
+   *  (e.g. "site monitoring should be 9-14% of grand total"). A `pass: false`
+   *  entry also appears, verbatim, in `warnings`. */
+  cross_checks?: {
+    id: string
+    value: number
+    band: [number, number]
+    pass: boolean
+    source_id?: string | null
+    message?: string
+  }[]
 }
 
 export interface Budget {
@@ -740,6 +886,35 @@ export interface Budget {
   rollup: BudgetRollup
   created_at: string
   updated_at: string
+
+  // ── Patient-study drivers (§7.2/7.5) — null/omitted on a healthy budget ──
+  /** Server-resolved unless explicitly set at create/update. */
+  subject_profile: BudgetSubjectProfile
+  therapeutic_area: string | null
+  indication: string | null
+  n_countries: number | null
+  n_sites_selected: number | null
+  dropout_rate_pct: number | null
+  startup_months: number | null
+  recruitment_months: number | null
+  treatment_months: number | null
+  followup_months: number | null
+  closeout_months: number | null
+  n_expected_saes: number | null
+  n_expected_susars: number | null
+  n_monitoring_visits_onsite: number | null
+  n_monitoring_visits_remote: number | null
+  n_pharmacy_visits: number | null
+  n_visits_per_patient: number | null
+  n_protocol_amendments: number | null
+  geography_profile: BudgetGeographyProfile | null
+  geography_factor: number | null
+  archival_retention_years: number | null
+  bicr_required: boolean | null
+  comparator_sourced_by_sponsor: boolean | null
+  comparator_arm_fraction: number | null
+  /** Server-computed: n_enrolled minus expected dropouts. Read-only. */
+  n_completed: number | null
 }
 
 export interface BudgetSummary {
@@ -756,6 +931,10 @@ export interface BudgetSummary {
   grand_total: number
   created_at: string
   updated_at: string
+  subject_profile: BudgetSubjectProfile
+  therapeutic_area: string | null
+  n_sites: number | null
+  n_countries: number | null
 }
 
 // ── Budget request payloads ──────────────────────────────────────────────
@@ -788,12 +967,43 @@ export interface BudgetCreatePayload {
   n_alternates?: number | null
   n_screened?: number | null
   notes?: string | null
+
+  // ── Patient-study drivers — all optional; omitting every one preserves
+  // today's exact healthy-volunteer behaviour. See §7.2 for the 422 rules
+  // (dropout_rate_pct 0..100, geography_factor 0.05..2.0, the five *_months
+  // and every n_* non-negative, comparator_arm_fraction 0..1).
+  subject_profile?: BudgetSubjectProfile
+  therapeutic_area?: 'oncology' | 'other' | 'unknown'
+  indication?: string
+  n_countries?: number
+  n_sites_selected?: number
+  dropout_rate_pct?: number
+  startup_months?: number
+  recruitment_months?: number
+  treatment_months?: number
+  followup_months?: number
+  closeout_months?: number
+  n_expected_saes?: number
+  n_expected_susars?: number
+  n_monitoring_visits_onsite?: number
+  n_monitoring_visits_remote?: number
+  n_pharmacy_visits?: number
+  n_visits_per_patient?: number
+  n_protocol_amendments?: number
+  geography_profile?: BudgetGeographyProfile
+  geography_factor?: number
+  archival_retention_years?: number
+  bicr_required?: boolean
+  comparator_sourced_by_sponsor?: boolean
+  comparator_arm_fraction?: number
 }
 
 /** Every key optional: omitted = unchanged, explicit null = cleared.
  *  `protocol_id` is deliberately absent — link/unlink goes through
  *  api.linkBudgetProtocol. A percent discount must be 0..100 (else 422), so
- *  validate before sending. */
+ *  validate before sending. Same new patient-study fields as
+ *  BudgetCreatePayload, same `exclude_unset` semantics: omitted = untouched,
+ *  explicit null = cleared (and re-derived on the next reprice). */
 export interface BudgetUpdatePayload {
   name?: string
   sponsor_name?: string | null
@@ -813,6 +1023,31 @@ export interface BudgetUpdatePayload {
   discount_type?: BudgetDiscountType
   discount_value?: number
   notes?: string | null
+
+  subject_profile?: BudgetSubjectProfile | null
+  therapeutic_area?: 'oncology' | 'other' | 'unknown' | null
+  indication?: string | null
+  n_countries?: number | null
+  n_sites_selected?: number | null
+  dropout_rate_pct?: number | null
+  startup_months?: number | null
+  recruitment_months?: number | null
+  treatment_months?: number | null
+  followup_months?: number | null
+  closeout_months?: number | null
+  n_expected_saes?: number | null
+  n_expected_susars?: number | null
+  n_monitoring_visits_onsite?: number | null
+  n_monitoring_visits_remote?: number | null
+  n_pharmacy_visits?: number | null
+  n_visits_per_patient?: number | null
+  n_protocol_amendments?: number | null
+  geography_profile?: BudgetGeographyProfile | null
+  geography_factor?: number | null
+  archival_retention_years?: number | null
+  bicr_required?: boolean | null
+  comparator_sourced_by_sponsor?: boolean | null
+  comparator_arm_fraction?: number | null
 }
 
 export interface BudgetCategoryCreatePayload {
@@ -869,6 +1104,52 @@ export interface BudgetReorderPayload {
   ordered_ids: string[]
 }
 
+// ── Create-flow helper endpoints (§7.4) ───────────────────────────────────
+
+/** GET /api/budgets/profile-preview?drug_inn=… — cheap, read-only, no DB
+ *  write, no AI call. Powers the create-view's inline "here's what we'll
+ *  build" hint while the user is still just typing a drug name. */
+export interface BudgetProfilePreview {
+  drug_inn: string
+  modality: DrugModality
+  allowed_study_types: StudyType[]
+  study_type: StudyType
+  subject_profile: BudgetSubjectProfile
+  subject_profile_source: 'inferred_from_safety_profile' | 'default'
+  subject_profile_basis: string
+  therapeutic_area: string | null
+  profile_key: string | null
+  defaults: {
+    n_enrolled: number
+    n_sites: number
+    n_countries?: number
+    project_duration_months: number
+    startup_months?: number
+    recruitment_months?: number
+    treatment_months?: number
+    followup_months?: number
+    closeout_months?: number
+    n_expected_saes?: number
+    geography_profile?: BudgetGeographyProfile
+  }
+  estimated_grand_total: number
+  category_count: number
+}
+
+/** GET /api/budgets/rate-card-meta?subject_profile=… — static metadata for
+ *  building UI (category list, buckets, provenance-tier copy, geography
+ *  factors) without hardcoding the rate card client-side. */
+export interface BudgetRateCardMeta {
+  subject_profile: BudgetSubjectProfile
+  rate_card_version: string
+  currency: string
+  disclaimer: string
+  categories: { name: string; bucket: BudgetBucket; sort_order: number; line_count: number }[]
+  buckets: BudgetBucket[]
+  provenance_tiers: Record<BudgetProvenanceTier, string>
+  geography_profiles: Record<BudgetGeographyProfile, number>
+}
+
 // ── Display maps (used by the budget components) ─────────────────────────
 
 export const BUDGET_LINE_STATUS_LABELS: Record<BudgetLineStatus, string> = {
@@ -885,4 +1166,6 @@ export const BUDGET_BUCKET_LABELS: Record<BudgetBucket, string> = {
   stipend: 'Subject stipend',
   variable: 'Variable',
   pass_through: 'Pass-through',
+  investigator_grants: 'Investigator grant',
+  software: 'Software / licensing',
 }

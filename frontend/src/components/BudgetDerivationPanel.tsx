@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { api } from '../api/client'
 import BudgetProtocolPicker from './BudgetProtocolPicker'
-import { relativeDate } from './budgetFormat'
-import type { Budget } from '../types'
+import { formatMoney, relativeDate } from './budgetFormat'
+import type { Budget, BudgetDerivation } from '../types'
 
 interface Props {
   budget: Budget
@@ -61,6 +61,28 @@ const ASSUMPTION_SOURCE_LABEL: Record<string, string> = {
   default: 'default',
   computed: 'computed',
   inferred_from_modality: 'inferred',
+  inferred_from_safety_profile: 'from drug profile',
+  phase_scaled: 'scaled',
+  kb_default: 'KB default',
+}
+
+// A `pass: false` cross-check also appears, verbatim, in `derivation.warnings`.
+// Any warning whose text begins with one of these prefixes gets a small
+// chart-icon treatment (+ the band it missed) instead of a plain bullet.
+const CROSS_CHECK_PREFIXES = [
+  'Site monitoring share',
+  'Central lab share',
+  'RTSM share',
+  'Investigator grant share',
+]
+
+function ChartIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 20 20" fill="none" className="flex-shrink-0 mt-0.5">
+      <path d="M4 16V9M10 16V4M16 16v-6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M2.5 17.5h15" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  )
 }
 
 function humaniseKey(key: string): string {
@@ -77,14 +99,86 @@ const CONDUCT_LABELS: { key: keyof NonNullable<import('../types').BudgetDerivati
   { key: 'alternate_ratio', label: 'Alternate ratio' },
 ]
 
-function WarningList({ warnings }: { warnings: string[] }) {
+/** Match a warning string to the cross-check it came from, if any, purely by
+ *  its known text prefix — `cross_checks` carries the numeric band, but the
+ *  warning itself is what's rendered verbatim, so this only decides styling. */
+function matchCrossCheck(
+  warning: string,
+  crossChecks: NonNullable<BudgetDerivation['cross_checks']>,
+): NonNullable<BudgetDerivation['cross_checks']>[number] | null {
+  const prefix = CROSS_CHECK_PREFIXES.find(p => warning.startsWith(p))
+  if (!prefix) return null
+  return crossChecks.find(c => c.message?.startsWith(prefix)) ?? crossChecks.find(c => !c.pass) ?? null
+}
+
+function WarningList({ warnings, crossChecks }: { warnings: string[]; crossChecks?: NonNullable<BudgetDerivation['cross_checks']> }) {
   if (warnings.length === 0) return null
   return (
-    <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 flex gap-2.5 text-amber-800">
-      <WarningIcon />
-      <ul className="space-y-1 text-xs list-none flex-1">
-        {warnings.map((w, i) => <li key={i}>{w}</li>)}
-      </ul>
+    <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 space-y-2 text-amber-800">
+      {warnings.map((w, i) => {
+        const check = crossChecks && crossChecks.length > 0 ? matchCrossCheck(w, crossChecks) : null
+        return (
+          <div key={i} className="flex gap-2.5 text-xs">
+            {check ? <ChartIcon /> : <WarningIcon />}
+            <div className="flex-1">
+              <p>{w}</p>
+              {check && (
+                <p className="text-[11px] text-amber-600 mt-0.5">
+                  Expected band {(check.band[0] * 100).toFixed(0)}–{(check.band[1] * 100).toFixed(0)}% · actual {(check.value * 100).toFixed(1)}%
+                </p>
+              )}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+/** Disclosure, not an error — amber border, never red. Compares this estimate
+ *  against real CRO bids for a comparable reference study, patient budgets
+ *  only. Rendered as its own bordered callout at the TOP of the panel. */
+function BidReconciliation({ data, currency }: { data: NonNullable<BudgetDerivation['bid_reconciliation']>; currency: string }) {
+  return (
+    <div className="rounded-xl border border-amber-200 bg-amber-50/60 px-4 py-3.5 space-y-3">
+      <div>
+        <h4 className="text-[11px] font-bold text-amber-800 uppercase tracking-wider">Reconciled against real CRO bids</h4>
+        <p className="text-[11px] text-amber-700 mt-0.5">{data.reference_study}</p>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <tbody>
+            {data.bids.map((b, i) => (
+              <tr key={i} className="border-t border-amber-200/70 first:border-t-0">
+                <td className="py-1.5 pr-3 text-amber-800 font-medium">{b.cro}</td>
+                <td className="py-1.5 pr-3 text-right tabular-nums text-amber-900 font-semibold">
+                  {b.grand_total != null ? formatMoney(b.grand_total, currency) : 'n/a'}
+                </td>
+                <td className="py-1.5 text-amber-600">{b.note ?? ''}</td>
+              </tr>
+            ))}
+            <tr className="border-t border-amber-300">
+              <td className="py-1.5 pr-3 text-amber-900 font-bold">This estimate</td>
+              <td className="py-1.5 pr-3 text-right tabular-nums text-amber-900 font-bold">{formatMoney(data.this_estimate, currency)}</td>
+              <td className="py-1.5 text-amber-700 font-semibold">
+                +{data.delta_vs_highest_bid_pct.toFixed(1)}% vs. highest bid
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      {data.explained_by.length > 0 && (
+        <div>
+          <p className="text-[11px] font-bold text-amber-800 mb-1">What this estimate adds that the bids don&apos;t:</p>
+          <ul className="space-y-1 text-[11px] text-amber-700 list-disc list-inside">
+            {data.explained_by.map((e, i) => <li key={i}>{e}</li>)}
+          </ul>
+        </div>
+      )}
+
+      <p className="text-[11px] text-amber-600 leading-relaxed border-t border-amber-200/70 pt-2">{data.disclaimer}</p>
     </div>
   )
 }
@@ -213,6 +307,8 @@ export default function BudgetDerivationPanel({ budget, onBudgetUpdated, onError
 
       {expanded && (
         <div className="px-5 pb-5 space-y-4">
+          {derivation.bid_reconciliation && <BidReconciliation data={derivation.bid_reconciliation} currency={budget.currency} />}
+
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             {FIELD_LABELS.filter(f => derivation[f.key] !== null && derivation[f.key] !== undefined).map(f => (
               <div key={f.key}>
@@ -263,7 +359,7 @@ export default function BudgetDerivationPanel({ budget, onBudgetUpdated, onError
             </div>
           )}
 
-          <WarningList warnings={derivation.warnings} />
+          <WarningList warnings={derivation.warnings} crossChecks={derivation.cross_checks} />
 
           <div className="flex items-center gap-3 pt-1 flex-wrap">
             {derivation.protocol_linked ? (
