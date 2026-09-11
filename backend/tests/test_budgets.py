@@ -31,6 +31,14 @@ from models import (
 from security import hash_password
 from services import budget_engine
 
+# Opt in to conftest.py's no_real_ctgov_calls_for_budgets fixture for every
+# test in this file — routers/budgets.py's create/reprice endpoints now call
+# LiteratureService.fetch_clinicaltrials for real-trial-history grounding
+# (services/budget_trial_precedent.py), and the seeded "metformin" Drug row
+# would otherwise make this suite attempt a real network call. See that
+# fixture's docstring for why it is not simply autouse=True suite-wide.
+pytestmark = pytest.mark.usefixtures("no_real_ctgov_calls_for_budgets")
+
 # NOTE: no module-level `pytestmark = pytest.mark.asyncio` here (unlike
 # test_comments.py) — this file's asyncio_mode=auto (pytest.ini) already
 # auto-detects `async def` tests, and section L below adds plain synchronous
@@ -256,6 +264,77 @@ async def test_biologic_drug_name_defaults_to_biosimilar_pk_profile(api_client, 
     assert body["n_alternates"] == 6
     assert body["derivation"]["modality"] == "biologic"
     assert body["derivation"]["complexity"] == "complex"
+
+
+def _fake_ctgov_trial(nct_id: str, *, enrollment_count: int, phase: str = "PHASE1", **overrides) -> dict:
+    """Builds a services.literature_service.ClinicalTrialRecord-shaped dict
+    (a TypedDict, so a plain dict satisfies it at runtime) for monkeypatching
+    LiteratureService.fetch_clinicaltrials in the tests below."""
+    record = {
+        "nct_id": nct_id, "title": f"A study of {nct_id}", "status": "COMPLETED",
+        "phase": phase, "conditions": [], "interventions": [], "sex": "ALL",
+        "minimum_age": "18 Years", "maximum_age": "", "healthy_volunteers": True,
+        "eligibility_criteria": "", "enrollment_count": enrollment_count,
+        "enrollment_type": "ACTUAL", "countries": ["United States"], "n_locations": 1,
+        "start_date": "2018-01", "primary_completion_date": "2018-07",
+    }
+    record.update(overrides)
+    return record
+
+
+async def test_two_drugs_with_different_real_trial_history_get_different_budgets(
+    api_client, seeded, monkeypatch,
+):
+    """The user's exact bug report: 'I am getting the same dollar amount for
+    any drug I submit'. Two biosimilar_pk-classified drugs sharing the SAME
+    generic default profile (n_enrolled=60) must diverge once each has its
+    own real ClinicalTrials.gov trial history — proving the budget is no
+    longer a generic per-study-type template."""
+    from services.literature_service import LiteratureService
+
+    async def _fake_fetch(self, drug_inn):
+        if drug_inn == "abatacept":
+            return [_fake_ctgov_trial("NCT00001111", enrollment_count=200)]
+        return []
+    monkeypatch.setattr(LiteratureService, "fetch_clinicaltrials", _fake_fetch)
+
+    # adalimumab (like abatacept) is nhv_single_dose_safe and not on the
+    # curated oncology list, so it resolves to the SAME healthy/biosimilar_pk
+    # classification and the SAME generic default (n_enrolled=60) abatacept
+    # would ALSO get without a real trial history — the actual bug being
+    # fixed here.
+    grounded = await _create_budget(api_client, seeded.user, name=None, drug_inn="abatacept")
+    ungrounded = await _create_budget(api_client, seeded.user, name=None, drug_inn="adalimumab")
+
+    assert ungrounded["study_type"] == grounded["study_type"] == "biosimilar_pk"
+
+    assert grounded["n_enrolled"] == 200
+    assert grounded["derivation"]["assumptions"]["n_enrolled"]["source"] == "trial_precedent"
+    assert grounded["derivation"]["trial_precedent"]["found"] is True
+    assert grounded["derivation"]["trial_precedent"]["trials"][0]["nct_id"] == "NCT00001111"
+
+    # adalimumab has no fake trial history registered above -> honest fallback
+    # to the exact same generic default as before this feature existed.
+    assert ungrounded["n_enrolled"] == 60
+    assert ungrounded["derivation"]["assumptions"]["n_enrolled"]["source"] == "default"
+    assert ungrounded["derivation"]["trial_precedent"]["found"] is False
+
+    assert grounded["rollup"]["grand_total"] != ungrounded["rollup"]["grand_total"]
+
+
+async def test_ctgov_fetch_failure_falls_back_to_generic_default(api_client, seeded, monkeypatch):
+    """A CT.gov outage (or an unregistered drug raising inside
+    LiteratureService) must never break budget creation — same resilience
+    contract as routers/protocols.py's _fetch_trial_precedent_safe."""
+    from services.literature_service import LiteratureService
+
+    async def _boom(self, drug_inn):
+        raise RuntimeError("ClinicalTrials.gov is down")
+    monkeypatch.setattr(LiteratureService, "fetch_clinicaltrials", _boom)
+
+    body = await _create_budget(api_client, seeded.user, name=None, drug_inn="abatacept")
+    assert body["n_enrolled"] == 60
+    assert body["derivation"]["trial_precedent"]["found"] is False
 
 
 async def test_create_budget_requires_name_or_drug_inn(api_client, seeded):

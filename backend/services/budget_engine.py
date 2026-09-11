@@ -60,6 +60,7 @@ from services.budget_rate_card import (
     should_include,
     unit_cost_for,
 )
+from services.budget_trial_precedent import BudgetPrecedentResult, NO_PRECEDENT
 from services.design_decisions import (
     classify_drug_modality,
     classify_therapeutic_area,
@@ -573,6 +574,7 @@ def _resolve_patient_extra_drivers(
     profile_key: str,
     n_enrolled: int,
     n_sites: int,
+    precedent: BudgetPrecedentResult = NO_PRECEDENT,
 ) -> dict[str, Any]:
     """SPEC §1.3/§1.5/§3.2/§3.6 — resolves every patient-profile-only driver in
     the same user -> protocol -> default precedence used throughout this
@@ -599,8 +601,36 @@ def _resolve_patient_extra_drivers(
         setattr(budget, key, val)
         return val
 
-    n_countries = _simple_field("n_countries", profile["n_countries"], int)
-    n_sites_selected = _simple_field("n_sites_selected", profile["n_sites_selected"], int)
+    def _precedent_or_simple_field(key: str, default_value, precedent_value: int | None, cast=float):
+        """Same as _simple_field, but with a real-trial-precedent tier
+        inserted between 'user' and 'default' when the caller has one."""
+        cur = getattr(budget, key)
+        if _is_user_authoritative(cur, key, previous_assumptions):
+            assumptions[key] = {"value": cur, "source": "user", "basis": "Supplied directly on the budget."}
+            val = cur
+        elif precedent_value is not None:
+            val = cast(precedent_value)
+            assumptions[key] = {
+                "value": val, "source": "trial_precedent",
+                "basis": f"Median across {len(precedent.precedents)} real ClinicalTrials.gov "
+                         f"trial(s) of '{budget.drug_inn}' "
+                         f"({', '.join(p.nct_id for p in precedent.precedents)}).",
+            }
+        else:
+            val = cast(default_value)
+            assumptions[key] = {
+                "value": val, "source": "default",
+                "basis": f"Default '{profile_key}' patient study profile.",
+            }
+        setattr(budget, key, val)
+        return val
+
+    n_countries = _precedent_or_simple_field(
+        "n_countries", profile["n_countries"], precedent.median_n_countries, int
+    )
+    n_sites_selected = _precedent_or_simple_field(
+        "n_sites_selected", profile["n_sites_selected"], precedent.median_n_sites, int
+    )
     dropout_rate_pct = _simple_field("dropout_rate_pct", profile["dropout_rate_pct"], float)
     n_expected_saes = _simple_field("n_expected_saes", profile["n_expected_saes"], int)
     n_expected_susars = _simple_field("n_expected_susars", profile["n_expected_susars"], int)
@@ -886,6 +916,7 @@ def _resolve_patient_extra_drivers(
 
 def _resolve_drivers(
     budget: Budget, protocol: Protocol | None, previous_assumptions: dict | None = None,
+    precedent: BudgetPrecedentResult | None = None,
 ) -> tuple[StudyDrivers, dict, list[str], dict]:
     """STEPS 1-2 of the auto-population algorithm. Returns (drivers,
     assumptions, warnings, phases_block). `phases_block` is {} for a
@@ -894,10 +925,21 @@ def _resolve_drivers(
     PLACE per the "write every resolved driver back" rule (only when the field
     is not already user-authoritative — see _is_user_authoritative — is it
     re-derived from the protocol/default; a real user value is never
-    clobbered)."""
+    clobbered).
+
+    `precedent` (services.budget_trial_precedent.BudgetPrecedentResult) adds a
+    THIRD resolution tier — user -> protocol -> real trial precedent ->
+    generic per-study-type default — for the handful of quantities a drug's
+    own ClinicalTrials.gov history can actually answer (n_enrolled, n_sites,
+    and, for a patient study, n_countries/n_sites_selected). This is what
+    makes two different drugs of the same study_type/subject_profile produce
+    DIFFERENT budgets instead of the same generic template. Defaults to
+    NO_PRECEDENT (behaves exactly as before) when the caller has none — e.g.
+    the CT.gov lookup failed, or the drug has no usable trial history."""
     warnings: list[str] = []
     assumptions: dict[str, dict] = {}
     previous_assumptions = previous_assumptions or {}
+    precedent = precedent or NO_PRECEDENT
 
     # --- Step 1: identity -------------------------------------------------
     drug_inn = (budget.drug_inn or "").strip() or (
@@ -980,11 +1022,20 @@ def _resolve_drivers(
                 "value": n_enrolled, "source": "protocol",
                 "basis": "population_config['_sample_size']['n_enrolled'] on the linked protocol.",
             }
+        elif precedent.median_n_enrolled is not None:
+            n_enrolled = precedent.median_n_enrolled
+            assumptions["n_enrolled"] = {
+                "value": n_enrolled, "source": "trial_precedent",
+                "basis": f"Median enrollment across {len(precedent.precedents)} real "
+                         f"ClinicalTrials.gov trial(s) of '{drug_inn}' "
+                         f"({', '.join(p.nct_id for p in precedent.precedents)}).",
+            }
         else:
             n_enrolled = int(profile["n_enrolled"])
             assumptions["n_enrolled"] = {
                 "value": n_enrolled, "source": "default",
-                "basis": f"Default {study_type} study profile (no protocol or user value).",
+                "basis": f"Default {study_type} study profile (no protocol, real trial "
+                         "precedent, or user value).",
             }
     budget.n_enrolled = n_enrolled
 
@@ -1071,6 +1122,14 @@ def _resolve_drivers(
     n_sites = budget.n_sites
     if _is_user_authoritative(n_sites, "n_sites", previous_assumptions):
         assumptions["n_sites"] = {"value": n_sites, "source": "user", "basis": "Supplied directly."}
+    elif precedent.median_n_sites is not None:
+        n_sites = precedent.median_n_sites
+        assumptions["n_sites"] = {
+            "value": n_sites, "source": "trial_precedent",
+            "basis": f"Median listed-location count across {len(precedent.precedents)} real "
+                     f"ClinicalTrials.gov trial(s) of '{drug_inn}' — a site-count proxy, not "
+                     "an exact contracted-site figure.",
+        }
     else:
         n_sites = int(profile["n_sites"])
         assumptions["n_sites"] = {"value": n_sites, "source": "default", "basis": f"Default {study_type} study profile."}
@@ -1098,6 +1157,7 @@ def _resolve_drivers(
             budget, protocol, previous_assumptions, assumptions, warnings,
             study_type=study_type, therapeutic_area=therapeutic_area,
             profile_key=profile_key, n_enrolled=n_enrolled, n_sites=n_sites,
+            precedent=precedent,
         )
         phases_block = patient_kwargs.pop("phases_block")
         project_duration_months = patient_kwargs.pop("project_duration_months")
@@ -1498,12 +1558,18 @@ def auto_populate_budget(
     protocol: Protocol | None = None,
     *,
     mode: str = "create",
+    precedent: BudgetPrecedentResult | None = None,
 ) -> dict:
     """Fully price every category of `budget` from the rate card, using the
-    linked protocol's real schedule for quantities when one exists and the
-    per-study-type defaults otherwise.
+    linked protocol's real schedule for quantities when one exists, this
+    drug's own real ClinicalTrials.gov trial history (`precedent`) next, and
+    the per-study-type defaults only when neither is available.
 
     SYNCHRONOUS, mutates the loaded ORM tree in place; the caller commits.
+    `precedent` is resolved by the caller BEFORE this call (it requires an
+    async HTTP fetch — see routers/budgets.py's
+    _fetch_budget_trial_precedent_safe) and defaults to NO_PRECEDENT, which
+    reproduces the exact pre-existing generic-default behaviour.
 
     PRECONDITION: budget.categories (and each .line_items) eagerly loaded;
     `protocol`, if given, fetched with load_drug=True.
@@ -1512,6 +1578,7 @@ def auto_populate_budget(
     dict — never mutated in place, so SQLAlchemy's JSONB change tracking
     actually sees it).
     """
+    precedent = precedent or NO_PRECEDENT
     if protocol is not None:
         budget.protocol_id = protocol.id
 
@@ -1525,7 +1592,9 @@ def auto_populate_budget(
     previous_auto_priced: dict[str, float] = previous_derivation.get("auto_priced", {})
     previous_assumptions: dict = previous_derivation.get("assumptions", {})
 
-    drivers, assumptions, warnings, phases_block = _resolve_drivers(budget, protocol, previous_assumptions)
+    drivers, assumptions, warnings, phases_block = _resolve_drivers(
+        budget, protocol, previous_assumptions, precedent,
+    )
     protocol_linked = protocol is not None
     is_patient = drivers.subject_profile == "patient"
 
@@ -1845,6 +1914,26 @@ def auto_populate_budget(
         # absent before) and touches no total, so it does not affect the
         # "healthy output unchanged" guarantee.
         "subject_profile": drivers.subject_profile,
+        # Real-trial-history grounding disclosure (services/budget_trial_precedent.py)
+        # — always present, even when no precedent was found, so the UI/export
+        # can honestly state "no real trial history was found for this drug"
+        # rather than silently saying nothing.
+        "trial_precedent": {
+            "found": precedent.found,
+            "trials": [
+                {
+                    "nct_id": p.nct_id, "title": p.title, "status": p.status, "phase": p.phase,
+                    "enrollment_count": p.enrollment_count, "enrollment_type": p.enrollment_type,
+                    "n_countries": p.n_countries, "n_locations": p.n_locations,
+                    "duration_months": p.duration_months,
+                }
+                for p in precedent.precedents
+            ],
+            "median_n_enrolled": precedent.median_n_enrolled,
+            "median_n_countries": precedent.median_n_countries,
+            "median_n_sites": precedent.median_n_sites,
+            "median_duration_months": precedent.median_duration_months,
+        },
     }
     if mode == "reconcile" and user_removed_keys:
         derivation["user_removed_keys"] = user_removed_keys

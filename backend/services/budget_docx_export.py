@@ -977,6 +977,25 @@ def build_budget_docx(budget: Budget, rollup: dict[str, Any]) -> bytes:
             size=9.5,
         )
 
+    trial_precedent = derivation.get("trial_precedent") or {}
+    if trial_precedent.get("found"):
+        nct_ids = ", ".join(t.get("nct_id", "") for t in trial_precedent.get("trials") or [] if t.get("nct_id"))
+        _ss_para(
+            doc,
+            f"Enrollment and site/country counts not supplied by you or a linked "
+            f"protocol were grounded in this drug's own real ClinicalTrials.gov "
+            f"trial history ({nct_ids}), not a generic per-study-type default.",
+            size=9.5,
+        )
+    else:
+        _ss_para(
+            doc,
+            "No usable ClinicalTrials.gov trial history was found for this drug; "
+            "any enrollment or site/country count not supplied by you or a linked "
+            "protocol falls back to the generic per-study-type default profile.",
+            size=9.5,
+        )
+
     conduct = derivation.get("conduct") or {}
     target = conduct.get("target_per_enrolled")
     itemized = conduct.get("itemized_per_enrolled")

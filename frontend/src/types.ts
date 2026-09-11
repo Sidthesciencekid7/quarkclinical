@@ -790,6 +790,30 @@ export interface BudgetDerivation {
   disclaimer?: string
   discount_note?: string
 
+  /** Real-drug trial-history grounding (services/budget_trial_precedent.py):
+   *  which of this DRUG's own ClinicalTrials.gov trials, if any, informed
+   *  n_enrolled/n_sites/n_countries instead of the generic per-study-type
+   *  default. Always present — `found: false` is an honest "no usable trial
+   *  history for this drug", not an absent key. */
+  trial_precedent?: {
+    found: boolean
+    trials: {
+      nct_id: string
+      title: string
+      status: string
+      phase: string
+      enrollment_count: number | null
+      enrollment_type: string
+      n_countries: number
+      n_locations: number
+      duration_months: number | null
+    }[]
+    median_n_enrolled: number | null
+    median_n_countries: number | null
+    median_n_sites: number | null
+    median_duration_months: number | null
+  }
+
   // ── Patient-study additions (absent/null on a healthy budget) ──────────
   subject_profile?: BudgetSubjectProfile
   therapeutic_area?: string | null

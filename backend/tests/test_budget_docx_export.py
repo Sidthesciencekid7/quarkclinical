@@ -18,6 +18,10 @@ from models import User, UserRole
 from security import hash_password
 from tests.test_budgets import _as, _create_budget
 
+# See tests/test_budgets.py's identical line for why this is opt-in per file
+# rather than conftest.py's fixture being autouse=True suite-wide.
+pytestmark = pytest.mark.usefixtures("no_real_ctgov_calls_for_budgets")
+
 _DOCX_MEDIA_TYPE = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )

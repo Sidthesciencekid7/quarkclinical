@@ -154,6 +154,16 @@ class ClinicalTrialRecord(TypedDict):
     maximum_age: str
     healthy_volunteers: bool | None
     eligibility_criteria: str      # raw free text, "Inclusion Criteria:\n...Exclusion Criteria:\n..."
+    # -- Quantitative design fields (services/budget_trial_precedent.py) -----
+    # Added for the Budgeting Tool's real-trial-history grounding — a real
+    # trial's enrollment/site-footprint/duration is the one thing a generic
+    # per-study-type default can never reproduce for a SPECIFIC drug.
+    enrollment_count: int | None    # designModule.enrollmentInfo.count; None if unreported
+    enrollment_type: str            # "ACTUAL" | "ESTIMATED" | ""
+    countries: list[str]            # distinct countries across contactsLocationsModule.locations
+    n_locations: int                # raw location-row count (a site-count proxy, not exact)
+    start_date: str                 # statusModule.startDateStruct.date, e.g. "2019-03" or "2019-03-15"
+    primary_completion_date: str    # statusModule.primaryCompletionDateStruct.date
 
 
 # ---------------------------------------------------------------------------
@@ -1086,6 +1096,11 @@ class LiteratureService:
             "protocolSection.eligibilityModule.minimumAge",
             "protocolSection.eligibilityModule.maximumAge",
             "protocolSection.eligibilityModule.healthyVolunteers",
+            # -- quantitative design fields (budget trial-precedent grounding) --
+            "protocolSection.designModule.enrollmentInfo",
+            "protocolSection.contactsLocationsModule.locations",
+            "protocolSection.statusModule.startDateStruct",
+            "protocolSection.statusModule.primaryCompletionDateStruct",
         ])
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(
@@ -1138,8 +1153,21 @@ def _parse_ctgov_study(study: dict) -> ClinicalTrialRecord | None:
         for i in (protocol.get("armsInterventionsModule") or {}).get("interventions") or []
         if i.get("name")
     ]
-    phases = (protocol.get("designModule") or {}).get("phases") or []
+    design = protocol.get("designModule") or {}
+    phases = design.get("phases") or []
     elig = protocol.get("eligibilityModule") or {}
+
+    enrollment = design.get("enrollmentInfo") or {}
+    enrollment_count = enrollment.get("count")
+    if not (isinstance(enrollment_count, int) and not isinstance(enrollment_count, bool)):
+        enrollment_count = None
+
+    locations = (protocol.get("contactsLocationsModule") or {}).get("locations") or []
+    countries = sorted({loc.get("country") for loc in locations if loc.get("country")})
+
+    status_module = protocol.get("statusModule") or {}
+    start_date = (status_module.get("startDateStruct") or {}).get("date") or ""
+    primary_completion_date = (status_module.get("primaryCompletionDateStruct") or {}).get("date") or ""
 
     return ClinicalTrialRecord(
         nct_id=nct_id,
@@ -1153,6 +1181,12 @@ def _parse_ctgov_study(study: dict) -> ClinicalTrialRecord | None:
         maximum_age=elig.get("maximumAge") or "",
         healthy_volunteers=elig.get("healthyVolunteers"),
         eligibility_criteria=elig.get("eligibilityCriteria") or "",
+        enrollment_count=enrollment_count,
+        enrollment_type=enrollment.get("type") or "",
+        countries=countries,
+        n_locations=len(locations),
+        start_date=start_date,
+        primary_completion_date=primary_completion_date,
     )
 
 
@@ -1172,6 +1206,12 @@ def _ctgov_row_to_record(row: "LiteratureCache") -> ClinicalTrialRecord:
         maximum_age=extra.get("maximum_age", ""),
         healthy_volunteers=extra.get("healthy_volunteers"),
         eligibility_criteria=extra.get("eligibility_criteria", ""),
+        enrollment_count=extra.get("enrollment_count"),
+        enrollment_type=extra.get("enrollment_type", ""),
+        countries=extra.get("countries", []),
+        n_locations=extra.get("n_locations", 0),
+        start_date=extra.get("start_date", ""),
+        primary_completion_date=extra.get("primary_completion_date", ""),
     )
 
 

@@ -80,8 +80,18 @@ from schemas import (
     BudgetUpdate,
     ReorderRequest,
 )
+import logging
+
 from services import budget_docx_export, budget_engine, budget_rate_card
+from services.budget_trial_precedent import (
+    NO_PRECEDENT,
+    aggregate_budget_drivers,
+    select_budget_precedents,
+)
 from services.design_decisions import allowed_study_types, classify_drug_modality
+from services.literature_service import LiteratureService
+
+logger = logging.getLogger(__name__)
 
 # The full set of new patient/oncology fields (spec §1.3/§7.2/§7.3) — shared
 # between create and update so both stay in lock-step with the schema.
@@ -159,6 +169,39 @@ def _budget_read(budget: Budget) -> BudgetRead:
         categories=[_category_read(c) for c in cats],
         rollup=BudgetRollup(**rollup),
     )
+
+
+async def _fetch_budget_trial_precedent_safe(
+    db: AsyncSession, drug_inn: str | None, indication: str | None, subject_profile: str,
+):
+    """Ground the budget's quantity drivers in THIS drug's own real
+    ClinicalTrials.gov trial history (services/budget_trial_precedent.py) —
+    the fix for two different drugs of the same study_type/subject_profile
+    otherwise producing an identical, generic-template budget. Gated on
+    drug_inn being resolvable at all; never raises into the create/reprice
+    pipeline (same "never fail the pipeline over an external lookup" contract
+    as routers/protocols.py's _fetch_trial_precedent_safe) — a CT.gov outage
+    or an unregistered drug just falls back to the pre-existing generic
+    per-study-type default, exactly as before this feature existed.
+
+    Reuses LiteratureService.fetch_clinicaltrials's 7-day cache, keyed by
+    drug — a drug already looked up by the Protocol Generator (or a prior
+    budget) costs nothing extra here.
+    """
+    if not drug_inn:
+        return NO_PRECEDENT
+    try:
+        trials = await LiteratureService(db).fetch_clinicaltrials(drug_inn)
+    except Exception:
+        logger.exception(
+            "ClinicalTrials.gov fetch failed for budget precedent; falling back "
+            "to the generic per-study-type default"
+        )
+        return NO_PRECEDENT
+    precedents = select_budget_precedents(
+        indication=indication, subject_profile=subject_profile, trials=trials,
+    )
+    return aggregate_budget_drivers(precedents)
 
 
 def _touch(budget: Budget) -> None:
@@ -311,7 +354,17 @@ async def create_budget(
     budget.categories.extend(
         budget_engine.seed_default_categories(budget.id, subject_profile=resolved_profile)
     )
-    budget_engine.auto_populate_budget(budget, protocol)
+    # Read-only, same idempotent double-resolve pattern as resolve_subject_profile
+    # just above — auto_populate_budget below re-derives indication for real;
+    # this call only exists to give the trial-precedent lookup an indication to
+    # filter on BEFORE that later call runs.
+    _, resolved_indication, _, _ = budget_engine.resolve_therapeutic_area_and_indication(
+        budget, protocol, {}
+    )
+    precedent = await _fetch_budget_trial_precedent_safe(
+        db, drug_inn, resolved_indication, resolved_profile,
+    )
+    budget_engine.auto_populate_budget(budget, protocol, precedent=precedent)
 
     await db.commit()
     budget = await get_budget_scoped(db, budget.id, actor, load_tree=True)
@@ -539,7 +592,11 @@ async def reprice_budget(
     if budget.protocol_id:
         protocol = await get_protocol_scoped(db, budget.protocol_id, actor, load_drug=True)
 
-    budget_engine.auto_populate_budget(budget, protocol, mode="reconcile")
+    resolved_profile = budget.subject_profile.value if budget.subject_profile else "healthy"
+    precedent = await _fetch_budget_trial_precedent_safe(
+        db, budget.drug_inn, budget.indication, resolved_profile,
+    )
+    budget_engine.auto_populate_budget(budget, protocol, mode="reconcile", precedent=precedent)
     _touch(budget)
     await db.commit()
     budget = await get_budget_scoped(db, budget_id, actor, load_tree=True)

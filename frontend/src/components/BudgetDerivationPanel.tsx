@@ -58,6 +58,7 @@ const FIELD_LABELS: DerivationField[] = [
 const ASSUMPTION_SOURCE_LABEL: Record<string, string> = {
   user: 'yours',
   protocol: 'protocol',
+  trial_precedent: 'real trial data',
   default: 'default',
   computed: 'computed',
   inferred_from_modality: 'inferred',
@@ -342,6 +343,40 @@ export default function BudgetDerivationPanel({ budget, onBudgetUpdated, onError
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {derivation.trial_precedent && (
+            <div className="pt-1 border-t border-slate-100">
+              <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider pt-3 pb-1">
+                Trial precedent
+              </h4>
+              {derivation.trial_precedent.found ? (
+                <>
+                  <p className="text-[11px] text-slate-500 mb-1.5">
+                    Enrollment{derivation.trial_precedent.median_n_sites != null ? ', site,' : ''}
+                    {derivation.trial_precedent.median_n_countries != null ? ' and country' : ''} counts
+                    above marked <span className="tag text-[9px] py-0 px-1 leading-4 align-middle">{ASSUMPTION_SOURCE_LABEL.trial_precedent}</span> come
+                    from this drug's own real trial history, not a generic template:
+                  </p>
+                  <ul className="space-y-0.5">
+                    {derivation.trial_precedent.trials.map(t => (
+                      <li key={t.nct_id} className="text-[11px] text-slate-600">
+                        <span className="font-mono text-slate-500">{t.nct_id}</span>
+                        {' — '}{t.title}
+                        {t.enrollment_count != null && ` · n=${t.enrollment_count}${t.enrollment_type ? ` (${t.enrollment_type.toLowerCase()})` : ''}`}
+                        {t.n_countries > 0 && ` · ${t.n_countries} ${t.n_countries === 1 ? 'country' : 'countries'}`}
+                        {t.status && ` · ${t.status.toLowerCase().replace(/_/g, ' ')}`}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <p className="text-[11px] text-slate-400">
+                  No usable ClinicalTrials.gov history was found for this drug — every quantity above
+                  falls back to the generic per-study-type default.
+                </p>
+              )}
             </div>
           )}
 

@@ -240,6 +240,41 @@ async def seeded(patched_db) -> SimpleNamespace:
 
 
 # ---------------------------------------------------------------------------
+# Budget trial-precedent grounding (services/budget_trial_precedent.py) — stop
+# real ClinicalTrials.gov calls in tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def no_real_ctgov_calls_for_budgets(monkeypatch):
+    """routers/budgets.py's create/reprice endpoints look up each budget's
+    drug on ClinicalTrials.gov for real-trial-history grounding (fixes two
+    different drugs of the same study_type otherwise pricing identically —
+    see services/budget_trial_precedent.py). That lookup is gated on drug_inn
+    being present, but NOT on the drug being unseeded — the `seeded` fixture
+    above seeds a real "metformin" Drug row, so any test creating a budget
+    for it would otherwise attempt a real network call (the same pytest-
+    httpx-session-limit landmine documented for routers/protocols.py's own
+    trial-precedent fetch).
+
+    NOT autouse: routers/protocols.py's OWN trial-precedent fetch calls this
+    exact same LiteratureService.fetch_clinicaltrials method, and its tests
+    rely on httpx_mock to exercise the real CT.gov-parsing path — a suite-wide
+    autouse patch here would silently blank that out for every protocol test
+    too. Instead, tests/test_budgets.py and tests/test_budget_docx_export.py
+    each opt in via `pytestmark = pytest.mark.usefixtures(...)` at module
+    level. Defaults to "no precedent found" (identical to the pre-existing
+    generic-default pricing path); a test exercising the new grounding
+    behaviour overrides this per-test with its own monkeypatch.setattr on the
+    same target."""
+    async def _empty(self, drug_inn):
+        return []
+    monkeypatch.setattr(
+        "services.literature_service.LiteratureService.fetch_clinicaltrials", _empty,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Anthropic mock
 # ---------------------------------------------------------------------------
 
