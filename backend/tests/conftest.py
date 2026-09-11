@@ -47,6 +47,7 @@ os.environ["MOCK_AI"] = "1"
 # ---------------------------------------------------------------------------
 import database
 import dependencies
+import routers.budgets as routers_budgets
 from database import Base, get_db
 from main import app
 from models import Drug, User, UserRole
@@ -150,12 +151,24 @@ async def patched_db(test_engine):
     orig_db_engine = database.engine
     orig_db_session = database.AsyncSessionLocal
     orig_dep_session = dependencies.AsyncSessionLocal
+    orig_budgets_session = routers_budgets.AsyncSessionLocal
 
-    # Patch module-level globals (audit_logger reads dependencies.AsyncSessionLocal
-    # directly, so that import must be patched too)
+    # Patch module-level globals. `from database import AsyncSessionLocal`
+    # binds a plain name at import time, NOT a live reference to
+    # database.AsyncSessionLocal — every module that imported it that way
+    # needs its OWN copy patched here too, or it silently keeps talking to
+    # the real (non-test) database. audit_logger reads
+    # dependencies.AsyncSessionLocal directly (existing); routers/budgets.py's
+    # _fetch_budget_trial_precedent_safe reads routers_budgets.AsyncSessionLocal
+    # the same way, for the same reason — it needs its own session, isolated
+    # from the request's `db`, so LiteratureService's internal cache-write
+    # commit() can never expire/detach the request's own pending ORM objects
+    # (see that function's docstring for the real production incident this
+    # caused when it shared the request session instead).
     database.engine = test_engine
     database.AsyncSessionLocal = TestSessionLocal
     dependencies.AsyncSessionLocal = TestSessionLocal
+    routers_budgets.AsyncSessionLocal = TestSessionLocal
 
     # Override the FastAPI get_db dependency
     async def _override_get_db():
@@ -172,6 +185,7 @@ async def patched_db(test_engine):
     database.engine = orig_db_engine
     database.AsyncSessionLocal = orig_db_session
     dependencies.AsyncSessionLocal = orig_dep_session
+    routers_budgets.AsyncSessionLocal = orig_budgets_session
 
 
 @pytest_asyncio.fixture()

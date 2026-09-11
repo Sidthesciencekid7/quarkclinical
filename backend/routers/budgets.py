@@ -44,7 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from auth import require_user
-from database import get_db
+from database import AsyncSessionLocal, get_db
 from dependencies import (
     audit_logger,
     authenticate_actor as _authenticate_actor,
@@ -187,11 +187,25 @@ async def _fetch_budget_trial_precedent_safe(
     Reuses LiteratureService.fetch_clinicaltrials's 7-day cache, keyed by
     drug — a drug already looked up by the Protocol Generator (or a prior
     budget) costs nothing extra here.
+
+    Uses its OWN short-lived session (AsyncSessionLocal), never the caller's
+    `db` — LiteratureService's cache-miss path calls session.commit()
+    internally (services/literature_service.py's _save_ctgov_cache), and
+    committing the REQUEST's session mid-create_budget expires every object
+    already attached to it (the brand-new Budget + its just-seeded
+    BudgetCategory rows). The next plain synchronous ORM access after that
+    (auto_populate_budget's _reconcile_category doing cat.line_items.append)
+    then has to lazy-load an expired relationship outside of an awaited
+    call, which crashes with sqlalchemy.exc.MissingGreenlet — a real
+    production incident this exact bug caused (budget creation 500ing right
+    after this feature shipped). `db` is accepted only so callers don't need
+    to change their call sites; it is intentionally unused here.
     """
     if not drug_inn:
         return NO_PRECEDENT
     try:
-        trials = await LiteratureService(db).fetch_clinicaltrials(drug_inn)
+        async with AsyncSessionLocal() as precedent_db:
+            trials = await LiteratureService(precedent_db).fetch_clinicaltrials(drug_inn)
     except Exception:
         logger.exception(
             "ClinicalTrials.gov fetch failed for budget precedent; falling back "

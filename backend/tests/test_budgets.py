@@ -13,6 +13,7 @@ until that work lands — see the "Backend API layer" task notes.
 """
 from __future__ import annotations
 
+import re
 import uuid
 
 import pytest
@@ -30,6 +31,14 @@ from models import (
 )
 from security import hash_password
 from services import budget_engine
+from services.literature_service import LiteratureService
+
+# Captured at collection time, BEFORE this file's own
+# no_real_ctgov_calls_for_budgets fixture (applied file-wide via `pytestmark`
+# below) has a chance to monkeypatch it away — the one test that needs the
+# REAL implementation (to prove a real cache-write commit no longer breaks
+# budget creation) restores this reference for itself.
+_REAL_FETCH_CLINICALTRIALS = LiteratureService.fetch_clinicaltrials
 
 # Opt in to conftest.py's no_real_ctgov_calls_for_budgets fixture for every
 # test in this file — routers/budgets.py's create/reprice endpoints now call
@@ -335,6 +344,60 @@ async def test_ctgov_fetch_failure_falls_back_to_generic_default(api_client, see
     body = await _create_budget(api_client, seeded.user, name=None, drug_inn="abatacept")
     assert body["n_enrolled"] == 60
     assert body["derivation"]["trial_precedent"]["found"] is False
+
+
+async def test_create_budget_survives_a_real_ctgov_cache_write(api_client, seeded, monkeypatch, httpx_mock):
+    """Regression test for a real production incident: routers/budgets.py's
+    trial-precedent lookup originally shared the REQUEST's own `db` session
+    with LiteratureService. LiteratureService's cache-MISS path calls
+    session.commit() internally (services/literature_service.py's
+    _save_ctgov_cache) — committing the request's session mid-create_budget
+    left the brand-new, still-pending Budget/BudgetCategory rows in a state
+    where the NEXT plain synchronous ORM access (auto_populate_budget's
+    _reconcile_category doing cat.line_items.append) had to lazy-load a
+    relationship outside of an async-aware call path, crashing every real
+    budget creation with sqlalchemy.exc.MissingGreenlet ("failed to fetch"
+    on the frontend). The fix gives that lookup its own isolated session
+    (routers/budgets.py's AsyncSessionLocal, patched to the test DB by
+    conftest.py's patched_db fixture) so its internal commit can never touch
+    the request's own in-flight objects.
+
+    Restores the REAL fetch_clinicaltrials (undoing this file's
+    no_real_ctgov_calls_for_budgets monkeypatch) and mocks only the
+    underlying CT.gov HTTP call, so the real cache-write commit() actually
+    runs — a test that keeps mocking fetch_clinicaltrials itself, like every
+    other test in this file, would never exercise this code path and would
+    never have caught the bug that shipped."""
+    monkeypatch.setattr(LiteratureService, "fetch_clinicaltrials", _REAL_FETCH_CLINICALTRIALS)
+    httpx_mock.add_response(
+        method="GET",
+        url=re.compile(r"^https://clinicaltrials\.gov/api/v2/studies(\?.*)?$"),
+        json={"studies": [{
+            "protocolSection": {
+                "identificationModule": {"nctId": "NCT09999999", "briefTitle": "A metformin PK study"},
+                "statusModule": {
+                    "overallStatus": "COMPLETED",
+                    "startDateStruct": {"date": "2018-01"},
+                    "primaryCompletionDateStruct": {"date": "2018-07"},
+                },
+                "conditionsModule": {"conditions": []},
+                "armsInterventionsModule": {"interventions": [{"name": "metformin"}]},
+                "designModule": {"phases": ["PHASE1"], "enrollmentInfo": {"count": 42, "type": "ACTUAL"}},
+                "eligibilityModule": {
+                    "eligibilityCriteria": "", "sex": "ALL",
+                    "minimumAge": "18 Years", "maximumAge": "", "healthyVolunteers": True,
+                },
+                "contactsLocationsModule": {"locations": [{"country": "United States"}]},
+            },
+        }]},
+    )
+
+    body = await _create_budget(api_client, seeded.user, name=None, drug_inn="metformin")
+
+    assert body["n_enrolled"] == 42
+    assert body["derivation"]["assumptions"]["n_enrolled"]["source"] == "trial_precedent"
+    assert body["derivation"]["trial_precedent"]["found"] is True
+    assert body["derivation"]["trial_precedent"]["trials"][0]["nct_id"] == "NCT09999999"
 
 
 async def test_create_budget_requires_name_or_drug_inn(api_client, seeded):
