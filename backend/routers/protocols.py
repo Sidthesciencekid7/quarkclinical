@@ -48,6 +48,7 @@ from schemas import (
     ESignResponse,
     ProtocolCreate,
     DesignPreviewRequest,
+    IndicationPreviewRequest,
     ProtocolRead,
     ProtocolSummary,
     ProtocolVersionRead,
@@ -61,9 +62,11 @@ from services.ai_service import AIService
 from services.design_decisions import (
     allowed_study_types,
     apply_decision_overrides,
+    apply_engine_population_defaults,
     classify_drug_modality,
     determine_design_decisions,
     decisions_to_dicts,
+    reconcile_decision_set,
 )
 from auth import require_user
 from services.bioanalytical import plan_bioanalytical
@@ -614,9 +617,45 @@ async def _fetch_label_safe(
         # just used to ground the Review Design route decision in the real label.
         "dosage_and_administration": _trim(secs.get("dosage_and_administration")),
         "how_supplied": _trim(secs.get("how_supplied")),
+        # The 1500-char trim above can cut off adjuvant / immunology indications
+        # that long oncology labels list late. This untrimmed copy (capped) is read
+        # ONLY by select_patient_population; _prompt_safe_label strips it from
+        # everything else, so it never reaches a prompt or another engine.
+        "indications_usage_full": (secs.get("indications_usage") or "").strip()[:12000],
     }
     # Drop empty fields so the prompt context stays clean.
     return {k: v for k, v in label.items() if v}
+
+
+def _prompt_safe_label(label: dict[str, str] | None) -> dict[str, str] | None:
+    """The label without the full-length indications text (see _fetch_label_safe)."""
+    if not label:
+        return label
+    return {k: v for k, v in label.items() if k != "indications_usage_full"}
+
+
+def _engine_decision_prestep(
+    cfg: dict[str, Any], drug_inn: str, study_type: str
+) -> None:
+    """Adopt the ENGINE's own population/dose call into ``cfg`` (in place) when
+    no reviewer decisions were supplied, so an engine-chosen patient / multi-dose
+    (target-mediated-disposition or safety-gated) study reaches every PK engine.
+    Upgrade-only: never downgrades patient to healthy or overwrites 'dosing'.
+    Biosimilar PK studies only: the pharmacologist's TMDD / multi-dose feedback
+    is about patient biosimilar trials, and adopting the engine's population
+    call for e.g. a bioequivalence study of a cytotoxic product would silently
+    change that study's sizing and sampling inputs."""
+    if str(study_type or "").strip().lower() != "biosimilar_pk":
+        return
+    pre = decisions_to_dicts(
+        determine_design_decisions(
+            drug_inn=drug_inn,
+            study_type=study_type,
+            dosing=str(cfg.get("dosing") or "single"),
+            subject_type=str(cfg.get("subject_type") or "healthy"),
+        )
+    )
+    apply_engine_population_defaults(cfg, pre)
 
 
 async def _fetch_trial_precedent_safe(
@@ -733,6 +772,31 @@ def _augment_config_with_design(
     """
     cfg = dict(population_config)
     pk_list = _pk_records_to_dicts(pk_params)
+    # The untrimmed indications text is for indication selection ONLY (step 4c);
+    # every other consumer, including cfg["_label"] and the engine contexts, gets
+    # the prompt-safe label.
+    label_full = label
+    label = _prompt_safe_label(label)
+
+    # --- 0. Population / dosing must be settled BEFORE sizing ---------------
+    # The sample-size, sampling-schedule and comparative-safety engines below
+    # read cfg["dosing"] and cfg["subject_type"], but the decisions that set them
+    # (the engine's TMDD / safety-gate call, or the reviewer's Review-design
+    # choice) used to be computed only at step 3 - so a "Patients · multi-dose"
+    # decision produced a multi-dose label on a study still sized and sampled as
+    # single-dose. With reviewer decisions they are reconciled here and
+    # folded into cfg here too (idempotent, so a caller that already folded
+    # them for the trial-precedent fetch is unaffected, and a caller that did
+    # not still gets a study sized and sampled as the decisions say); without,
+    # the engine's own call is adopted. Must run before _resolve_powering_cv,
+    # which reads subject_type.
+    if design_decisions:
+        design_decisions = reconcile_decision_set(
+            design_decisions, drug_inn=drug_inn, study_type=study_type
+        )
+        apply_decision_overrides(cfg, design_decisions)
+    else:
+        _engine_decision_prestep(cfg, drug_inn, study_type)
 
     # --- 1. Sample size + CV provenance -----------------------------------
     # The CV and the evidence presented as its justification are decided
@@ -903,9 +967,12 @@ def _augment_config_with_design(
         drug_inn=drug_inn,
         study_type=study_type,
         subject_type=str(cfg.get("subject_type") or "healthy"),
-        label=label,
+        label=label_full,
         meta_analysis=cfg.get("_meta_analysis") or {},
+        user_indication=cfg.get("user_indication"),
     )
+    if not (cfg.get("_patient_population") or {}).get("applicable"):
+        cfg.pop("user_indication", None)
 
     # --- 4d. Inclusion/exclusion criteria precedent (real prior trials) -----
     # Runs AFTER _patient_population (immediately above): it needs the
@@ -1100,8 +1167,12 @@ def _build_context(
         "drug_inn": drug.inn,
         "brand_names": drug.brand_names,
         "study_type": study_type,
+        # user_indication is free text: it reaches the prompt ONLY through the
+        # framed patient_population_directive (quoted, labelled as data), never
+        # as a raw population_config key.
         "population_config": {
-            k: v for k, v in population_config.items() if not k.startswith("_")
+            k: v for k, v in population_config.items()
+            if not k.startswith("_") and k != "user_indication"
         },
         "pk_parameters": pk_list,
         "org_name": population_config.get("org_name", org_id),
@@ -1415,12 +1486,13 @@ async def design_preview(
 
     # design_key (parallel/crossover/replicate) is decided deterministically from
     # half-life + study type; use_r=False keeps it a pure-Python, R-independent call.
+    cfg = payload.population_config or {}
     rec = recommend_sample_size(
         study_type=payload.study_type.value,
         drug_inn=drug.inn,
         t_half_hours=t_half,
-        is_nti=payload.population_config.get("is_nti"),
-        requested_design=payload.population_config.get("design"),
+        is_nti=cfg.get("is_nti"),
+        requested_design=cfg.get("design"),
         use_r=False,
     )
     decisions = determine_design_decisions(
@@ -1429,12 +1501,45 @@ async def design_preview(
         design_key=rec.design_key,
         t_half_hours=t_half,
         label_text=label_text,
+        dosing=str(cfg.get("dosing") or "single"),
+        subject_type=str(cfg.get("subject_type") or "healthy"),
+        population_choice=payload.population_choice,
     )
     return {
         "drug_inn": drug.inn,
         "study_type": payload.study_type.value,
         "decisions": decisions_to_dicts(decisions),
     }
+
+
+@router.post(
+    "/indication-preview",
+    dependencies=[Depends(rate_limit(30, 60, scope="indication_preview"))],
+)
+async def indication_preview(
+    payload: IndicationPreviewRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Credit-free preview of the patient-study indication for the 'Review
+    design' step: ranks the reference product's licensed indications (real
+    DailyMed label text, free NIH API) by the engine's disease-setting /
+    monotherapy / PK-variability rules and, when the user typed their own
+    indication, reports how it compares and what it costs in variability. Open
+    (like design-preview): public drug data, no org data. The user's text passes
+    through a server-side sanitiser and is returned as data only.
+    """
+    drug = await db.get(Drug, payload.drug_id)
+    if not drug:
+        raise HTTPException(404, detail="Drug not found.")
+    label = await _fetch_label_safe(LiteratureService(db), drug.inn)
+    return select_patient_population(
+        drug_inn=drug.inn,
+        study_type=payload.study_type.value,
+        subject_type="patient",
+        label=label,
+        meta_analysis=None,
+        user_indication=payload.user_indication,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1485,10 +1590,31 @@ async def _run_generation_pipeline(
     lit_svc = LiteratureService(session)
     pubmed_records = await lit_svc.fetch_pubmed(drug.inn)
     label = await _fetch_label_safe(lit_svc, drug.inn)
+
+    # Fold the reviewer's design/population overrides (from the "Review design"
+    # step) into population_config BEFORE anything reads subject_type / dosing:
+    # the trial-precedent fetch below (a reviewer who chose Patients after a
+    # step-2 "healthy" would otherwise never get precedent) and the sizing in
+    # _augment_config_with_design. Without reviewer decisions the engine's own
+    # population/dose call is adopted instead (see _engine_decision_prestep).
+    pop_cfg = dict(population_config)
+    if design_decisions:
+        design_decisions = reconcile_decision_set(
+            design_decisions, drug_inn=drug.inn, study_type=study_type
+        )
+        apply_decision_overrides(pop_cfg, design_decisions)
+    else:
+        _engine_decision_prestep(pop_cfg, drug.inn, study_type)
+    if (
+        str(pop_cfg.get("subject_type") or "healthy").strip().lower() != "patient"
+        or study_type != "biosimilar_pk"
+    ):
+        pop_cfg.pop("user_indication", None)
+
     trial_records = await _fetch_trial_precedent_safe(
         lit_svc, drug.inn,
         study_type=study_type,
-        subject_type=str(population_config.get("subject_type") or "healthy"),
+        subject_type=str(pop_cfg.get("subject_type") or "healthy"),
     )
 
     # Deterministic plan of which regulatory assessment-report programmes
@@ -1563,13 +1689,6 @@ async def _run_generation_pipeline(
         select(PKParameterRecord).where(PKParameterRecord.drug_id == drug.id)
     )
     all_pk = pk_result.scalars().all()
-
-    # Fold the reviewer's design/population overrides (from the "Review design"
-    # step) into population_config BEFORE sizing, so the sample-size design and
-    # the population section stay consistent with what was chosen.
-    pop_cfg = dict(population_config)
-    if design_decisions:
-        apply_decision_overrides(pop_cfg, design_decisions)
 
     # Compute the planned sample size / design ONCE and bake it into the config
     # so every section and the export read the same numbers. Offloaded to a

@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, computed_field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 from models import (
     BudgetBucket,
@@ -23,6 +23,7 @@ from models import (
     UserRole,
 )
 from services.design_decisions import classify_drug_modality
+from services.patient_population import sanitize_user_indication
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +220,19 @@ class PKParamRead(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _sanitize_user_indication_in_config(v: Any) -> Any:
+    """Replace a client-supplied population_config['user_indication'] with its
+    sanitised form, and drop the key when nothing usable remains."""
+    if isinstance(v, dict) and "user_indication" in v:
+        v = dict(v)
+        clean = sanitize_user_indication(v.get("user_indication"))
+        if clean is None:
+            v.pop("user_indication", None)
+        else:
+            v["user_indication"] = clean
+    return v
+
+
 class ProtocolCreate(BaseModel):
     # population_config carries optional, all-defaulting generation hints. It is
     # a free-form dict for backwards compatibility: every key below is optional
@@ -257,6 +271,17 @@ class ProtocolCreate(BaseModel):
     #       -> services/comparative_safety.py's additional_immunogenicity_months,
     #          threaded into services/sampling_schedule.py too so the two ADA
     #          schedules this app computes never disagree.
+    #       NOTE: 'dosing' is now SET BY THE SERVER from the Review-design
+    #       Population / Dose decisions (a multi-dose or steady-state choice, or an
+    #       engine TMDD call, becomes 'multiple'), so the sample-size, sampling,
+    #       comparative-safety, randomization and CRF engines all see it.
+    #   user_indication (str) — the sponsor's own study indication for a PATIENT
+    #       biosimilar study. Sanitised server-side (control characters and every
+    #       quote/markup character removed, capped at 200 chars) and treated as
+    #       DATA only: it never reaches the prompt as free text, only quoted
+    #       inside the locked patient-population directive. Dropped when the final
+    #       study is not a patient biosimilar_pk study.
+    #       -> services/patient_population.py
     #   is_ind, is_applicable_clinical_trial, is_new_chemical_entity, radiolabeled
     #       -> services/safety_reporting.py (sponsor regulatory-affairs overrides)
     #   randomization_seed (int) -> services/randomization.py; recorded so the
@@ -283,6 +308,12 @@ class ProtocolCreate(BaseModel):
     # (population, dose, route, design, PD co-primary), each {key,label,value,...}.
     # Empty = the backend derives them fresh. See services/design_decisions.py.
     design_decisions: list[dict[str, Any]] = []
+
+    @field_validator("population_config")
+    @classmethod
+    def _sanitize_population_config(cls, v: dict[str, Any]) -> dict[str, Any]:
+        return _sanitize_user_indication_in_config(v)
+
     # created_by and org_id are NOT accepted here — a client-supplied creator id
     # could claim authorship of anyone (audit-trail spoofing), and a client-
     # supplied org_id would let any actor file a protocol under a org they
@@ -296,6 +327,28 @@ class DesignPreviewRequest(BaseModel):
     drug_id: uuid.UUID
     study_type: StudyType
     population_config: dict[str, Any] = {}
+    # The reviewer's explicit Population choice on the Review design step, when it
+    # differs from the engine's call; Dose / PD are re-derived from it.
+    population_choice: Optional[str] = Field(default=None, max_length=64)
+
+    @field_validator("population_config")
+    @classmethod
+    def _sanitize_population_config(cls, v: dict[str, Any]) -> dict[str, Any]:
+        return _sanitize_user_indication_in_config(v)
+
+
+class IndicationPreviewRequest(BaseModel):
+    """Inputs for the credit-free indication preview: ranks the reference
+    product's indications for a patient biosimilar study and, when the user typed
+    their own, reports how it compares."""
+    drug_id: uuid.UUID
+    study_type: StudyType
+    user_indication: Optional[str] = Field(default=None, max_length=2000)
+
+    @field_validator("user_indication")
+    @classmethod
+    def _sanitize_indication(cls, v: Optional[str]) -> Optional[str]:
+        return sanitize_user_indication(v)
 
 
 class ProtocolRead(BaseModel):

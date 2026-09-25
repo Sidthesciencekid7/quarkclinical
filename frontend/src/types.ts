@@ -140,6 +140,13 @@ export interface PopulationConfig {
   reference_product?: string // named Reference Listed Drug
   dose_strength?: string     // e.g. "400 mg tablet"
   is_nti?: boolean           // narrow-therapeutic-index → tightened limits
+  /**
+   * Optional user-specified study indication for a patient biosimilar PK study
+   * (a disease/setting name, max USER_INDICATION_MAX_CHARS). Blank = the engine
+   * picks. The server re-sanitises it and only honours it for patient
+   * biosimilar_pk studies.
+   */
+  user_indication?: string
 }
 
 export const defaultPopulationConfig: PopulationConfig = {
@@ -224,6 +231,58 @@ export interface DesignDecision {
   rationale: string
   evidence: string
   options: string[]
+}
+
+export const USER_INDICATION_MAX_CHARS = 200
+export const POP_PATIENTS_MULTI = 'Patients · multi-dose'
+export const DOSE_SINGLE = 'Therapeutic (label) dose — single dose'
+export const DOSE_MULTIPLE_SS = 'Therapeutic (label) dose — multiple doses to steady state'
+
+export type TumorSetting = 'adjuvant' | 'low_burden' | 'high_burden' | 'unknown' | 'not_applicable'
+export type TherapeuticArea = 'oncology' | 'immunology' | 'other'
+
+/** One candidate study indication from the patient-population engine
+ *  (backend services/patient_population.py). */
+export interface IndicationCandidate {
+  indication: string
+  on_label: boolean
+  label_evidence: string
+  therapeutic_area?: TherapeuticArea
+  tumor_setting?: TumorSetting
+  setting_note?: string
+  curation_source?: string
+  monotherapy: string
+  monotherapy_note: string
+  pk_variability: string
+  pk_variability_note: string
+  observed_cv_pct: number | null
+  recruitment: string
+  recruitment_note: string
+  naive_feasible: boolean
+  naive_note: string
+  rank_reason: string
+  user_specified?: boolean
+}
+
+/** POST /api/protocols/indication-preview response. */
+export interface PatientPopulationPreview {
+  applicable: boolean
+  reason?: string
+  drug_inn?: string
+  drug_class?: string
+  label_verified?: boolean
+  recommended?: IndicationCandidate | null
+  engine_recommended?: IndicationCandidate | null
+  ranked?: IndicationCandidate[]
+  rejected?: IndicationCandidate[]
+  user_specified?: boolean
+  user_indication?: string | null
+  user_indication_matched_candidate?: string | null
+  user_indication_warnings?: string[]
+  no_on_label_candidate?: boolean
+  selection_rules?: string[]
+  assumptions?: string[]
+  summary?: string
 }
 
 export interface DesignPreviewResponse {

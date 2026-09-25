@@ -265,6 +265,7 @@ export default function ProtocolApp() {
                 populationConfig={populationConfig}
                 decisions={designDecisions}
                 onChange={setDesignDecisions}
+                onPopulationConfigChange={setPopulationConfig}
               />
             )}
             {step === 4 && drug && studyType && (

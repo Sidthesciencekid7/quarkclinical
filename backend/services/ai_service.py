@@ -1671,6 +1671,35 @@ def _endpoint_override_lines(ss: dict[str, Any]) -> list[str]:
     ]
 
 
+def _regimen_override_lines(ss: dict[str, Any]) -> list[str]:
+    """Locked-facts line for the patient multiple-dose biosimilar design.
+
+    Several sections' static instructions unconditionally describe healthy
+    subjects, "no direct therapeutic benefit", and a single-dose study. Those
+    contradict a study whose co-primary set is first-dose AND steady-state
+    AUC(0-tau) (services/biostatistics.py co_primary_endpoints_for), which
+    only exists for patients on a repeated therapeutic regimen. Detection is
+    keyed on that exact pair, so it is deterministic and never fires for
+    single-dose or healthy-volunteer designs.
+    """
+    co_primary = [str(e).strip() for e in (ss.get("co_primary_endpoints") or [])]
+    if not (
+        any(e.startswith("First-dose AUC(0-tau)") for e in co_primary)
+        and any(e.startswith("Steady-state AUC(0-tau)") for e in co_primary)
+    ):
+        return []
+    return [
+        "- POPULATION / REGIMEN OVERRIDE: this study enrols PATIENTS who receive the "
+        "labelled therapeutic regimen REPEATEDLY until steady state. Wherever this "
+        "section's own instructions describe healthy subjects or healthy volunteers, a "
+        "single dose or single-dose design, 'no direct therapeutic benefit', or a "
+        "single-dose confinement, replace that with the patient multiple-dose "
+        "equivalent: patients may derive therapeutic benefit from treatment, and PK is "
+        "evaluated after the first dose and at steady state. Never describe this study "
+        "as single-dose or as enrolling healthy volunteers.",
+    ]
+
+
 def _locked_design_directive(ss: dict[str, Any] | None) -> str:
     """Authoritative design block injected into every section that receives the
     sample_size recommendation, so the design, N, and limits are identical across
@@ -1691,6 +1720,7 @@ def _locked_design_directive(ss: dict[str, Any] | None) -> str:
         "for the 90% CI of the Test/Reference geometric mean ratio",
         f"- Co-primary endpoints: {ss['endpoint']}",
         *_endpoint_override_lines(ss),
+        *_regimen_override_lines(ss),
         f"- Assumed {_cv_basis_label(ss.get('design_key'))} CV: {ss['cv_pct']}% "
         f"(source: {ss['cv_source']})",
         *_cv_provenance_lines(ss),

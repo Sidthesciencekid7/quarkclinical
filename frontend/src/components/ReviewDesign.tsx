@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
+import PatientIndicationPanel from './PatientIndicationPanel'
+import { DOSE_MULTIPLE_SS, DOSE_SINGLE, POP_PATIENTS_MULTI } from '../types'
 import type { DesignDecision, Drug, PopulationConfig, StudyType } from '../types'
 
 interface Props {
@@ -9,6 +11,8 @@ interface Props {
   /** Lifted decision state (null until the preview loads). */
   decisions: DesignDecision[] | null
   onChange: (decisions: DesignDecision[]) => void
+  /** Lets this step write the user-specified indication back into the config. */
+  onPopulationConfigChange: (config: PopulationConfig) => void
 }
 
 const ICONS: Record<string, string> = {
@@ -27,7 +31,7 @@ function DecisionIcon({ path }: { path: string }) {
   )
 }
 
-export default function ReviewDesign({ drug, studyType, populationConfig, decisions, onChange }: Props) {
+export default function ReviewDesign({ drug, studyType, populationConfig, decisions, onChange, onPopulationConfigChange }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -45,9 +49,49 @@ export default function ReviewDesign({ drug, studyType, populationConfig, decisi
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drug.id, studyType])
 
+  const decisionsRef = useRef<DesignDecision[] | null>(decisions)
+  decisionsRef.current = decisions
+  const previewSeq = useRef(0)
+
   const setValue = (key: string, value: string) => {
     if (!decisions) return
-    onChange(decisions.map(d => (d.key === key ? { ...d, value } : d)))
+    if (key !== 'population') {
+      onChange(decisions.map(d => (d.key === key ? { ...d, value } : d)))
+      return
+    }
+
+    // Population drives the dosing regimen: keep Dose consistent locally right
+    // away, then let the server recompute Dose and the PD endpoint for the
+    // chosen population (the backend also reconciles again at generation).
+    const dose = decisions.find(d => d.key === 'dose')
+    let doseValue = dose?.value
+    if (dose) {
+      if (value === POP_PATIENTS_MULTI && dose.value === DOSE_SINGLE && dose.options.includes(DOSE_MULTIPLE_SS)) {
+        doseValue = DOSE_MULTIPLE_SS
+      } else if (value !== POP_PATIENTS_MULTI && dose.value === DOSE_MULTIPLE_SS && dose.options.includes(DOSE_SINGLE)) {
+        doseValue = DOSE_SINGLE
+      }
+    }
+    const local = decisions.map(d => {
+      if (d.key === 'population') return { ...d, value }
+      if (d.key === 'dose' && doseValue !== undefined) return { ...d, value: doseValue }
+      return d
+    })
+    decisionsRef.current = local
+    onChange(local)
+
+    const seq = ++previewSeq.current
+    api.designPreview(drug.id, studyType, populationConfig, value)
+      .then(res => {
+        if (seq !== previewSeq.current || !decisionsRef.current) return
+        const fresh = new Map(res.decisions.map(d => [d.key, d]))
+        const merged = decisionsRef.current.map(d =>
+          (d.key === 'dose' || d.key === 'pd_endpoint') && fresh.has(d.key) ? fresh.get(d.key)! : d,
+        )
+        decisionsRef.current = merged
+        onChange(merged)
+      })
+      .catch(() => { /* keep the local state; the backend reconciles at generation */ })
   }
 
   if (error) {
@@ -67,6 +111,8 @@ export default function ReviewDesign({ drug, studyType, populationConfig, decisi
       </div>
     )
   }
+
+  const populationValue = decisions.find(d => d.key === 'population')?.value ?? ''
 
   return (
     <div className="space-y-2.5">
@@ -97,9 +143,22 @@ export default function ReviewDesign({ drug, studyType, populationConfig, decisi
             ) : (
               <p className="mt-2 text-sm font-semibold text-slate-800">{d.value}</p>
             )}
+            {d.key === 'population' && d.value === POP_PATIENTS_MULTI && (
+              <p className="mt-1.5 text-[12px] text-slate-500">
+                PK is evaluated at steady state under the labelled multiple-dose regimen (first-dose and steady-state AUC(0-tau) co-primary).
+              </p>
+            )}
           </div>
         </div>
       ))}
+      {studyType === 'biosimilar_pk' && populationValue.startsWith('Patients') && (
+        <PatientIndicationPanel
+          drug={drug}
+          studyType={studyType}
+          value={populationConfig.user_indication ?? ''}
+          onChange={text => onPopulationConfigChange({ ...populationConfig, user_indication: text || undefined })}
+        />
+      )}
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import type { AdminOrgRow, AppUser, Budget, BudgetCategory, BudgetCategoryCreatePayload, BudgetCategoryUpdatePayload, BudgetCreatePayload, BudgetLineItem, BudgetLineItemCreatePayload, BudgetLineItemUpdatePayload, BudgetProfilePreview, BudgetRateCardMeta, BudgetRollup, BudgetSubjectProfile, BudgetSummary, BudgetUpdatePayload, Comment, CoverageReport, CsrInputKind, CsrQCReport, DdiScreeningResult, DesignPreviewResponse, Drug, GeneratedProtocol, GuidelinesResponse, Lead, LeadCreatePayload, Org, OrgMember, PopulationConfig, ProtocolCreatePayload, ProtocolSummary, QCReport, RiskScore, SectionUpdateResult, StudyReport, StudyReportSummary, StudyType } from '../types'
+import type { AdminOrgRow, AppUser, Budget, BudgetCategory, BudgetCategoryCreatePayload, BudgetCategoryUpdatePayload, BudgetCreatePayload, BudgetLineItem, BudgetLineItemCreatePayload, BudgetLineItemUpdatePayload, BudgetProfilePreview, BudgetRateCardMeta, BudgetRollup, BudgetSubjectProfile, BudgetSummary, BudgetUpdatePayload, Comment, CoverageReport, CsrInputKind, CsrQCReport, DdiScreeningResult, DesignPreviewResponse, Drug, GeneratedProtocol, GuidelinesResponse, Lead, LeadCreatePayload, Org, OrgMember, PatientPopulationPreview, PopulationConfig, ProtocolCreatePayload, ProtocolSummary, QCReport, RiskScore, SectionUpdateResult, StudyReport, StudyReportSummary, StudyType } from '../types'
 import { getActingUserId } from '../lib/actingUser'
 
 /** API origin. Empty by default so calls are same-origin `/api/...`:
@@ -181,10 +181,23 @@ export const api = {
     }),
 
   /** Credit-free preview of the 5 study-design decisions (Review design step). */
-  designPreview: (drugId: string, studyType: StudyType, populationConfig: PopulationConfig) =>
+  designPreview: (drugId: string, studyType: StudyType, populationConfig: PopulationConfig, populationChoice?: string) =>
     request<DesignPreviewResponse>('/protocols/design-preview', {
       method: 'POST',
-      body: JSON.stringify({ drug_id: drugId, study_type: studyType, population_config: populationConfig }),
+      body: JSON.stringify({
+        drug_id: drugId,
+        study_type: studyType,
+        population_config: populationConfig,
+        ...(populationChoice ? { population_choice: populationChoice } : {}),
+      }),
+    }),
+
+  /** Credit-free ranking of candidate study indications for a patient
+   *  biosimilar PK study, optionally checked against a user-typed indication. */
+  indicationPreview: (drugId: string, studyType: StudyType, userIndication?: string) =>
+    request<PatientPopulationPreview>('/protocols/indication-preview', {
+      method: 'POST',
+      body: JSON.stringify({ drug_id: drugId, study_type: studyType, user_indication: userIndication || null }),
     }),
 
   /** Credit-free drug-drug-interaction screening for the Population step.

@@ -12,6 +12,10 @@ The aim is the cleanest, most sensitive population for evaluating PK:
   A3  a monotherapy indication is ideal
   A4  otherwise, the indication with the lowest PK variability in prior trials
   A5  recruitability breaks ties, and only ties
+  A6  the lowest-variability disease setting is preferred (adjuvant / low
+      tumour burden / non-oncology over metastatic) - added after the
+      pharmacologist's patient-trial review; pinned in
+      tests/test_indication_setting_ranking.py
 
 GROUP B - endpoints, duration and statistics:
   B1  co-primary = first-dose AND steady-state AUC(0-tau); both must pass;
@@ -555,7 +559,11 @@ def test_a5_recruitment_is_reported_for_every_candidate():
 
 def test_selection_rules_and_rejected_candidates_are_disclosed():
     r = _select()
-    assert len(r["selection_rules"]) == 5
+    # The pharmacologist added a disease-setting rule (adjuvant / low tumour
+    # burden / non-oncology over metastatic), so the engine now discloses six
+    # selection rules, not five. This is the one assertion whose old value
+    # encoded the exact behaviour being changed.
+    assert len(r["selection_rules"]) == 6
     assert r["rejected"], "other labelled indications must be tabulated, not silently dropped"
     directive = patient_population_directive(r)
     assert "DELIBERATELY NOT SELECTED" in directive

@@ -69,12 +69,21 @@ function PendingDot({ n }: { n: number }) {
   )
 }
 
-function ReviewTable({ drug, studyType, pop, guidelineLabel }: { drug: Drug; studyType: StudyType; pop: PopulationConfig; guidelineLabel: string }) {
+function ReviewTable({ drug, studyType, pop, guidelineLabel, decisions }: { drug: Drug; studyType: StudyType; pop: PopulationConfig; guidelineLabel: string; decisions: DesignDecision[] }) {
+  const popValue = decisions.find(d => d.key === 'population')?.value
+  const doseValue = decisions.find(d => d.key === 'dose')?.value
+  const patientBiosimilar = studyType === 'biosimilar_pk' && (popValue ?? '').startsWith('Patients')
   const rows: [string, string][] = [
     ['Drug (INN)', drug.inn],
     ...(drug.brand_names.length > 0 ? [['Brand names', drug.brand_names.join(' · ')] as [string, string]] : []),
     ['Study type', STUDY_LABELS[studyType]],
-    ['Subject type', pop.subject_type === 'healthy' ? 'Healthy volunteers' : 'Patients'],
+    ['Population', popValue ?? (pop.subject_type === 'healthy' ? 'Healthy volunteers' : 'Patients')],
+    ...(doseValue ? [['Dosing', doseValue] as [string, string]] : []),
+    ...(patientBiosimilar
+      ? [['Study indication', pop.user_indication?.trim()
+          ? `${pop.user_indication.trim()} (user-specified)`
+          : 'Engine-selected (see Review design)'] as [string, string]]
+      : []),
     ['Age range', `${pop.age_min}–${pop.age_max} years`],
     ['Sex', SEX_LABELS[pop.sex]],
     ['Weight range', `${pop.weight_min}–${pop.weight_max} kg`],
@@ -92,7 +101,7 @@ function ReviewTable({ drug, studyType, pop, guidelineLabel }: { drug: Drug; stu
       {rows.map(([label, val]) => (
         <div key={label} className="flex gap-4 px-4 py-2.5 odd:bg-slate-50/60">
           <span className="w-32 flex-shrink-0 text-slate-500 text-xs font-semibold uppercase tracking-wide">{label}</span>
-          <span className="text-slate-800 font-medium capitalize text-xs">{val}</span>
+          <span className={`text-slate-800 font-medium text-xs${label === 'Study indication' ? '' : ' capitalize'}`}>{val}</span>
         </div>
       ))}
     </div>
@@ -258,10 +267,16 @@ export default function GenerateButton({ drug, studyType, populationConfig, desi
     timerIds.current.push(setTimeout(() => setProgressStep(p => Math.max(p, 1)), 2500))
     timerIds.current.push(setTimeout(() => setProgressStep(p => Math.max(p, 2)), 6500))
     try {
+      // The indication only applies to a patient biosimilar PK study; never
+      // send a stale one left over from an earlier Population choice.
+      const popDecision = designDecisions.find(d => d.key === 'population')?.value ?? ''
+      const sendIndication = studyType === 'biosimilar_pk' && popDecision.startsWith('Patients')
+      const submittedConfig: PopulationConfig = { ...populationConfig }
+      if (!sendIndication || !submittedConfig.user_indication?.trim()) delete submittedConfig.user_indication
       let result = await api.createProtocol({
         drug_id: drug.id,
         study_type: studyType,
-        population_config: populationConfig,
+        population_config: submittedConfig,
         guideline_version: guidelineId,
         design_decisions: designDecisions,
       })
@@ -461,7 +476,7 @@ export default function GenerateButton({ drug, studyType, populationConfig, desi
         )}
       </div>
 
-      <ReviewTable drug={drug} studyType={studyType} pop={populationConfig} guidelineLabel={guidelineLabel} />
+      <ReviewTable drug={drug} studyType={studyType} pop={populationConfig} guidelineLabel={guidelineLabel} decisions={designDecisions} />
 
       {designDecisions.length > 0 && (
         <div>
