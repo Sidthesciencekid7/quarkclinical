@@ -1,4 +1,4 @@
-"""Clinical study budgets — the second tool in the Quark AI suite.
+"""Clinical study budgets — the second tool in the QuarkClinical suite.
 
 A budget is standalone by design: a drug name alone is enough for
 services/budget_engine.py to produce a complete, fully-priced budget from

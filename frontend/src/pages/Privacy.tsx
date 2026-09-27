@@ -4,7 +4,7 @@ export default function Privacy() {
   return (
     <LegalLayout title="Privacy Policy" updated="July 12, 2026">
       <p>
-        This Privacy Policy describes what information Quark AI (&ldquo;we&rdquo;, &ldquo;us&rdquo;) collects
+        This Privacy Policy describes what information QuarkClinical (&ldquo;we&rdquo;, &ldquo;us&rdquo;) collects
         when you use the Service, how it is used, and the choices available to you.
       </p>
 

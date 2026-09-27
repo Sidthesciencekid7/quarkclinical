@@ -1,4 +1,4 @@
-# Deploying ProtocolAI (Vercel + Railway + Clerk)
+# Deploying QuarkClinical (Vercel + Railway + Clerk)
 
 This gets the app live: **backend + Postgres on Railway**, **frontend on Vercel**,
 **auth on Clerk (production instance)**. The code is already deployment-ready

@@ -60,7 +60,7 @@ The forms are instantiated against the real design, not a generic skeleton:
 
 THE BRIDGE TO THIS PRODUCT'S OWN ANALYSIS PIPELINE
 --------------------------------------------------
-ProtocolAI already analyses the finished study: :mod:`services.dataset_ingest`
+QuarkClinical already analyses the finished study: :mod:`services.dataset_ingest`
 defines the upload contract and :mod:`services.nca` computes the exposure
 metrics from it. A CRF that does not capture those columns produces a study this
 product cannot analyse. The specification is therefore checked, at build time,

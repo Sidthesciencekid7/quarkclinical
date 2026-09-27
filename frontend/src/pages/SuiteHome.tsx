@@ -115,7 +115,7 @@ export default function SuiteHome() {
             <div className="w-9 h-9 rounded-xl bg-cyan-500/15 border border-cyan-400/25 flex items-center justify-center flex-shrink-0">
               <QuarkLogo size={20} stroke="#22d3ee" />
             </div>
-            <h1 className="text-sm font-bold text-white leading-none tracking-tight">Quark AI</h1>
+            <h1 className="text-sm font-bold text-white leading-none tracking-tight">QuarkClinical</h1>
           </div>
 
           <div className="flex items-center gap-3 flex-shrink-0">
@@ -128,7 +128,7 @@ export default function SuiteHome() {
       <main className="max-w-4xl mx-auto px-6 py-16">
         <div className="text-center mb-12 fade-up">
           <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight mb-2">Choose a tool</h2>
-          <p className="text-sm text-slate-500">Everything in your Quark AI workspace, in one place.</p>
+          <p className="text-sm text-slate-500">Everything in your QuarkClinical workspace, in one place.</p>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 max-w-3xl mx-auto fade-up">

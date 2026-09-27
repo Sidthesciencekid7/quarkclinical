@@ -20,7 +20,7 @@ export default function LegalLayout({
               <QuarkLogo size={18} />
             </span>
             <span className="font-extrabold tracking-tight text-slate-900">
-              Quark <span className="text-cyan-600">AI</span>
+              Quark<span className="text-cyan-600">Clinical</span>
             </span>
           </Link>
           <Link to="/" className="text-sm font-medium text-slate-500 hover:text-slate-900 transition-colors">

@@ -1,4 +1,4 @@
-/** The "Quark AI" brand mark — an outer ring containing three small ringed
+/** The QuarkClinical brand mark — an outer ring containing three small ringed
  *  particles in a triangular arrangement (three quarks). Stroke-only, no
  *  fill, so it inherits color from `stroke`/`currentColor` like every other
  *  icon in this codebase. Used in every page header/logo across the site. */

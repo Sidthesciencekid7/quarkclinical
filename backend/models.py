@@ -586,7 +586,7 @@ class StudyReportVersion(Base):
 
 
 class Budget(Base):
-    """A clinical study budget — the second tool in the Quark AI suite.
+    """A clinical study budget — the second tool in the QuarkClinical suite.
 
     Standalone by design: `protocol_id` is OPTIONAL — a drug name alone is
     enough for services/budget_engine.py to produce a complete, fully-priced
