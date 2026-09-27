@@ -56,6 +56,18 @@ _STATUS_RANK: dict[str, int] = {
 MAX_PRECEDENT_TRIALS = 8
 _DATE_RE = re.compile(r"^(\d{4})-(\d{2})(?:-(\d{2}))?$")
 
+# A withdrawn trial never enrolled anyone and a terminated or suspended one
+# stopped early, so none of them says how large a study of this drug really
+# is. Including them once turned a trastuzumab budget into a 1-subject study
+# (median of 18, 2, 0 and 0 actual enrolments).
+_EXCLUDED_STATUSES = frozenset({"WITHDRAWN", "TERMINATED", "SUSPENDED"})
+
+# FDA bioequivalence guidance requires at least 12 evaluable subjects; a
+# registered enrolment below that is not a credible sizing precedent for a
+# comparative PK study, so it is dropped from the enrolment median (the
+# trial can still inform site and country counts).
+MIN_PLAUSIBLE_ENROLLMENT = 12
+
 
 def _duration_months(start_date: str, completion_date: str) -> float | None:
     """CT.gov dates are "YYYY-MM" or "YYYY-MM-DD"; day is dropped either way
@@ -153,10 +165,20 @@ def select_budget_precedents(
     dropped — it cannot inform any driver this module resolves. Phase must
     also be consistent with `subject_profile` (see _phase_matches) — the same
     drug's healthy-volunteer PK history and patient-trial history are NOT
-    interchangeable precedent for one another."""
+    interchangeable precedent for one another.
+
+    Withdrawn, terminated and suspended trials are excluded outright (see
+    _EXCLUDED_STATUSES). For a healthy-volunteer budget only trials that
+    registered as accepting healthy volunteers count: an intervention-name
+    search also returns every Phase 1 patient combination trial the drug
+    appears in (e.g. trastuzumab + chemotherapy in solid tumours), which says
+    nothing about the size of a healthy-volunteer PK study."""
+    healthy = subject_profile != "patient"
     candidates = [
         t for t in trials
-        if _indication_matches(indication, t.get("conditions") or [])
+        if (t.get("status") or "") not in _EXCLUDED_STATUSES
+        and (not healthy or t.get("healthy_volunteers") is True)
+        and _indication_matches(indication, t.get("conditions") or [])
         and _phase_matches(subject_profile, t.get("phase") or "")
         and (t.get("enrollment_count") is not None or t.get("countries"))
     ]
@@ -186,13 +208,15 @@ def aggregate_budget_drivers(precedents: list[BudgetTrialPrecedent]) -> BudgetPr
     (or vice versa) still contributes to whichever median it can. ACTUAL
     enrollment counts are preferred over ESTIMATED when both are present
     across the precedent set (a completed trial's real enrollment beats a
-    still-running trial's target)."""
+    still-running trial's target). Enrolments below MIN_PLAUSIBLE_ENROLLMENT
+    are left out of the enrolment median."""
     if not precedents:
         return NO_PRECEDENT
 
-    actual_enrolled = [p.enrollment_count for p in precedents
-                        if p.enrollment_count is not None and p.enrollment_type == "ACTUAL"]
-    any_enrolled = [p.enrollment_count for p in precedents if p.enrollment_count is not None]
+    plausible = [p for p in precedents
+                 if p.enrollment_count is not None and p.enrollment_count >= MIN_PLAUSIBLE_ENROLLMENT]
+    actual_enrolled = [p.enrollment_count for p in plausible if p.enrollment_type == "ACTUAL"]
+    any_enrolled = [p.enrollment_count for p in plausible]
     enrolled_pool = actual_enrolled or any_enrolled
     median_n_enrolled = round(statistics.median(enrolled_pool)) if enrolled_pool else None
 

@@ -331,6 +331,49 @@ async def test_two_drugs_with_different_real_trial_history_get_different_budgets
     assert grounded["rollup"]["grand_total"] != ungrounded["rollup"]["grand_total"]
 
 
+def test_precedent_ignores_abandoned_irrelevant_and_implausible_trials():
+    """Regression: the real trastuzumab ClinicalTrials.gov history produced a
+    1-subject healthy-volunteer budget (median of actual enrolments 18, 2, 0,
+    0 from withdrawn/terminated oncology combination trials)."""
+    from services.budget_trial_precedent import aggregate_budget_drivers, select_budget_precedents
+
+    oncology = dict(healthy_volunteers=False)
+    trials = [
+        _fake_ctgov_trial("NCT00028535", enrollment_count=18, **oncology),
+        _fake_ctgov_trial("NCT04108858", enrollment_count=2, status="TERMINATED", **oncology),
+        _fake_ctgov_trial("NCT02336984", enrollment_count=0, status="WITHDRAWN", **oncology),
+        _fake_ctgov_trial("NCT02569489", enrollment_count=0, status="WITHDRAWN", **oncology),
+        _fake_ctgov_trial("NCT06328738", enrollment_count=275, status="ACTIVE_NOT_RECRUITING",
+                          enrollment_type="ESTIMATED", **oncology),
+    ]
+    precedents = select_budget_precedents(indication=None, subject_profile="healthy", trials=trials)
+    assert precedents == []
+    assert aggregate_budget_drivers(precedents).median_n_enrolled is None
+
+    healthy_pk = [
+        _fake_ctgov_trial("NCT10000001", enrollment_count=118),
+        _fake_ctgov_trial("NCT10000002", enrollment_count=150),
+        _fake_ctgov_trial("NCT10000003", enrollment_count=4),
+        _fake_ctgov_trial("NCT10000004", enrollment_count=0, status="WITHDRAWN"),
+    ]
+    precedents = select_budget_precedents(indication=None, subject_profile="healthy", trials=healthy_pk + trials)
+    assert {p.nct_id for p in precedents} == {"NCT10000001", "NCT10000002", "NCT10000003"}
+    assert aggregate_budget_drivers(precedents).median_n_enrolled == 134
+
+
+def test_patient_precedent_does_not_require_healthy_volunteers():
+    from services.budget_trial_precedent import aggregate_budget_drivers, select_budget_precedents
+
+    trials = [
+        _fake_ctgov_trial("NCT20000001", enrollment_count=400, phase="PHASE3", healthy_volunteers=False),
+        _fake_ctgov_trial("NCT20000002", enrollment_count=0, phase="PHASE3", status="WITHDRAWN",
+                          healthy_volunteers=False),
+    ]
+    precedents = select_budget_precedents(indication=None, subject_profile="patient", trials=trials)
+    assert [p.nct_id for p in precedents] == ["NCT20000001"]
+    assert aggregate_budget_drivers(precedents).median_n_enrolled == 400
+
+
 async def test_ctgov_fetch_failure_falls_back_to_generic_default(api_client, seeded, monkeypatch):
     """A CT.gov outage (or an unregistered drug raising inside
     LiteratureService) must never break budget creation — same resilience
