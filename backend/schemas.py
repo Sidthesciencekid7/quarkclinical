@@ -337,6 +337,24 @@ class DesignPreviewRequest(BaseModel):
         return _sanitize_user_indication_in_config(v)
 
 
+class DdiPreviewRequest(BaseModel):
+    """Inputs for the credit-free drug-drug-interaction screening preview
+    (POST /api/protocols/ddi-preview). Same shape the Population step already
+    sends (``api/client.ts::previewDdi``): the drug, the study type and the
+    population/design inputs entered so far. Only ``is_nti``, ``design`` and
+    ``subject_type`` are read from ``population_config`` — the rest is carried
+    for parity with DesignPreviewRequest so the same body can be posted to
+    either route."""
+    drug_id: uuid.UUID
+    study_type: StudyType
+    population_config: dict[str, Any] = {}
+
+    @field_validator("population_config")
+    @classmethod
+    def _sanitize_population_config(cls, v: dict[str, Any]) -> dict[str, Any]:
+        return _sanitize_user_indication_in_config(v)
+
+
 class IndicationPreviewRequest(BaseModel):
     """Inputs for the credit-free indication preview: ranks the reference
     product's indications for a patient biosimilar study and, when the user typed
@@ -372,6 +390,13 @@ class ProtocolRead(BaseModel):
     generation_error: str | None = None
     created_by: uuid.UUID
     created_at: datetime
+    # The drug's INN / brand names, joined in by GET /api/protocols/{id} so a
+    # client (and the chat edit drawer) can title a protocol without a second
+    # fetch. Optional: the create/clone responses do not load the drug and
+    # leave them at their defaults, and there is no ORM attribute of these names
+    # on Protocol (from_attributes falls back to the defaults).
+    drug_inn: str | None = None
+    drug_brand_names: list[str] = []
 
     model_config = ConfigDict(from_attributes=True)
 

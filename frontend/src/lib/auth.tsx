@@ -25,9 +25,33 @@ export const authEnabled = Boolean(CLERK_KEY)
 
 /* ---- launch (login / signup) API exposed to the landing page ---- */
 
+/** Where Clerk (or the plain-mode navigate) sends the user after auth. */
+const DEFAULT_LAUNCH_TARGET = '/app'
+
+/** Accepts only a same-origin, root-relative path ("/app/chat/new?from=landing")
+ *  and returns it unchanged; anything else (a non-string, "https://evil.test",
+ *  protocol-relative "//evil.test", "/\evil.test", control characters or
+ *  spaces, a path that resolves off-origin) returns null so the caller falls
+ *  back to its default. Guards against open-redirect through the post-auth
+ *  redirect. NOTE: handlers wired as `onClick={login}` pass a MouseEvent as the
+ *  first argument, so non-strings must be tolerated, not thrown on. */
+export function sanitizeLaunchTarget(target: unknown): string | null {
+  if (typeof target !== 'string' || target.length === 0 || target.length > 2048) return null
+  if (!target.startsWith('/') || target.startsWith('//') || target.startsWith('/\\')) return null
+  if (/[\u0000-\u0020\u007f\\]/.test(target)) return null
+  try {
+    const base = typeof window !== 'undefined' ? window.location.origin : 'http://localhost'
+    if (new URL(target, base).origin !== base) return null
+  } catch {
+    return null
+  }
+  return target
+}
+
 interface LaunchApi {
-  login: () => void
-  signup: () => void
+  /** `target`: optional same-origin path (starting with '/') to land on after auth. */
+  login: (target?: string) => void
+  signup: (target?: string) => void
 }
 
 const LaunchContext = createContext<LaunchApi>({
@@ -46,15 +70,17 @@ function AuthedLaunchProvider({ children }: { children: ReactNode }) {
   // to reach (e.g. /join/:token) after auth completes. The one exception is
   // the marketing landing page itself ('/'), whose own login/signup buttons
   // have always intentionally sent new/returning users into the app shell.
-  const redirectTarget =
-    location.pathname === '/' ? '/app' : `${location.pathname}${location.search}`
+  const defaultRedirectTarget =
+    location.pathname === '/' ? DEFAULT_LAUNCH_TARGET : `${location.pathname}${location.search}`
 
   // Defensive: only call Clerk's modal openers when Clerk has actually loaded
   // and the method exists. If Clerk failed to load (blocked script, dev-instance
   // limit, a stale tab pointing at a restarted dev server, etc.) the click must
   // still DO something — fall back to navigating to redirectTarget (the Protected
   // route renders the full-page sign-in) rather than silently doing nothing.
-  const open = (which: 'signIn' | 'signUp') => {
+  const open = (which: 'signIn' | 'signUp', target?: unknown) => {
+    // An explicit, valid `target` wins; otherwise behave exactly as before.
+    const redirectTarget = sanitizeLaunchTarget(target) ?? defaultRedirectTarget
     try {
       const fn = which === 'signIn' ? clerk?.openSignIn : clerk?.openSignUp
       if (clerk?.loaded && typeof fn === 'function') {
@@ -68,8 +94,8 @@ function AuthedLaunchProvider({ children }: { children: ReactNode }) {
   }
 
   const api: LaunchApi = {
-    login: () => open('signIn'),
-    signup: () => open('signUp'),
+    login: (target) => open('signIn', target),
+    signup: (target) => open('signUp', target),
   }
   return <LaunchContext.Provider value={api}>{children}</LaunchContext.Provider>
 }
@@ -77,8 +103,8 @@ function AuthedLaunchProvider({ children }: { children: ReactNode }) {
 function PlainLaunchProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate()
   const api: LaunchApi = {
-    login: () => navigate('/app'),
-    signup: () => navigate('/app'),
+    login: (target) => navigate(sanitizeLaunchTarget(target) ?? DEFAULT_LAUNCH_TARGET),
+    signup: (target) => navigate(sanitizeLaunchTarget(target) ?? DEFAULT_LAUNCH_TARGET),
   }
   return <LaunchContext.Provider value={api}>{children}</LaunchContext.Provider>
 }
@@ -124,13 +150,13 @@ function SignInGate() {
         <p className="text-slate-400 text-sm mb-8">You need an account to access QuarkClinical.</p>
         <div className="flex flex-col gap-3">
           <button
-            onClick={login}
+            onClick={() => login()}
             className="w-full py-3 rounded-xl font-bold text-sm text-white bg-gradient-to-r from-cyan-500 to-teal-500 shadow-lg shadow-cyan-500/30 cursor-pointer"
           >
             Log in
           </button>
           <button
-            onClick={signup}
+            onClick={() => signup()}
             className="w-full py-3 rounded-xl font-bold text-sm text-white bg-white/10 border border-white/15 hover:bg-white/15 transition-colors cursor-pointer"
           >
             Sign up

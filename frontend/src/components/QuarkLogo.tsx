@@ -23,3 +23,37 @@ export default function QuarkLogo({
     </svg>
   )
 }
+
+/** "Quark" + cyan "Clinical". `tone` picks the colour pair for the surface it
+ *  sits on: `light` (white/app surfaces) uses ink-950 + cyan-700 (5.4:1 on
+ *  white); `dark` (navy landing) uses white + cyan-300. Pass `showMark` to put
+ *  the ring mark in front. Reads as one accessible name: "QuarkClinical". */
+export function Wordmark({
+  tone = 'light',
+  size = 'md',
+  showMark = false,
+  className,
+}: {
+  tone?: 'light' | 'dark'
+  size?: 'sm' | 'md' | 'lg'
+  showMark?: boolean
+  className?: string
+}) {
+  const text = size === 'sm' ? 'text-[15px]' : size === 'lg' ? 'text-[22px]' : 'text-[18px]'
+  const quark = tone === 'dark' ? 'text-white' : 'text-ink-950'
+  const clinical = tone === 'dark' ? 'text-accent-300' : 'text-accent-700'
+  const markSize = size === 'sm' ? 18 : size === 'lg' ? 26 : 22
+  return (
+    <span
+      className={`inline-flex items-center gap-2 font-semibold leading-none tracking-[-0.02em] ${text} ${className ?? ''}`}
+      aria-label="QuarkClinical"
+      role="img"
+    >
+      {showMark ? <QuarkLogo size={markSize} className={quark} /> : null}
+      <span aria-hidden="true">
+        <span className={quark}>Quark</span>
+        <span className={clinical}>Clinical</span>
+      </span>
+    </span>
+  )
+}

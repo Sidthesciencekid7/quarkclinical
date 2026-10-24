@@ -2,12 +2,183 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ════════════════════════════════════════════════════════════════════
+   DESIGN TOKENS (redesign F1)
+   Light is the default (the app). `[data-surface="dark"]` flips every
+   surface-aware token for the dark landing / glass surfaces. Static scales
+   (ink, navy, accent) live in tailwind.config.js.
+
+   RULE: a token that is derived from another token via var() must be
+   declared in BOTH blocks (custom properties resolve where declared).
+   RULE: Tailwind v3 only emits classes it finds in src/**, so build class
+   names as complete literals (see the maps in src/ui/Button.tsx), never
+   `btn-${variant}`.
+   RULE: never slate-500 or darker for text on navy - use --fg-muted /
+   --fg-subtle (white at 72% / 56%). On white use cyan-700 for small
+   accent text (5.4:1); cyan-600 is for icons and large text only.
+   ════════════════════════════════════════════════════════════════════ */
 @layer base {
-  :root {
+  :root,
+  [data-surface="light"] {
+    color-scheme: light;
+
+    /* legacy brand variables (still referenced by un-migrated pages) */
     --navy: #0B1E3D;
     --navy-light: #122548;
     --teal: #0891B2;
     --teal-light: #E0F2FE;
+
+    /* text */
+    --fg: #0A0A0A;                 /* ink-950 */
+    --fg-muted: #52525B;           /* ink-600 */
+    --fg-subtle: #71717A;          /* ink-500, 4.8:1 on white */
+    --placeholder: #71717A;
+    --link: #0E7490;               /* cyan-700 */
+
+    /* surfaces */
+    --bg: #FFFFFF;
+    --bg-muted: #F4F4F5;           /* ink-100 */
+    --bg-raised: #FFFFFF;          /* cards */
+    --bg-pop: #FFFFFF;             /* menus, modals (always solid) */
+    --canvas: #FAFAFA;             /* ink-50, page background */
+    --overlay: rgb(10 10 10 / 0.40);
+    --hover: #F4F4F5;
+
+    /* lines */
+    --border: #E4E4E7;             /* ink-200 */
+    --border-strong: #D4D4D8;      /* ink-300 */
+
+    /* focus ring: 2px ring + 2px offset */
+    --ring: #06B6D4;               /* cyan-500 */
+    --ring-offset: #FFFFFF;
+
+    /* glass (none on light) */
+    --glass-filter: none;
+
+    /* elevation */
+    --shadow-xs: 0 1px 2px rgb(10 10 10 / 0.04);
+    --shadow-card: 0 1px 2px rgb(10 10 10 / 0.04), 0 1px 3px rgb(10 10 10 / 0.03);
+    --shadow-pop: 0 8px 24px -6px rgb(10 10 10 / 0.14);
+    --shadow-composer: 0 8px 32px -8px rgb(10 10 10 / 0.16), 0 2px 6px rgb(10 10 10 / 0.06);
+
+    /* buttons */
+    --btn-primary-bg: #0A0A0A;
+    --btn-primary-fg: #FFFFFF;
+    --btn-primary-hover: #27272A;
+    --btn-secondary-bg: #FFFFFF;
+    --btn-secondary-fg: #0A0A0A;
+    --btn-secondary-border: #E4E4E7;
+    --btn-secondary-hover-bg: #FAFAFA;
+    --btn-secondary-hover-border: #D4D4D8;
+    --btn-secondary-shadow: 0 1px 2px rgb(10 10 10 / 0.04);
+    --btn-ghost-hover-bg: #F4F4F5;
+    --btn-danger-bg: #FFFFFF;
+    --btn-danger-fg: #B91C1C;
+    --btn-danger-border: #FCA5A5;
+    --btn-danger-hover-bg: #FEF2F2;
+    --btn-danger-solid-bg: #DC2626;
+    --btn-danger-solid-hover: #B91C1C;
+    --btn-accent-bg: #0E7490;
+    --btn-accent-fg: #FFFFFF;
+    --btn-accent-hover: #155E75;
+
+    /* segmented pill nav */
+    --pillnav-bg: #F4F4F5;
+    --pillnav-border: transparent;
+    --pillnav-hover-bg: rgb(10 10 10 / 0.05);
+    --pillnav-active-bg: #FFFFFF;
+    --pillnav-active-shadow: 0 1px 2px rgb(10 10 10 / 0.10), 0 0 0 1px rgb(10 10 10 / 0.04);
+
+    /* chips, tiles, inputs, composer */
+    --chip-bg: #FFFFFF;
+    --chip-hover-bg: #FAFAFA;
+    --chip-selected-bg: #F4F4F5;
+    --tile-bg: #F4F4F5;
+    --tile-hover-bg: #EDEDEF;
+    --input-bg: #FFFFFF;
+    --composer-bg: #FFFFFF;
+    --composer-border: #E4E4E7;
+    --composer-tile-bg: #F4F4F5;
+
+    /* status tones (badges, banners) */
+    --ok-bg: #ECFDF5;   --ok-fg: #047857;   --ok-border: #A7F3D0;
+    --warn-bg: #FFFBEB; --warn-fg: #B45309; --warn-border: #FDE68A;
+    --bad-bg: #FEF2F2;  --bad-fg: #B91C1C;  --bad-border: #FECACA;
+    --info-bg: #ECFEFF; --info-fg: #0E7490; --info-border: #A5F3FC;
+    --neutral-bg: #F4F4F5; --neutral-fg: #3F3F46; --neutral-border: #E4E4E7;
+  }
+
+  [data-surface="dark"] {
+    color-scheme: dark;
+
+    --fg: #FFFFFF;
+    --fg-muted: rgb(255 255 255 / 0.72);
+    --fg-subtle: rgb(255 255 255 / 0.56);
+    --placeholder: rgb(255 255 255 / 0.56);
+    --link: #67E8F9;               /* cyan-300 */
+
+    --bg: #0B1E3D;                 /* navy-900 */
+    --bg-muted: rgb(255 255 255 / 0.06);
+    --bg-raised: rgb(255 255 255 / 0.06);
+    --bg-pop: #122548;             /* navy-800 */
+    --canvas: #081226;             /* navy-950 */
+    --overlay: rgb(8 18 38 / 0.65);
+    --hover: rgb(255 255 255 / 0.10);
+
+    --border: rgb(255 255 255 / 0.12);
+    --border-strong: rgb(255 255 255 / 0.22);
+
+    --ring: #67E8F9;               /* cyan-300 */
+    --ring-offset: #0B1E3D;
+
+    --glass-filter: blur(24px) saturate(140%);
+
+    --shadow-xs: none;
+    --shadow-card: none;
+    --shadow-pop: 0 12px 32px -8px rgb(0 0 0 / 0.5);
+    --shadow-composer: 0 8px 32px -8px rgb(0 0 0 / 0.45), inset 0 1px 0 rgb(255 255 255 / 0.06);
+
+    --btn-primary-bg: #FFFFFF;
+    --btn-primary-fg: #0A0A0A;
+    --btn-primary-hover: #E4E4E7;
+    --btn-secondary-bg: rgb(255 255 255 / 0.10);
+    --btn-secondary-fg: #FFFFFF;
+    --btn-secondary-border: rgb(255 255 255 / 0.14);
+    --btn-secondary-hover-bg: rgb(255 255 255 / 0.16);
+    --btn-secondary-hover-border: rgb(255 255 255 / 0.24);
+    --btn-secondary-shadow: none;
+    --btn-ghost-hover-bg: rgb(255 255 255 / 0.10);
+    --btn-danger-bg: rgb(239 68 68 / 0.12);
+    --btn-danger-fg: #FCA5A5;
+    --btn-danger-border: rgb(252 165 165 / 0.35);
+    --btn-danger-hover-bg: rgb(239 68 68 / 0.22);
+    --btn-danger-solid-bg: #DC2626;
+    --btn-danger-solid-hover: #B91C1C;
+    --btn-accent-bg: #67E8F9;
+    --btn-accent-fg: #081226;
+    --btn-accent-hover: #A5F3FC;
+
+    --pillnav-bg: rgb(255 255 255 / 0.10);
+    --pillnav-border: rgb(255 255 255 / 0.10);
+    --pillnav-hover-bg: rgb(255 255 255 / 0.08);
+    --pillnav-active-bg: rgb(255 255 255 / 0.15);
+    --pillnav-active-shadow: none;
+
+    --chip-bg: rgb(255 255 255 / 0.06);
+    --chip-hover-bg: rgb(255 255 255 / 0.12);
+    --chip-selected-bg: rgb(255 255 255 / 0.16);
+    --tile-bg: rgb(255 255 255 / 0.06);
+    --tile-hover-bg: rgb(255 255 255 / 0.10);
+    --input-bg: rgb(255 255 255 / 0.06);
+    --composer-bg: rgb(255 255 255 / 0.06);
+    --composer-border: rgb(255 255 255 / 0.15);
+    --composer-tile-bg: rgb(255 255 255 / 0.08);
+
+    --ok-bg: rgb(16 185 129 / 0.14);   --ok-fg: #6EE7B7;   --ok-border: rgb(110 231 183 / 0.30);
+    --warn-bg: rgb(245 158 11 / 0.14); --warn-fg: #FCD34D; --warn-border: rgb(252 211 77 / 0.30);
+    --bad-bg: rgb(239 68 68 / 0.14);   --bad-fg: #FCA5A5;  --bad-border: rgb(252 165 165 / 0.30);
+    --info-bg: rgb(34 211 238 / 0.12); --info-fg: #67E8F9; --info-border: rgb(103 232 249 / 0.30);
+    --neutral-bg: rgb(255 255 255 / 0.10); --neutral-fg: rgb(255 255 255 / 0.80); --neutral-border: rgb(255 255 255 / 0.14);
   }
 
   html {
@@ -16,8 +187,23 @@
 
   body {
     font-family: 'Figtree', Inter, system-ui, sans-serif;
+    color: var(--fg);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Focus-visible ring on every interactive element (zero specificity via
+     :where so utilities and component classes can refine it). Component
+     classes below (.btn, .chip, ...) draw the ring as a 2px + 2px-offset
+     box-shadow instead so it follows their pill radius exactly. */
+  :where(a[href], button, [role="button"], [role="tab"], [role="menuitem"], [role="switch"], summary, input, select, textarea, [tabindex]:not([tabindex="-1"])):focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  ::placeholder {
+    color: var(--placeholder);
+    opacity: 1;
   }
 
   /* Custom scrollbar */
@@ -38,20 +224,492 @@
 }
 
 @layer components {
+  /* ──────────────────────────────────────────────────────────────────
+     BUTTONS - the pill family (C2).
+     New code:    class="btn btn-md btn-primary"   (use <Button/> from src/ui)
+     Legacy code: class="btn-primary" / "btn-ghost" alone keeps working
+                  and now renders as a pill (md size, via padding so that
+                  `text-xs py-1.5 px-3` overrides still shrink it).
+     Note: legacy `.btn-ghost` (alone) is the OUTLINED secondary pill.
+           `.btn.btn-ghost` is the true transparent ghost.
+     Heights: sm 32 / md 36 / lg 44 / xl 48 (border-box, padding-driven).
+     ────────────────────────────────────────────────────────────────── */
+  .btn,
+  .btn-primary,
+  .btn-secondary,
+  .btn-ghost,
+  .btn-danger,
+  .btn-accent,
+  .btn-link {
+    position: relative;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    padding: 7px 16px;
+    border: 1px solid transparent;
+    border-radius: 9999px;
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 500;
+    white-space: nowrap;
+    text-decoration: none;
+    cursor: pointer;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: background-color 150ms ease-out, border-color 150ms ease-out,
+                color 150ms ease-out, box-shadow 150ms ease-out,
+                transform 150ms ease-out, opacity 150ms ease-out;
+  }
+
+  /* sizes (declared after the base so they win at equal specificity) */
+  .btn-sm { padding: 5px 12px;  font-size: 13px; line-height: 20px; }
+  .btn-md { padding: 7px 16px;  font-size: 14px; line-height: 20px; }
+  .btn-lg { padding: 10px 20px; font-size: 15px; line-height: 22px; }
+  .btn-xl { padding: 11px 24px; font-size: 16px; line-height: 24px; }
+
+  /* variants */
   .btn-primary {
-    @apply inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan-600 text-white text-sm font-semibold hover:bg-cyan-700 active:bg-cyan-800 transition-all duration-200 shadow-sm cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed;
+    background-color: var(--btn-primary-bg);
+    color: var(--btn-primary-fg);
   }
+  .btn-primary:hover:where(:not(:disabled, [aria-disabled="true"])) {
+    background-color: var(--btn-primary-hover);
+  }
+
+  .btn-secondary,
   .btn-ghost {
-    @apply inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 hover:border-slate-300 transition-all duration-200 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed;
+    background-color: var(--btn-secondary-bg);
+    border-color: var(--btn-secondary-border);
+    color: var(--btn-secondary-fg);
+    box-shadow: var(--btn-secondary-shadow);
+    -webkit-backdrop-filter: var(--glass-filter);
+    backdrop-filter: var(--glass-filter);
   }
+  .btn-secondary:hover:where(:not(:disabled, [aria-disabled="true"])),
+  .btn-ghost:hover:where(:not(:disabled, [aria-disabled="true"])) {
+    background-color: var(--btn-secondary-hover-bg);
+    border-color: var(--btn-secondary-hover-border);
+  }
+
+  /* true ghost: transparent until hovered (new family only) */
+  .btn.btn-ghost {
+    background-color: transparent;
+    border-color: transparent;
+    color: var(--fg-muted);
+    box-shadow: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .btn.btn-ghost:hover:where(:not(:disabled, [aria-disabled="true"])) {
+    background-color: var(--btn-ghost-hover-bg);
+    border-color: transparent;
+    color: var(--fg);
+  }
+
+  .btn-danger {
+    background-color: var(--btn-danger-bg);
+    border-color: var(--btn-danger-border);
+    color: var(--btn-danger-fg);
+  }
+  .btn-danger:hover:where(:not(:disabled, [aria-disabled="true"])) {
+    background-color: var(--btn-danger-hover-bg);
+  }
+  /* solid red: only inside destructive confirm dialogs */
+  .btn-danger-solid,
+  .btn-danger.btn-danger-solid {
+    background-color: var(--btn-danger-solid-bg);
+    border-color: transparent;
+    color: #FFFFFF;
+  }
+  .btn-danger.btn-danger-solid:hover:where(:not(:disabled, [aria-disabled="true"])) {
+    background-color: var(--btn-danger-solid-hover);
+  }
+
+  .btn-accent {
+    background-color: var(--btn-accent-bg);
+    color: var(--btn-accent-fg);
+  }
+  .btn-accent:hover:where(:not(:disabled, [aria-disabled="true"])) {
+    background-color: var(--btn-accent-hover);
+  }
+
+  .btn-link,
+  .btn.btn-link {
+    padding: 0;
+    height: auto;
+    border-radius: 6px;
+    background: transparent;
+    border-color: transparent;
+    color: var(--link);
+    box-shadow: none;
+  }
+  .btn-link:hover:where(:not(:disabled, [aria-disabled="true"])) {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  /* icon-only: a circle of the same height as the size */
+  .btn-icon { padding: 0; width: 2.25rem; height: 2.25rem; }
+  .btn-icon.btn-sm { width: 2rem;    height: 2rem; }
+  .btn-icon.btn-md { width: 2.25rem; height: 2.25rem; }
+  .btn-icon.btn-lg { width: 2.75rem; height: 2.75rem; }
+  .btn-icon.btn-xl { width: 3rem;    height: 3rem; }
+
+  /* icons inside the new family are 16px unless a utility says otherwise */
+  :where(.btn) svg { width: 1rem; height: 1rem; flex: none; }
+  .btn-icon.btn-lg svg,
+  .btn-icon.btn-xl svg { width: 1.25rem; height: 1.25rem; }
+
+  /* state: disabled (40% opacity) / busy / pressed */
+  :is(.btn, .btn-primary, .btn-secondary, .btn-ghost, .btn-danger, .btn-accent, .btn-link):is(:disabled, [aria-disabled="true"]) {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  :is(.btn, .btn-primary, .btn-secondary, .btn-ghost, .btn-danger, .btn-accent)[aria-busy="true"] {
+    cursor: progress;
+  }
+  :is(.btn, .btn-primary, .btn-secondary, .btn-ghost, .btn-danger, .btn-accent):active:where(:not(:disabled, [aria-disabled="true"], .btn-link)) {
+    transform: scale(0.98);
+  }
+
+  /* focus: 2px ring in --ring with a 2px --ring-offset gap */
+  :is(.btn, .btn-primary, .btn-secondary, .btn-ghost, .btn-danger, .btn-accent, .btn-link):focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--ring-offset), 0 0 0 4px var(--ring);
+  }
+
+  /* touch targets: at least h-10 on coarse pointers */
+  @media (pointer: coarse) {
+    :is(.btn, .btn-primary, .btn-secondary, .btn-ghost, .btn-danger, .btn-accent):where(:not(.btn-link)) {
+      min-height: 2.5rem;
+    }
+    .btn-icon { min-width: 2.5rem; }
+  }
+
+  /* ──────────────────────────────────────────────────────────────────
+     SEGMENTED PILL NAV (C2, from the NORMA header). Toggle group uses
+     aria-pressed, navigation uses aria-current, pill tabs use aria-selected.
+     ────────────────────────────────────────────────────────────────── */
+  .pillnav {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px;
+    border-radius: 9999px;
+    background-color: var(--pillnav-bg);
+    box-shadow: inset 0 0 0 1px var(--pillnav-border);
+    -webkit-backdrop-filter: var(--glass-filter);
+    backdrop-filter: var(--glass-filter);
+  }
+  .pillnav-item {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 32px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 9999px;
+    background: transparent;
+    color: var(--fg-muted);
+    font-size: 13px;
+    line-height: 20px;
+    font-weight: 500;
+    white-space: nowrap;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background-color 150ms ease-out, color 150ms ease-out, box-shadow 150ms ease-out;
+  }
+  .pillnav-item svg { width: 1rem; height: 1rem; flex: none; }
+  .pillnav-item:hover:where(:not(:disabled, [aria-disabled="true"])) {
+    background-color: var(--pillnav-hover-bg);
+    color: var(--fg);
+  }
+  .pillnav-item[aria-pressed="true"],
+  .pillnav-item[aria-current="page"],
+  .pillnav-item[aria-current="true"],
+  .pillnav-item[aria-selected="true"] {
+    background-color: var(--pillnav-active-bg);
+    color: var(--fg);
+    box-shadow: var(--pillnav-active-shadow);
+  }
+  .pillnav-item:is(:disabled, [aria-disabled="true"]) { opacity: 0.4; cursor: not-allowed; }
+  .pillnav-item:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--ring-offset), 0 0 0 4px var(--ring);
+  }
+  .pillnav-sm .pillnav-item { height: 28px; padding: 0 10px; font-size: 12px; }
+  @media (pointer: coarse) {
+    .pillnav-item { min-height: 2.5rem; }
+  }
+
+  /* ──────────────────────────────────────────────────────────────────
+     UNDERLINE TABS (Explore / History style)
+     ────────────────────────────────────────────────────────────────── */
+  .tabs-underline {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 40px;
+    margin-bottom: -1px;
+    padding: 0 12px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    border-radius: 8px 8px 0 0;
+    background: transparent;
+    color: var(--fg-muted);
+    font-size: 14px;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color 150ms ease-out, border-color 150ms ease-out, background-color 150ms ease-out;
+  }
+  .tab:hover:where(:not(:disabled, [aria-disabled="true"])) { color: var(--fg); background-color: var(--pillnav-hover-bg); }
+  .tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--fg); }
+  .tab:is(:disabled, [aria-disabled="true"]) { opacity: 0.4; cursor: not-allowed; }
+  .tab:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 2px var(--ring);
+  }
+
+  /* ──────────────────────────────────────────────────────────────────
+     CHIPS (suggestion + selectable) and BADGES
+     ────────────────────────────────────────────────────────────────── */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 32px;
+    padding: 0 12px;
+    border: 1px solid var(--border);
+    border-radius: 9999px;
+    background-color: var(--chip-bg);
+    color: var(--fg);
+    font-size: 13px;
+    line-height: 20px;
+    font-weight: 500;
+    white-space: nowrap;
+    text-decoration: none;
+    cursor: pointer;
+    -webkit-backdrop-filter: var(--glass-filter);
+    backdrop-filter: var(--glass-filter);
+    transition: background-color 150ms ease-out, border-color 150ms ease-out, color 150ms ease-out, box-shadow 150ms ease-out;
+  }
+  .chip svg { width: 1rem; height: 1rem; flex: none; color: var(--fg-muted); }
+  .chip:hover:where(:not(:disabled, [aria-disabled="true"])) {
+    background-color: var(--chip-hover-bg);
+    border-color: var(--border-strong);
+  }
+  .chip-selected,
+  .chip[aria-pressed="true"] {
+    background-color: var(--chip-selected-bg);
+    border-color: var(--fg);
+  }
+  .chip-selected svg,
+  .chip[aria-pressed="true"] svg { color: var(--fg); }
+  .chip:is(:disabled, [aria-disabled="true"]) { opacity: 0.4; cursor: not-allowed; }
+  .chip:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--ring-offset), 0 0 0 4px var(--ring);
+  }
+
+  .badge,
+  .badge-neutral,
+  .badge-solid,
+  .badge-success,
+  .badge-warning,
+  .badge-danger,
+  .badge-info {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 24px;
+    padding: 0 10px;
+    border: 1px solid transparent;
+    border-radius: 9999px;
+    font-size: 12px;
+    line-height: 1;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .badge svg { width: 0.75rem; height: 0.75rem; flex: none; }
+  .badge-neutral { background-color: var(--neutral-bg); color: var(--neutral-fg); border-color: var(--neutral-border); }
+  .badge-solid   { background-color: var(--btn-primary-bg); color: var(--btn-primary-fg); }
+  .badge-success { background-color: var(--ok-bg);   color: var(--ok-fg);   border-color: var(--ok-border); }
+  .badge-warning { background-color: var(--warn-bg); color: var(--warn-fg); border-color: var(--warn-border); }
+  .badge-danger  { background-color: var(--bad-bg);  color: var(--bad-fg);  border-color: var(--bad-border); }
+  .badge-info    { background-color: var(--info-bg); color: var(--info-fg); border-color: var(--info-border); }
+
+  /* status dot (prohibited / restricted / active) */
+  .status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 9999px;
+    background-color: var(--fg-subtle);
+  }
+
+  .eyebrow {
+    font-size: 11px;
+    line-height: 16px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-subtle);
+  }
+
+  /* ──────────────────────────────────────────────────────────────────
+     SURFACES: card, tile, section-card, composer
+     ────────────────────────────────────────────────────────────────── */
   .card {
-    @apply bg-white rounded-2xl border border-slate-200 shadow-sm;
+    background-color: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    box-shadow: var(--shadow-card);
+    color: var(--fg);
   }
+
+  .tile {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    aspect-ratio: 1.15 / 1;
+    border-radius: 20px;
+    background-color: var(--tile-bg);
+    overflow: hidden;
+    transition: background-color 150ms ease-out;
+  }
+  a:hover > .tile,
+  button:hover > .tile,
+  .tile:hover { background-color: var(--tile-hover-bg); }
+
+  .composer {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid var(--composer-border);
+    border-radius: 24px;
+    background-color: var(--composer-bg);
+    box-shadow: var(--shadow-composer);
+    color: var(--fg);
+    -webkit-backdrop-filter: var(--glass-filter);
+    backdrop-filter: var(--glass-filter);
+    transition: border-color 150ms ease-out, box-shadow 150ms ease-out;
+  }
+  .composer:focus-within {
+    border-color: var(--ring);
+    box-shadow: var(--shadow-composer), 0 0 0 3px color-mix(in srgb, var(--ring) 22%, transparent);
+  }
+  .composer-textarea {
+    display: block;
+    width: 100%;
+    padding: 4px 6px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--fg);
+    font: inherit;
+    font-size: 15px;
+    line-height: 24px;
+    resize: none;
+    outline: none;
+    box-shadow: none;
+  }
+  .composer-textarea:focus-visible { outline: none; }
+  .composer-tile {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 40px;
+    padding: 0 12px;
+    border-radius: 16px;
+    background-color: var(--composer-tile-bg);
+    color: var(--fg-muted);
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .composer-send {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 36px;
+    height: 36px;
+    border: 0;
+    border-radius: 9999px;
+    background-color: var(--btn-primary-bg);
+    color: var(--btn-primary-fg);
+    cursor: pointer;
+    transition: background-color 150ms ease-out, opacity 150ms ease-out, transform 150ms ease-out;
+  }
+  .composer-send svg { width: 1rem; height: 1rem; }
+  .composer-send:hover:where(:not(:disabled)) { background-color: var(--btn-primary-hover); }
+  .composer-send:active:where(:not(:disabled)) { transform: scale(0.96); }
+  .composer-send:disabled { opacity: 0.3; cursor: not-allowed; }
+  .composer-send:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--ring-offset), 0 0 0 4px var(--ring);
+  }
+  @media (pointer: coarse) {
+    .composer-send { width: 40px; height: 40px; }
+  }
+
+  /* ──────────────────────────────────────────────────────────────────
+     FORM CONTROLS
+     ────────────────────────────────────────────────────────────────── */
   .input-base {
-    @apply w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder-slate-400 bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500/40 focus:border-cyan-400 transition-all duration-150;
+    width: 100%;
+    padding: 9px 14px;
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    background-color: var(--input-bg);
+    color: var(--fg);
+    font-size: 14px;
+    line-height: 20px;
+    outline: none;
+    transition: border-color 150ms ease-out, box-shadow 150ms ease-out, background-color 150ms ease-out;
   }
+  .input-base::placeholder { color: var(--placeholder); opacity: 1; }
+  .input-base:hover:where(:not(:disabled, :focus)) { border-color: var(--fg-subtle); }
+  .input-base:focus,
+  .input-base:focus-visible {
+    outline: none;
+    border-color: var(--ring);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 25%, transparent);
+  }
+  .input-base[aria-invalid="true"] {
+    border-color: var(--bad-fg);
+  }
+  .input-base[aria-invalid="true"]:focus {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad-fg) 22%, transparent);
+  }
+  .input-base:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    background-color: var(--bg-muted);
+  }
+  .input-pill { border-radius: 9999px; padding-left: 16px; padding-right: 16px; }
+
+  /* small status tag (kept as a class: used with colour utilities) */
   .tag {
-    @apply text-xs font-medium px-2.5 py-1 rounded-lg border;
+    font-size: 0.75rem;
+    line-height: 1rem;
+    font-weight: 500;
+    padding: 0.25rem 0.625rem;
+    border: 1px solid var(--neutral-border);
+    border-radius: 9999px;
+    background-color: var(--neutral-bg);
+    color: var(--neutral-fg);
   }
 }
 
@@ -147,10 +805,10 @@
    section is being viewed/edited (focus-within). No JS/prop needed. */
 .section-card {
   position: relative;
-  border-radius: 14px;
-  border: 1px solid #e6ebf1;
-  background: #ffffff;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.03);
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-card);
   transition: box-shadow 0.25s ease, border-color 0.25s ease, transform 0.25s ease;
 }
 .section-card::before {
@@ -164,8 +822,8 @@
   transition: opacity 0.25s ease;
 }
 .section-card:hover {
-  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.07), 0 2px 4px rgba(15, 23, 42, 0.04);
-  border-color: #d7e0ea;
+  box-shadow: 0 4px 14px rgba(10, 10, 10, 0.07), 0 2px 4px rgba(10, 10, 10, 0.04);
+  border-color: var(--border-strong);
 }
 .section-card:focus-within {
   border-color: #a5e8f5;
@@ -173,11 +831,9 @@
 }
 .section-card:focus-within::before { opacity: 1; }
 
-/* Subtle "paper" backdrop for the editor scroll area (warmer than flat slate) */
+/* Editor scroll-area backdrop: plain ink-50 (redesign F1; was a tinted gradient) */
 .editor-canvas {
-  background:
-    radial-gradient(1200px 400px at 50% -10%, rgba(8, 145, 178, 0.04), transparent 70%),
-    #f6f8fb;
+  background: var(--canvas);
 }
 
 /* Sidebar active-item indicator bar */
@@ -195,11 +851,9 @@
   background: linear-gradient(to bottom, #22d3ee, #0891b2);
 }
 
-/* App wizard canvas — a whisper of depth vs. flat slate-50 */
+/* App canvas: plain ink-50 (redesign F1; was a tinted gradient) */
 .app-canvas {
-  background:
-    radial-gradient(900px 380px at 50% -5%, rgba(8, 145, 178, 0.05), transparent 65%),
-    #f6f8fb;
+  background: var(--canvas);
 }
 
 /* Step connector animation */
@@ -400,4 +1054,13 @@
   .text-gradient { animation: none; }
   .lift:hover, .card-lift:hover { transform: none; }
   .tilt-3d, .tilt-3d:hover { transform: none; }
+  /* design-system: no press-scale / pop-in under reduced motion */
+  :is(.btn, .btn-primary, .btn-secondary, .btn-ghost, .btn-danger, .btn-accent):active,
+  .composer-send:active { transform: none !important; }
+  /* A loading spinner is essential feedback, not decoration: keep it turning,
+     but slowly (the blanket rule above would otherwise freeze it). */
+  .ui-spinner {
+    animation-duration: 1.6s !important;
+    animation-iteration-count: infinite !important;
+  }
 }

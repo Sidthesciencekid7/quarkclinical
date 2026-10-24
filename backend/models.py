@@ -1,6 +1,7 @@
 import enum
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     ARRAY,
@@ -11,11 +12,14 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -836,3 +840,293 @@ class BudgetLineItem(Base):
     )
 
     category: Mapped["BudgetCategory"] = relationship("BudgetCategory", back_populates="line_items")
+
+
+# ---------------------------------------------------------------------------
+# Chat sessions + LLM spend ledger (migration 011)
+#
+# Every enum below is native_enum=False + create_constraint=True: a plain
+# VARCHAR plus a CHECK constraint (named after the enum), never a Postgres
+# CREATE TYPE (see 004/009 for why native enums are avoided in this project).
+# Unlike the older tables, these DO carry the CHECK, so an out-of-range value
+# is rejected by the database itself. Every table carries a plain `org_id`
+# string (the org slug, never an FK to organizations) so it is ready for
+# row-level security later.
+# ---------------------------------------------------------------------------
+
+class ChatSessionKind(str, enum.Enum):
+    protocol = "protocol"
+    budget = "budget"
+    protocol_edit = "protocol_edit"
+
+
+class ChatSessionStatus(str, enum.Enum):
+    active = "active"
+    completed = "completed"
+    archived = "archived"
+
+
+class ChatMessageRole(str, enum.Enum):
+    user = "user"
+    assistant = "assistant"
+    tool_results = "tool_results"
+    ui_action = "ui_action"
+    system_note = "system_note"
+
+
+class ChatCardStatus(str, enum.Enum):
+    active = "active"
+    superseded = "superseded"
+    done = "done"
+    error = "error"
+
+
+class EditProposalKind(str, enum.Enum):
+    prose = "prose"
+    engine = "engine"
+
+
+class EditProposalStatus(str, enum.Enum):
+    proposed = "proposed"
+    generating = "generating"
+    ready = "ready"
+    applied = "applied"
+    discarded = "discarded"
+    failed = "failed"
+    stale = "stale"
+
+
+class LlmFeature(str, enum.Enum):
+    chat = "chat"
+    protocol_generation = "protocol_generation"
+    section_regen = "section_regen"
+    csr_narrative = "csr_narrative"
+    pk_extraction = "pk_extraction"
+
+
+class ChatSession(Base):
+    """One conversation (protocol set-up, budget set-up, or a protocol edit).
+
+    The server owns the draft: `spec` is the structured draft spec and
+    `spec_version` bumps on every change, so a card click made against a stale
+    spec can be rejected (409). Transcripts are visible only to the creator
+    (`created_by`); the org check still applies on top. `turn_lock_id` /
+    `turn_lock_at` give one active AI turn per session across workers.
+    """
+    __tablename__ = "chat_sessions"
+    __table_args__ = (
+        Index("ix_chat_sessions_created_by_last_activity", "created_by", "last_activity_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    kind: Mapped[ChatSessionKind] = mapped_column(
+        Enum(ChatSessionKind, name="chat_session_kind", native_enum=False, length=20,
+             create_constraint=True),
+        nullable=False,
+    )
+    status: Mapped[ChatSessionStatus] = mapped_column(
+        Enum(ChatSessionStatus, name="chat_session_status", native_enum=False, length=20,
+             create_constraint=True),
+        nullable=False, default=ChatSessionStatus.active, server_default="active",
+    )
+    title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    spec: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    spec_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # ondelete=SET NULL on both: a chat is a conversation record with its own
+    # life; deleting the protocol/budget it produced must not delete the chat.
+    protocol_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("protocols.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    budget_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("budgets.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    turn_lock_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    turn_lock_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    last_activity_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ChatMessage(Base):
+    """One append-only entry in a chat's history.
+
+    `api_content` holds the EXACT Anthropic content blocks (thinking and
+    tool_use included) and is replayed verbatim on later turns - it must never
+    be edited after it is written. `display` is the UI projection
+    (`{text, card_ids, flags}`). Nullable `api_content` is for roles that never
+    reach the model (ui_action, system_note). `created_by` is NULL for
+    assistant/tool_results rows.
+    """
+    __tablename__ = "chat_messages"
+    __table_args__ = (
+        UniqueConstraint("session_id", "seq", name="uq_chat_messages_session_seq"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    role: Mapped[ChatMessageRole] = mapped_column(
+        Enum(ChatMessageRole, name="chat_message_role", native_enum=False, length=20,
+             create_constraint=True),
+        nullable=False,
+    )
+    api_content: Mapped[list | dict | None] = mapped_column(JSONB, nullable=True)
+    display: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    usage: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stop_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ChatCard(Base):
+    """A structured UI card (drug matches, design decisions, confirm cards...).
+
+    Mutable on purpose: a card can become `superseded` / `done` without ever
+    touching the model's append-only history in chat_messages. `message_id` is
+    the assistant message that produced it (NULL for cards created by a
+    deterministic card action).
+    """
+    __tablename__ = "chat_cards"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    type: Mapped[str] = mapped_column(String(48), nullable=False)
+    status: Mapped[ChatCardStatus] = mapped_column(
+        Enum(ChatCardStatus, name="chat_card_status", native_enum=False, length=16,
+             create_constraint=True),
+        nullable=False, default=ChatCardStatus.active, server_default="active",
+    )
+    data: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    spec_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class ProtocolEditProposal(Base):
+    """A pending change to a finished protocol, proposed by an edit chat.
+
+    Nothing touches the protocol until the proposal is applied: `proposed_*`
+    hold the candidate result, `base_version` is the protocol version it was
+    computed against (apply is refused as `stale` if the protocol has moved
+    on), and `applied_version` records the version the apply produced.
+    """
+    __tablename__ = "protocol_edit_proposals"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    protocol_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("protocols.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    kind: Mapped[EditProposalKind] = mapped_column(
+        Enum(EditProposalKind, name="edit_proposal_kind", native_enum=False, length=16,
+             create_constraint=True),
+        nullable=False,
+    )
+    status: Mapped[EditProposalStatus] = mapped_column(
+        Enum(EditProposalStatus, name="edit_proposal_status", native_enum=False, length=20,
+             create_constraint=True),
+        nullable=False, default=EditProposalStatus.proposed, server_default="proposed",
+    )
+    base_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    request: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    proposed_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    proposed_sections: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    change_detail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    applied_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class LlmUsage(Base):
+    """Append-only LLM spend ledger: one row per model call.
+
+    Written by services/llm/usage.record_usage on its own session so a ledger
+    failure can never break (or be rolled back with) the request that made the
+    call. `user_id` is deliberately NOT an FK: a ledger row must never fail to
+    insert for a relational reason, and it can be NULL for system-initiated
+    calls. `cost_usd` is computed from services/llm/pricing at write time from
+    the token counts, which are stored alongside so it can be recomputed if a
+    price changes.
+    """
+    __tablename__ = "llm_usage"
+    __table_args__ = (
+        Index("ix_llm_usage_org_id_created_at", "org_id", "created_at"),
+        Index("ix_llm_usage_user_id_created_at", "user_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    feature: Mapped[LlmFeature] = mapped_column(
+        Enum(LlmFeature, name="llm_feature", native_enum=False, length=32,
+             create_constraint=True),
+        nullable=False,
+    )
+    resource_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    resource_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    cache_creation_input_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    cache_read_input_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    cost_usd: Mapped[Decimal] = mapped_column(
+        Numeric(12, 6), nullable=False, default=Decimal("0"), server_default="0"
+    )
+    request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

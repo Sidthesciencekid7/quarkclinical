@@ -18,13 +18,15 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select
+from pydantic import BaseModel
+from sqlalchemy import Text, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import require_user
@@ -35,10 +37,10 @@ from dependencies import (
     get_protocol_scoped,
     get_study_report_scoped,
 )
-from models import Protocol, StudyReport, StudyReportVersion, UserRole
+from models import Drug, Protocol, StudyReport, StudyReportVersion, StudyType, UserRole
 from routers.protocols import _generate_synchronously, _require_role
 from schemas import StudyReportCreate, StudyReportRead, StudyReportSummary
-from routers.export import _content_disposition
+from routers.export import _content_disposition, _strip_html
 from services.csr_export import build_csr_docx, build_csr_pdf
 from services.csr_pipeline import build_csr_context, generate_csr_narrative
 from services.csr_qc import run_csr_qc
@@ -54,6 +56,32 @@ from services.dataset_ingest import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["study-reports"], dependencies=[Depends(audit_logger)])
+
+
+class StudyReportListItem(BaseModel):
+    """One row of the org-wide study-report list (GET /api/study-reports): the
+    report's own status plus the parent protocol's title and drug INN, so the
+    UI can render and open a CSR without a second fetch. No result/section
+    payloads."""
+    id: uuid.UUID
+    protocol_id: uuid.UUID
+    protocol_title: str
+    drug_inn: str
+    study_type: StudyType
+    input_kind: str
+    version: int
+    generation_status: str
+    has_results: bool = False
+    verdict: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+def _plain_title(raw: Optional[str], *, limit: int = 300) -> str:
+    """A protocol's title section (TipTap HTML) as one trimmed plain-text line."""
+    if not raw:
+        return ""
+    return re.sub(r"\s+", " ", _strip_html(raw)).strip()[:limit]
 
 
 def _design_of(protocol) -> tuple[str, bool]:
@@ -124,6 +152,71 @@ async def download_template(kind: str, fmt: str = "csv"):
 # ---------------------------------------------------------------------------
 # Create / read / list
 # ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/study-reports",
+    response_model=list[StudyReportListItem],
+    dependencies=[Depends(require_user)],
+)
+@router.get(
+    "/study-reports/",
+    response_model=list[StudyReportListItem],
+    dependencies=[Depends(require_user)],
+    include_in_schema=False,
+)
+async def list_all_study_reports(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """List every study report in the caller's organization, newest first,
+    joined with each parent protocol's title and drug INN.
+
+    Org-scoped on the report's own (denormalised) org_id from the verified
+    actor, never a client filter. Selects only scalar columns - the big
+    results/sections JSONB blobs are never loaded; ``verdict``, ``has_results``
+    and the protocol title are read straight out of the JSONB in SQL. Both
+    spellings (with/without trailing slash) are registered so a cross-origin
+    fetch is never answered with a redirect.
+    """
+    actor = await _authenticate_actor(request, db)
+    result = await db.execute(
+        select(
+            StudyReport.id,
+            StudyReport.protocol_id,
+            StudyReport.input_kind,
+            StudyReport.version,
+            StudyReport.generation_status,
+            StudyReport.created_at,
+            StudyReport.updated_at,
+            StudyReport.results["verdict"].astext.label("verdict"),
+            (~cast(StudyReport.results, Text).in_(("{}", "null"))).label("has_results"),
+            Protocol.study_type,
+            Protocol.sections["title"].astext.label("title_raw"),
+            Drug.inn.label("drug_inn"),
+        )
+        .join(Protocol, Protocol.id == StudyReport.protocol_id)
+        .join(Drug, Drug.id == Protocol.drug_id)
+        .where(StudyReport.org_id == actor.org_id)
+        .order_by(StudyReport.created_at.desc())
+    )
+    return [
+        StudyReportListItem(
+            id=row.id,
+            protocol_id=row.protocol_id,
+            protocol_title=_plain_title(row.title_raw) or row.drug_inn.title(),
+            drug_inn=row.drug_inn,
+            study_type=row.study_type,
+            input_kind=row.input_kind,
+            version=row.version,
+            generation_status=row.generation_status,
+            has_results=bool(row.has_results),
+            verdict=row.verdict,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+        for row in result.all()
+    ]
 
 
 @router.post(

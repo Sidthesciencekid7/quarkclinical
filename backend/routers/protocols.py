@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+import database as _database
 from database import AsyncSessionLocal, get_db
 from dependencies import (
     audit_logger,
@@ -47,6 +48,7 @@ from schemas import (
     ESignRequest,
     ESignResponse,
     ProtocolCreate,
+    DdiPreviewRequest,
     DesignPreviewRequest,
     IndicationPreviewRequest,
     ProtocolRead,
@@ -1340,12 +1342,16 @@ def _strip_html_simple(html: str) -> str:
     )
 
 
-def _diff_sections(
+def diff_sections(
     old_sections: dict[str, Any],
     new_sections: dict[str, Any],
     from_version: int,
     to_version: int,
 ) -> list[SectionDiff]:
+    """Section-by-section diff (plain text, HTML stripped) in SECTION_ORDER.
+
+    Public so the chat edit-proposal service can reuse exactly the diff the
+    version-compare route renders. ``_diff_sections`` is kept as an alias."""
     result: list[SectionDiff] = []
     for name in SECTION_ORDER:
         old_html = old_sections.get(name, "")
@@ -1391,6 +1397,55 @@ def _diff_sections(
             )
         )
     return result
+
+
+# Backwards-compatible private alias (the name this function had before it was
+# made public); existing importers keep working.
+_diff_sections = diff_sections
+
+
+# Protocol statuses that LOCK a protocol against content edits. Real
+# ProtocolStatus values are draft / review / approved. Only `approved` is ever
+# set by the code (POST /{id}/sign freezes the signed state and its SHA-256
+# hash), so it is the one locked status. `review` is never assigned anywhere in
+# the codebase and no route treats it as read-only, so it stays editable, like
+# `draft`.
+_LOCKED_PROTOCOL_STATUSES: frozenset[ProtocolStatus] = frozenset({ProtocolStatus.approved})
+
+
+def require_protocol_editable(protocol: Protocol) -> None:
+    """Raise 409 when the protocol is signed/approved: its content is frozen
+    (21 CFR Part 11 — the e-signature binds to an exact document state), so
+    neither a manual save nor an AI section regeneration may change it. To
+    change a signed protocol, clone it into a new draft."""
+    if protocol.status in _LOCKED_PROTOCOL_STATUSES:
+        raise HTTPException(
+            409,
+            detail=(
+                f"This protocol is signed (status '{protocol.status.value}') and locked: "
+                "its sections can no longer be edited or regenerated. "
+                "Clone it to start a new draft and make your changes there."
+            ),
+        )
+
+
+def study_type_gate_detail(drug_inn: str, study_type: str) -> str | None:
+    """The 422 message for a study type the drug's modality cannot run, or None
+    when the study type is allowed (or the drug cannot be classified, in which
+    case nothing is restricted). Single source of the wording for both the
+    protocol-creation gate and the budget-creation gate."""
+    permitted = allowed_study_types(drug_inn)
+    if permitted is None or study_type in permitted:
+        return None
+    if permitted == ("biosimilar_pk",):
+        return (
+            f"'{drug_inn}' is a biologic and cannot run a '{study_type}' study; "
+            f"allowed study type(s): {', '.join(permitted)}."
+        )
+    return (
+        f"'{drug_inn}' is a small-molecule product and cannot run a "
+        f"'{study_type}' study; allowed study type(s): {', '.join(permitted)}."
+    )
 
 
 def _require_role(actor: User, allowed: set[UserRole], *, action: str) -> None:
@@ -1451,22 +1506,33 @@ async def list_protocols(
     ]
 
 
-@router.post(
-    "/design-preview",
-    dependencies=[Depends(rate_limit(30, 60, scope="design_preview"))],
-)
-async def design_preview(
-    payload: DesignPreviewRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """Credit-free preview of the five study-design decisions for the 'Review
-    design' wizard step. Uses the deterministic sample-size engine (for the
-    parallel/crossover call) + stored PK half-life + the drug's real DailyMed
-    label (route/device/injection-site — free NIH API, no AI cost) with the
-    curated clinical knowledge base as fallback when the label can't be
-    fetched or doesn't state something explicitly. Open (like drug search): it
-    returns clinical suggestions for a public drug, no org data.
-    """
+async def _fetch_label_isolated(drug_inn: str) -> dict[str, str] | None:
+    """DailyMed label for ``drug_inn`` through LiteratureService on its OWN
+    short-lived session (``database.AsyncSessionLocal`` looked up at call time).
+
+    LiteratureService's cache-miss path commits the session it was given. The
+    preview facades are also called from places that hold their own session with
+    pending state (the chat actions endpoint / a streaming turn), and a commit on
+    THAT session mid-call would flush half-built rows and, for objects with
+    relationships, can end in sqlalchemy.exc.MissingGreenlet (the budget
+    precedent incident). A private session makes the facades side-effect free for
+    the caller. Looked up on the ``database`` module (not name-imported) so the
+    test fixture's patch of ``database.AsyncSessionLocal`` applies."""
+    async with _database.AsyncSessionLocal() as label_db:
+        return await _fetch_label_safe(LiteratureService(label_db), drug_inn)
+
+
+async def compute_design_preview(
+    db: AsyncSession, payload: DesignPreviewRequest
+) -> dict[str, Any]:
+    """Credit-free preview of the five study-design decisions (the body of
+    POST /design-preview). Raises HTTPException(404) for an unknown drug.
+
+    Uses the deterministic sample-size engine (for the parallel/crossover call),
+    stored PK half-life, and the drug's real DailyMed label (route/device/
+    injection-site: free NIH API, no AI cost) with the curated clinical
+    knowledge base as fallback when the label can't be fetched or doesn't state
+    something explicitly. Open data only: no org data is read."""
     drug = await db.get(Drug, payload.drug_id)
     if not drug:
         raise HTTPException(404, detail="Drug not found.")
@@ -1478,7 +1544,7 @@ async def design_preview(
 
     # Real label text grounds the route/device/site call — free NIH API, no AI
     # cost, and cached 7 days by LiteratureService so repeat previews are instant.
-    label = await _fetch_label_safe(LiteratureService(db), drug.inn)
+    label = await _fetch_label_isolated(drug.inn)
     label_text = " ".join(filter(None, [
         (label or {}).get("dosage_and_administration", ""),
         (label or {}).get("how_supplied", ""),
@@ -1512,6 +1578,104 @@ async def design_preview(
     }
 
 
+async def compute_indication_preview(
+    db: AsyncSession, payload: IndicationPreviewRequest
+) -> dict[str, Any]:
+    """Credit-free ranking of the reference product's licensed indications for a
+    patient biosimilar study (the body of POST /indication-preview), optionally
+    checked against the user's own indication (already sanitised by
+    IndicationPreviewRequest). Raises HTTPException(404) for an unknown drug."""
+    drug = await db.get(Drug, payload.drug_id)
+    if not drug:
+        raise HTTPException(404, detail="Drug not found.")
+    label = await _fetch_label_isolated(drug.inn)
+    return select_patient_population(
+        drug_inn=drug.inn,
+        study_type=payload.study_type.value,
+        subject_type="patient",
+        label=label,
+        meta_analysis=None,
+        user_indication=payload.user_indication,
+    )
+
+
+async def compute_ddi_preview(
+    db: AsyncSession, payload: DdiPreviewRequest
+) -> dict[str, Any]:
+    """Credit-free, drug-specific drug-drug-interaction screening (the body of
+    POST /ddi-preview). Raises HTTPException(404) for an unknown drug.
+
+    Runs the same ``screen_interactions`` engine, on the same inputs, that
+    protocol generation runs at step 5 of ``_augment_config_with_design``, so the
+    rows shown while the user builds the population are the rows the generated
+    protocol will carry:
+      * stored PK records (median half-life sets the post-dose restriction);
+      * the drug's DailyMed label via the shared safe fetch (own session, see
+        ``_fetch_label_isolated``), in the prompt-safe form generation uses;
+      * the study design key from ``recommend_sample_size(use_r=False)``, a
+        pure-Python call identical to design-preview's;
+      * healthy-volunteer vs patient from the supplied ``subject_type``, with the
+        engine's own population call adopted (upgrade-only) for biosimilar PK
+        studies as generation does;
+      * biologic modality from the INN classifier or a biosimilar PK study.
+    Returns the engine's dict (``drug_inn`` filled in when the biologic path
+    omits it), which is the shape the frontend's ``DdiScreeningResult`` type
+    describes."""
+    drug = await db.get(Drug, payload.drug_id)
+    if not drug:
+        raise HTTPException(404, detail="Drug not found.")
+
+    study_type = payload.study_type.value
+    pk_result = await db.execute(
+        select(PKParameterRecord).where(PKParameterRecord.drug_id == drug.id)
+    )
+    pk_params = pk_result.scalars().all()
+    t_half = _median_t_half(pk_params)
+
+    label = await _fetch_label_isolated(drug.inn)
+
+    cfg = dict(payload.population_config or {})
+    # Same upgrade-only population call generation makes when no reviewer
+    # decisions exist yet (biosimilar PK only; a no-op for BE / food effect).
+    _engine_decision_prestep(cfg, drug.inn, study_type)
+
+    rec = recommend_sample_size(
+        study_type=study_type,
+        drug_inn=drug.inn,
+        t_half_hours=t_half,
+        is_nti=cfg.get("is_nti"),
+        requested_design=cfg.get("design"),
+        use_r=False,
+    )
+    result = screen_interactions(
+        _prompt_safe_label(label),
+        _pk_records_to_dicts(pk_params),
+        drug.inn,
+        design_key=rec.design_key,
+        is_nti=cfg.get("is_nti"),
+        healthy_volunteers=str(cfg.get("subject_type") or "healthy").lower() != "patient",
+        is_biologic=classify_drug_modality(drug.inn) == "biologic" or study_type == "biosimilar_pk",
+    )
+    # The small-molecule path echoes drug_inn; the biologic path does not. Make
+    # the preview uniform so a client can always title the result.
+    result.setdefault("drug_inn", drug.inn)
+    return result
+
+
+@router.post(
+    "/design-preview",
+    dependencies=[Depends(rate_limit(30, 60, scope="design_preview"))],
+)
+async def design_preview(
+    payload: DesignPreviewRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Credit-free preview of the five study-design decisions for the 'Review
+    design' wizard step (see ``compute_design_preview``). Open (like drug
+    search): it returns clinical suggestions for a public drug, no org data."""
+    return await compute_design_preview(db, payload)
+
+
 @router.post(
     "/indication-preview",
     dependencies=[Depends(rate_limit(30, 60, scope="indication_preview"))],
@@ -1526,20 +1690,26 @@ async def indication_preview(
     monotherapy / PK-variability rules and, when the user typed their own
     indication, reports how it compares and what it costs in variability. Open
     (like design-preview): public drug data, no org data. The user's text passes
-    through a server-side sanitiser and is returned as data only.
-    """
-    drug = await db.get(Drug, payload.drug_id)
-    if not drug:
-        raise HTTPException(404, detail="Drug not found.")
-    label = await _fetch_label_safe(LiteratureService(db), drug.inn)
-    return select_patient_population(
-        drug_inn=drug.inn,
-        study_type=payload.study_type.value,
-        subject_type="patient",
-        label=label,
-        meta_analysis=None,
-        user_indication=payload.user_indication,
-    )
+    through a server-side sanitiser and is returned as data only. See
+    ``compute_indication_preview``."""
+    return await compute_indication_preview(db, payload)
+
+
+@router.post(
+    "/ddi-preview",
+    dependencies=[Depends(rate_limit(30, 60, scope="ddi_preview"))],
+)
+async def ddi_preview(
+    payload: DdiPreviewRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Credit-free, drug-specific concomitant-medication screening for the
+    Population step: which comedication classes are prohibited / restricted /
+    permitted for THIS drug (from its real DailyMed label and stored PK), so the
+    exclusion criteria are no longer the drug-agnostic defaults. Open (like
+    design-preview): public drug data, no org data. See ``compute_ddi_preview``.
+    Declared before every ``/{protocol_id}`` route so it is never shadowed."""
+    return await compute_ddi_preview(db, payload)
 
 
 # ---------------------------------------------------------------------------
@@ -1775,6 +1945,23 @@ async def _run_generation_pipeline(
     return sections, augmented_config, change_detail
 
 
+def _merge_provenance(
+    change_detail: dict[str, Any], provenance: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Merge caller-supplied input provenance (e.g. ``{"source": "chat",
+    "chat_session_id": ..., "spec_version": ..., "field_provenance": {...}}``)
+    into the INITIAL snapshot's change_detail, so a Part 11 reviewer can see how
+    each input was set. The pipeline's own keys (generated_sections, ai_*) always
+    win on a name clash — provenance can add to the audit record but never
+    overwrite what the pipeline recorded. Round-tripped through JSON (non-JSON
+    values such as UUIDs become strings) so a careless caller cannot break the
+    JSONB write."""
+    if not provenance:
+        return change_detail
+    safe = json.loads(json.dumps(provenance, default=str))
+    return {**safe, **change_detail}
+
+
 # Strong refs to in-flight background generation tasks — without this the event
 # loop can garbage-collect a still-running task (asyncio only holds weak refs).
 _GENERATION_TASKS: set[asyncio.Task] = set()
@@ -1810,11 +1997,15 @@ async def _generation_task(
     guideline_version: str,
     population_config: dict[str, Any],
     design_decisions: list[dict[str, Any]],
+    provenance: dict[str, Any] | None = None,
 ) -> None:
     """Background worker: run the pipeline against a NEW DB session (the
     request's session is long closed) and write the result onto the existing
     'generating' row. Never raises — a fatal/empty outcome or any unexpected
-    error is recorded as generation_status='failed' so the client's poll ends."""
+    error is recorded as generation_status='failed' so the client's poll ends.
+
+    ``provenance`` (how the inputs were collected, e.g. a chat session) is merged
+    into the INITIAL snapshot's change_detail — see _merge_provenance."""
     try:
         async with AsyncSessionLocal() as session:
             drug = await session.get(Drug, drug_id)
@@ -1844,7 +2035,7 @@ async def _generation_task(
                 sections=sections,
                 changed_by=actor_id,
                 change_type="INITIAL",
-                change_detail=change_detail,
+                change_detail=_merge_provenance(change_detail, provenance),
             )
             await session.commit()
     except HTTPException as exc:
@@ -1858,25 +2049,23 @@ async def _generation_task(
         )
 
 
-@router.post("/", response_model=ProtocolRead, status_code=201, dependencies=[Depends(require_user)])
-async def create_protocol(
-    payload: ProtocolCreate,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-):
-    """Start a protocol generation: literature -> PK -> design -> sections.
+async def validate_protocol_request(
+    db: AsyncSession, actor: User, payload: ProtocolCreate
+) -> Drug:
+    """The gates a protocol-generation request must pass, in the order (and with
+    the exact status codes and messages) the creation route has always applied:
 
-    Only the 'generator' (Author) role may draft a new protocol (separation of
-    duties: the eventual approver should not also be the drafter), and the org's
-    license must be active.
+      1. role: only the 'generator' (Author) role may draft a new protocol
+         (separation of duties: the eventual approver should not also be the
+         drafter) -> 403;
+      2. the org's license must be active -> 402;
+      3. the guideline version must be supported -> 422;
+      4. the drug must exist -> 404;
+      5. the biologic / small-molecule study-type gate: a biologic may only run
+         a biosimilar PK study, a small molecule only BE / food effect -> 422.
 
-    Real generation runs for minutes, so in production it runs in a BACKGROUND
-    task: this returns a ``generation_status="generating"`` protocol immediately
-    and the client polls GET /protocols/{id} until it flips to "complete" (open
-    the editor) or "failed" (show generation_error). Under pytest it runs
-    synchronously and returns the finished protocol, matching the mocked suite.
-    """
-    actor = await _authenticate_actor(request, db)
+    Returns the resolved Drug. Shared by POST /api/protocols/ and the chat
+    generate action so both enforce identical gates."""
     _require_role(actor, {UserRole.generator}, action="create protocols")
     await require_active_license(db, actor)
 
@@ -1893,18 +2082,35 @@ async def create_protocol(
     if not drug:
         raise HTTPException(404, detail="Drug not found.")
 
-    permitted = allowed_study_types(drug.inn)
-    if permitted is not None and payload.study_type.value not in permitted:
-        raise HTTPException(
-            422,
-            detail=(
-                f"'{drug.inn}' is a biologic and cannot run a '{payload.study_type.value}' study; "
-                f"allowed study type(s): {', '.join(permitted)}."
-                if permitted == ("biosimilar_pk",) else
-                f"'{drug.inn}' is a small-molecule product and cannot run a "
-                f"'{payload.study_type.value}' study; allowed study type(s): {', '.join(permitted)}."
-            ),
-        )
+    gate_detail = study_type_gate_detail(drug.inn, payload.study_type.value)
+    if gate_detail is not None:
+        raise HTTPException(422, detail=gate_detail)
+    return drug
+
+
+async def start_protocol_generation(
+    db: AsyncSession,
+    request: Request | None,
+    actor: User,
+    payload: ProtocolCreate,
+    *,
+    provenance: dict[str, Any] | None = None,
+) -> Protocol:
+    """Validate the request (``validate_protocol_request``) and start a protocol
+    generation: literature -> PK -> design -> sections.
+
+    Real generation runs for minutes, so in production it runs in a BACKGROUND
+    task: this returns a ``generation_status="generating"`` protocol immediately
+    and the client polls GET /protocols/{id} until it flips to "complete" (open
+    the editor) or "failed" (show generation_error). Under pytest it runs
+    synchronously and returns the finished protocol, matching the mocked suite.
+
+    ``provenance``, when given, is merged into the INITIAL version snapshot's
+    change_detail on both paths (see ``_merge_provenance``). ``request`` is only
+    used to hand the audit logger the new protocol's id; pass None when there is
+    no HTTP request to annotate.
+    """
+    drug = await validate_protocol_request(db, actor, payload)
 
     # ---- Synchronous path (pytest): generate inline, return the finished row.
     if _generate_synchronously():
@@ -1938,7 +2144,8 @@ async def create_protocol(
         await db.flush()
         # Creation has no id in the URL for audit_logger's path parser to find —
         # hand it the real id now that one exists (see dependencies.py::audit_logger).
-        request.state.audit_resource_id = str(protocol.id)
+        if request is not None:
+            request.state.audit_resource_id = str(protocol.id)
         _snapshot(
             db,
             protocol_id=protocol.id,
@@ -1946,7 +2153,7 @@ async def create_protocol(
             sections=sections,
             changed_by=actor.id,
             change_type="INITIAL",
-            change_detail=change_detail,
+            change_detail=_merge_provenance(change_detail, provenance),
         )
         await db.commit()
         await db.refresh(protocol)
@@ -1968,7 +2175,8 @@ async def create_protocol(
     )
     db.add(protocol)
     await db.flush()
-    request.state.audit_resource_id = str(protocol.id)
+    if request is not None:
+        request.state.audit_resource_id = str(protocol.id)
     await db.commit()
     await db.refresh(protocol)
 
@@ -1981,8 +2189,27 @@ async def create_protocol(
         guideline_version=payload.guideline_version,
         population_config=payload.population_config,
         design_decisions=payload.design_decisions,
+        provenance=provenance,
     )
     return protocol
+
+
+@router.post("/", response_model=ProtocolRead, status_code=201, dependencies=[Depends(require_user)])
+async def create_protocol(
+    payload: ProtocolCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Start a protocol generation: literature -> PK -> design -> sections.
+
+    Thin wrapper: authenticates the actor, then ``start_protocol_generation``
+    enforces the gates (Author role, active license, supported guideline, drug
+    exists, biologic / small-molecule study-type gate) and runs the generation
+    (inline under pytest; a background task otherwise, with the client polling
+    GET /protocols/{id} for generation_status).
+    """
+    actor = await _authenticate_actor(request, db)
+    return await start_protocol_generation(db, request, actor, payload)
 
 
 @router.post(
@@ -2072,7 +2299,12 @@ async def get_protocol(
     db: AsyncSession = Depends(get_db),
 ):
     actor = await _authenticate_actor(request, db)
-    return await get_protocol_scoped(db, protocol_id, actor)
+    protocol = await get_protocol_scoped(db, protocol_id, actor, load_drug=True)
+    out = ProtocolRead.model_validate(protocol)
+    if protocol.drug is not None:
+        out.drug_inn = protocol.drug.inn
+        out.drug_brand_names = list(protocol.drug.brand_names or [])
+    return out
 
 
 @router.get("/{protocol_id}/qc", dependencies=[Depends(require_user)])
@@ -2139,6 +2371,8 @@ async def regen_section(
         raise HTTPException(422, detail=f"Unknown section '{section_name}'.")
 
     protocol = await get_protocol_scoped(db, protocol_id, actor, load_drug=True)
+    # Signed/approved protocols are frozen: refuse BEFORE any AI credit is spent.
+    require_protocol_editable(protocol)
 
     pk_result = await db.execute(
         select(PKParameterRecord).where(PKParameterRecord.drug_id == protocol.drug_id)
@@ -2224,6 +2458,8 @@ async def save_section_edit(
         raise HTTPException(422, detail=f"Unknown section '{section_name}'.")
 
     protocol = await get_protocol_scoped(db, protocol_id, actor)
+    # Signed/approved protocols are frozen (the e-signature binds to exact content).
+    require_protocol_editable(protocol)
 
     old_text: str = protocol.sections.get(section_name, "")
     new_version = protocol.version + 1
@@ -2365,7 +2601,7 @@ async def diff_protocol_versions(
     if not new_pv:
         raise HTTPException(404, detail=f"Version {to_version} not found.")
 
-    sections = _diff_sections(old_sections, new_pv.sections, from_version, to_version)
+    sections = diff_sections(old_sections, new_pv.sections, from_version, to_version)
     changed = sum(1 for s in sections if s.status != "unchanged")
 
     return VersionDiffResult(

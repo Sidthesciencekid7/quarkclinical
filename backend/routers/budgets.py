@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import io
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -59,9 +60,12 @@ from models import (
     BudgetLineItem,
     BudgetLineSource,
     BudgetSubjectProfile,
+    Protocol,
     StudyType,
+    User,
 )
 from routers.export import _content_disposition, _DOCX_MEDIA_TYPE
+from routers.protocols import study_type_gate_detail
 from schemas import (
     BudgetCategoryCreate,
     BudgetCategoryRead,
@@ -270,13 +274,36 @@ async def list_budgets(request: Request, db: AsyncSession = Depends(get_db)):
     return out
 
 
-@router.post("", response_model=BudgetRead, status_code=201, dependencies=[Depends(require_user)])
-async def create_budget(
-    payload: BudgetCreate, request: Request, db: AsyncSession = Depends(get_db),
-):
-    actor = await _authenticate_actor(request, db)
+@dataclass(frozen=True)
+class ValidatedBudgetCreate:
+    """What ``validate_budget_create`` resolved from a BudgetCreate payload: the
+    linked protocol (org-scoped, drug loaded) if any, plus the drug name, study
+    type and budget name the budget will actually be created with."""
+    protocol: Protocol | None
+    drug_inn: str | None
+    study_type: str | None
+    name: str
 
-    protocol = None
+
+async def validate_budget_create(
+    db: AsyncSession, actor: User, payload: BudgetCreate,
+) -> ValidatedBudgetCreate:
+    """Every check POST /api/budgets applies before anything is written, in the
+    order (and with the status codes / messages) the route has always used:
+
+      1. a linked protocol must exist (404) and belong to the actor's org (403);
+      2. study_type, when given, must be a known study type (422);
+      3. NEW: a study type the drug's modality cannot run is rejected (422),
+         with the same wording as the protocol-creation gate. A biologic may
+         only run biosimilar_pk; a small molecule BE / food_effect. Applies only
+         when study_type is EXPLICITLY given and the drug is classifiable —
+         budgets accept free-text drug names, so an unknown drug or an omitted
+         study type is never rejected;
+      4. subject_profile / geography_profile / numeric ranges (422);
+      5. a budget needs a name or a drug name to derive one from (422).
+
+    No role or license check, deliberately (see the module docstring)."""
+    protocol: Protocol | None = None
     if payload.protocol_id:
         # 404 unknown / 403 other org — you cannot link another org's protocol.
         protocol = await get_protocol_scoped(db, payload.protocol_id, actor, load_drug=True)
@@ -295,6 +322,10 @@ async def create_budget(
             detail=f"Unknown study_type '{study_type}'. Expected one of: "
                    + ", ".join(st.value for st in StudyType),
         )
+    if study_type is not None and drug_inn:
+        gate_detail = study_type_gate_detail(drug_inn, study_type)
+        if gate_detail is not None:
+            raise HTTPException(422, detail=gate_detail)
     if study_type is None and protocol is not None and protocol.study_type:
         study_type = protocol.study_type.value
 
@@ -321,6 +352,25 @@ async def create_budget(
                        "name on its own is enough to generate a complete budget.",
             )
         name = f"{drug_inn.strip().title()} study budget"
+
+    return ValidatedBudgetCreate(
+        protocol=protocol, drug_inn=drug_inn, study_type=study_type, name=name,
+    )
+
+
+async def create_budget_for_actor(
+    db: AsyncSession, request: Request | None, actor: User, payload: BudgetCreate,
+) -> BudgetRead:
+    """Validate (``validate_budget_create``), then create, seed, auto-populate
+    and price a budget for ``actor``'s org, returning the full BudgetRead with
+    its server-computed rollup. The body of POST /api/budgets, shared with the
+    chat create-budget action. ``request`` is only used to hand the audit
+    logger the new budget's id; pass None when there is no HTTP request.
+
+    The ClinicalTrials.gov precedent lookup runs in its OWN session (see
+    ``_fetch_budget_trial_precedent_safe``) — never this ``db``."""
+    ctx = await validate_budget_create(db, actor, payload)
+    protocol, drug_inn, study_type, name = ctx.protocol, ctx.drug_inn, ctx.study_type, ctx.name
 
     # org_id comes from the VERIFIED actor, never from the request body — a
     # client-supplied org_id would let any actor file a budget under an org
@@ -382,8 +432,17 @@ async def create_budget(
 
     await db.commit()
     budget = await get_budget_scoped(db, budget.id, actor, load_tree=True)
-    request.state.audit_resource_id = str(budget.id)
+    if request is not None:
+        request.state.audit_resource_id = str(budget.id)
     return _budget_read(budget)
+
+
+@router.post("", response_model=BudgetRead, status_code=201, dependencies=[Depends(require_user)])
+async def create_budget(
+    payload: BudgetCreate, request: Request, db: AsyncSession = Depends(get_db),
+):
+    actor = await _authenticate_actor(request, db)
+    return await create_budget_for_actor(db, request, actor, payload)
 
 
 # ===========================================================================
@@ -394,16 +453,12 @@ async def create_budget(
 # ===========================================================================
 
 
-@router.get(
-    "/profile-preview", response_model=BudgetProfilePreview, dependencies=[Depends(require_user)],
-)
-async def profile_preview(
-    drug_inn: str, request: Request, db: AsyncSession = Depends(get_db),
-):
-    """Cheap, read-only, no DB write, no AI call — powers the create-view
-    hint. Runs the exact same resolution/pricing auto_populate_budget would,
-    against a transient Budget that is never added to the session."""
-    actor = await _authenticate_actor(request, db)
+def compute_budget_profile_preview(actor: User, drug_inn: str) -> BudgetProfilePreview:
+    """Cheap, read-only, no DB access, no AI call: runs the exact same
+    resolution/pricing ``auto_populate_budget`` would for a drug-name-only
+    budget, against a transient Budget that is never added to a session. The
+    body of GET /api/budgets/profile-preview, shared with the chat budget
+    preview tool. Synchronous (pure computation)."""
     drug_inn = (drug_inn or "").strip()
 
     tmp = Budget(
@@ -448,6 +503,20 @@ async def profile_preview(
         estimated_grand_total=rollup["grand_total"],
         category_count=len(tmp.categories),
     )
+
+
+@router.get(
+    "/profile-preview", response_model=BudgetProfilePreview, dependencies=[Depends(require_user)],
+)
+async def profile_preview(
+    drug_inn: str, request: Request, db: AsyncSession = Depends(get_db),
+):
+    """Cheap, read-only, no DB write, no AI call — powers the create-view
+    hint. Runs the exact same resolution/pricing auto_populate_budget would,
+    against a transient Budget that is never added to the session (see
+    ``compute_budget_profile_preview``)."""
+    actor = await _authenticate_actor(request, db)
+    return compute_budget_profile_preview(actor, drug_inn)
 
 
 @router.get(

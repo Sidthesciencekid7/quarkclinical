@@ -1,17 +1,29 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import auth
 from auth import require_user
 from database import get_db
-from dependencies import authenticate_actor
-from models import User
+from dependencies import authenticate_actor, require_admin
+from models import User, UserRole
 from schemas import UserRead
 
 router = APIRouter(prefix="/api/users", tags=["users"])
+
+
+class CapabilitiesRead(BaseModel):
+    """What the signed-in user may do, for the UI to show/hide controls.
+
+    Advisory only - every action is still enforced server-side by its own route.
+    """
+    role: UserRole
+    is_org_owner: bool
+    is_admin: bool
+    can_generate: bool
 
 
 @router.get("/me", response_model=UserRead, dependencies=[Depends(require_user)])
@@ -27,6 +39,44 @@ async def current_user(
     whose email isn't provisioned yields 403 (see authenticate_actor).
     """
     return await authenticate_actor(request, db)
+
+
+# Registered before any "/{user_id}"-style route, so "me/capabilities" can
+# never be captured as a user id.
+@router.get(
+    "/me/capabilities",
+    response_model=CapabilitiesRead,
+    dependencies=[Depends(require_user)],
+)
+async def my_capabilities(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """What the caller can do - role, org-owner, admin, and whether they can
+    generate - derived from the verified actor (never a client-supplied value).
+
+    ``is_admin`` is exactly the existing /admin gate (dependencies.require_admin):
+    the verified session's email must be in ADMIN_EMAILS, and, as for the admin
+    routes themselves, it is True for everyone when Clerk auth is off (local dev
+    and tests have no session to check an email against).
+
+    ``can_generate`` is the author-role gate used by protocol/budget creation
+    (role == generator). It does not look at the license: a pending license is
+    reported separately by GET /api/orgs/me, and enforced (402) where credits are
+    spent.
+    """
+    actor = await authenticate_actor(request, db)
+    try:
+        await require_admin(request)
+        is_admin = True
+    except HTTPException:
+        is_admin = False
+    return CapabilitiesRead(
+        role=actor.role,
+        is_org_owner=bool(actor.is_org_owner),
+        is_admin=is_admin,
+        can_generate=actor.role == UserRole.generator,
+    )
 
 
 @router.get("/", response_model=list[UserRead], dependencies=[Depends(require_user)])

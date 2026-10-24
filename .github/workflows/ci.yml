@@ -58,7 +58,7 @@ jobs:
         run: python -m pytest -q
 
   frontend:
-    name: frontend typecheck + build
+    name: frontend typecheck, tests + build
     runs-on: ubuntu-latest
 
     steps:
@@ -77,6 +77,10 @@ jobs:
       - name: Typecheck
         working-directory: frontend
         run: npx tsc --noEmit
+
+      - name: Unit tests
+        working-directory: frontend
+        run: npm test
 
       - name: Build
         working-directory: frontend

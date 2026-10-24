@@ -6,13 +6,13 @@ import { getActingUserId } from '../lib/actingUser'
  *  - prod (recommended): Vercel rewrites /api -> Railway backend (see vercel.json)
  *  Set VITE_API_BASE_URL only for a direct cross-origin backend (then the backend
  *  must allow this origin via ALLOWED_ORIGINS). Trailing slash is trimmed. */
-const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? ''
+export const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? ''
 
 /** Fetch a fresh Clerk session token (if signed in) for the Authorization
  *  header, plus the currently-selected "acting as" user for X-User-Id (see
  *  lib/actingUser.tsx — the backend's role checks and audit trail read this,
  *  not the Clerk token, since the two identity systems aren't linked yet). */
-async function authHeaders(): Promise<Record<string, string>> {
+export async function authHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = {}
 
   const actingUserId = getActingUserId()
@@ -50,7 +50,7 @@ const ROUTE_MISSING_STATUSES = new Set([404, 405])
 
 /** Read the backend's `detail` out of an error response, falling back to the
  *  status line when the body isn't the usual FastAPI JSON envelope. */
-async function errorFrom(res: Response): Promise<HttpError> {
+export async function errorFrom(res: Response): Promise<HttpError> {
   let detail = `${res.status} ${res.statusText}`
   try {
     const body = await res.json()
@@ -59,7 +59,8 @@ async function errorFrom(res: Response): Promise<HttpError> {
   return new HttpError(res.status, detail)
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/** JSON request against `${API_BASE}/api${path}` with auth headers; throws HttpError on non-2xx. */
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}/api${path}`, {
     ...init,
     headers: {
@@ -155,7 +156,48 @@ function toComment(row: CommentWire): Comment {
   }
 }
 
+/** What the signed-in user may do (GET /api/users/me/capabilities). */
+export interface Capabilities {
+  role: string
+  is_org_owner: boolean
+  is_admin: boolean
+  can_generate: boolean
+}
+
+/** One row of the org-wide study-report list (GET /api/study-reports). The
+ *  backend route is built separately; only the first group is guaranteed, the
+ *  rest mirror StudyReportSummary and are optional until confirmed. */
+export interface StudyReportListItem {
+  id: string
+  protocol_id: string
+  protocol_title?: string | null
+  drug_inn?: string | null
+  status: string
+  created_at: string
+  updated_at: string
+  input_kind?: string
+  version?: number
+  generation_status?: string
+  has_results?: boolean
+  verdict?: string | null
+}
+
+/** The caller's role and derived permissions, resolved server-side from the
+ *  verified session. Drives sidebar items and which controls render. */
+export function getCapabilities(): Promise<Capabilities> {
+  return request<Capabilities>('/users/me/capabilities')
+}
+
+/** Every study report in the caller's org, newest first (the "Study reports"
+ *  page). Distinct from api.listStudyReports, which is scoped to one protocol. */
+export function listAllStudyReports(): Promise<StudyReportListItem[]> {
+  return request<StudyReportListItem[]>('/study-reports')
+}
+
 export const api = {
+  getCapabilities,
+  listAllStudyReports,
+
   listUsers: () => request<AppUser[]>('/users/'),
 
   /** The backend-resolved current user. With Clerk auth on, this is derived
