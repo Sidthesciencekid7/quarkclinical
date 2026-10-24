@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api/client'
 import { authEnabled } from '../lib/auth'
+import { Banner, Button, Card, Field, Input, Spinner, Wordmark } from '../ui'
 
 export default function JoinOrg() {
   const { token } = useParams<{ token: string }>()
@@ -31,43 +32,51 @@ export default function JoinOrg() {
 
   if (!token) {
     return (
-      <div className="app-canvas min-h-screen flex items-center justify-center px-4">
-        <p className="text-sm text-slate-500">Missing invite token.</p>
+      <div className="app-canvas flex min-h-screen items-center justify-center px-4">
+        <Banner tone="warning" title="Missing invite token">
+          This invite link is incomplete. Ask your team owner for a fresh link.
+        </Banner>
       </div>
     )
   }
 
   return (
-    <div className="app-canvas min-h-screen flex items-center justify-center px-4">
-      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xl max-w-md w-full p-8 text-center">
-        <h1 className="text-lg font-bold text-slate-900 mb-2">Joining your team&hellip;</h1>
+    <div className="app-canvas flex min-h-screen flex-col items-center justify-center px-4 py-10">
+      <Wordmark showMark size="lg" className="mb-6" />
+      <Card padding="lg" className="w-full max-w-md">
+        <h1 className="text-h2 text-fg">Joining your team&hellip;</h1>
 
         {!authEnabled && (
-          <div className="text-left mt-4">
-            <label className="block text-xs font-semibold text-slate-500 mb-1.5">
-              Your email (dev mode — no Clerk session to derive it from)
-            </label>
-            <input
-              type="email"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              placeholder="you@company.com"
-              className="input-base"
-            />
-            <button
-              type="button"
-              onClick={submit}
-              disabled={submitting || !email.trim()}
-              className="mt-3 w-full py-3 rounded-xl font-bold text-sm text-white bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 cursor-pointer"
-            >
+          <form
+            className="mt-4 flex flex-col gap-4"
+            onSubmit={e => {
+              e.preventDefault()
+              if (!submitting && email.trim()) void submit()
+            }}
+          >
+            <Field label="Your email" hint="Dev mode: there is no Clerk session to take it from.">
+              <Input
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="you@company.com"
+                autoComplete="email"
+              />
+            </Field>
+            <Button type="submit" size="lg" fullWidth loading={submitting} disabled={!email.trim()}>
               {submitting ? 'Joining…' : 'Join'}
-            </button>
-          </div>
+            </Button>
+          </form>
         )}
 
-        {authEnabled && submitting && <p className="text-sm text-slate-500 mt-2">Please wait&hellip;</p>}
-        {error && <p className="text-xs text-red-500 mt-3">{error}</p>}
-      </div>
+        {authEnabled && submitting && (
+          <p className="mt-3 flex items-center gap-2 text-body text-fg-muted" role="status">
+            <Spinner size={16} />
+            Please wait&hellip;
+          </p>
+        )}
+        {error ? <Banner tone="danger" className="mt-4">{error}</Banner> : null}
+      </Card>
     </div>
   )
 }

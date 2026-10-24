@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import QuarkLogo from './components/QuarkLogo'
 import { AccountButton } from './lib/auth'
 import { ActingUserPicker } from './lib/actingUser'
@@ -54,8 +54,14 @@ function Header({ view, onNavList, onNavNew }: {
   )
 }
 
-export default function BudgetingApp() {
-  const [view, setView] = useState<BudgetView>('list')
+/** `embedded`: rendered inside the app shell (src/shell), which supplies the
+ *  sidebar, top bar, identity controls and the budget list/editor routes. The
+ *  tool then starts on the create view, hides its own header, and hands a new
+ *  budget to `/app/budgets/:id` (with `justCreated` router state) instead of
+ *  opening the editor itself. Temporary: deleted when chat replaces this. */
+export default function BudgetingApp({ embedded = false }: { embedded?: boolean }) {
+  const navigate = useNavigate()
+  const [view, setView] = useState<BudgetView>(embedded ? 'new' : 'list')
   const [openBudget, setOpenBudget] = useState<Budget | null>(null)
   const [openingId, setOpeningId] = useState<string | null>(null)
   const [openError, setOpenError] = useState<string | null>(null)
@@ -91,19 +97,28 @@ export default function BudgetingApp() {
   const headerView: BudgetView | 'editor' = openBudget ? 'editor' : view
 
   return (
-    <div className="app-canvas min-h-screen">
-      <Header
-        view={headerView}
-        onNavList={() => { setOpenBudget(null); setView('list') }}
-        onNavNew={() => { setOpenBudget(null); setView('new') }}
-      />
+    <div className={embedded ? 'app-canvas min-h-full' : 'app-canvas min-h-screen'}>
+      {!embedded && (
+        <Header
+          view={headerView}
+          onNavList={() => { setOpenBudget(null); setView('list') }}
+          onNavNew={() => { setOpenBudget(null); setView('new') }}
+        />
+      )}
 
       {openBudget ? (
         <BudgetEditor budget={openBudget} onBack={handleBack} onChanged={setOpenBudget} justCreated={justCreated} />
       ) : view === 'new' ? (
         <BudgetCreateView
-          onCreated={budget => { setOpenBudget(budget); setJustCreated(true) }}
-          onCancel={() => setView('list')}
+          onCreated={budget => {
+            if (embedded) {
+              navigate(`/app/budgets/${budget.id}`, { state: { justCreated: true } })
+              return
+            }
+            setOpenBudget(budget)
+            setJustCreated(true)
+          }}
+          onCancel={() => (embedded ? navigate('/app/budgets') : setView('list'))}
         />
       ) : (
         <BudgetList

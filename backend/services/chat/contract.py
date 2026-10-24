@@ -848,3 +848,496 @@ def format_sse(event: str, payload: BaseModel) -> str:
             f"event {name.value!r} requires {expected.__name__}, got {type(payload).__name__}"
         )
     return f"event: {name.value}\ndata: {payload.model_dump_json()}\n\n"
+
+
+# ===========================================================================
+# Card ``data`` models (wave 2, B3 "Chat core") -- APPENDED, nothing above is
+# changed.
+#
+# ``Card.data`` is plain JSON whose shape depends on ``Card.type``. These models
+# are that shape, one per :class:`CardType`; the card builders in
+# ``services/chat/cards.py`` construct them and ``model_dump(mode="json")`` them
+# into ``Card.data``. The TypeScript mirror (frontend/src/chat/types.ts) should
+# copy them field for field. Optional fields are always PRESENT in the JSON
+# (``null`` when unset) because the builders dump without ``exclude_none``.
+#
+# Button payloads: a card's ``actions`` (CardAction) are its primary buttons;
+# the payload each action submits is fixed by the action type and the data
+# below, so the card component never has to invent one:
+#
+#   drug_matches        per match           -> select_drug      {drug_id: match.id}
+#   drug_add_offer      action add_drug     -> add_drug         {inn: data.inn}
+#   study_type          per allowed option  -> set_study_type   {study_type: option.value}
+#   population          Save                -> update_population {patch: {...changed keys}}
+#                       "Looks good"        -> update_population {patch: data.confirm_patch}
+#   cv_override_warning action              -> update_population {patch: data.clear_patch}
+#   interaction_screening per row toggle    -> toggle_exclusion {text: row.criterion_text, on}
+#   design_decisions    per option select   -> set_design_decision {key, value}
+#                       action confirm_design  -> confirm_design {}
+#   indication          per candidate       -> set_indication   {text: candidate.indication}
+#                       action set_indication -> set_indication {text: null}  ("let the engine choose")
+#   guideline           per option          -> set_guideline    {guideline_version: option.id}
+#   protocol_summary    action              -> generate_protocol {}
+#   budget_summary      per protocol option -> link_protocol    {protocol_id: option.id}
+#                       "unlink"            -> link_protocol    {protocol_id: null}
+#                       action              -> create_budget    {}
+#   edit_impact         actions             -> confirm_edit / discard_edit {proposal_id}
+#   edit_diff           actions             -> apply_edit / discard_edit   {proposal_id}
+#
+# protocol_ready, budget_ready, protocol_overview, generation_progress,
+# budget_preview, edit_progress and notice have no server action; any buttons
+# on them ("Open in editor", "Price this study") are client navigations built
+# from the ids in ``data``.
+# ===========================================================================
+
+Modality = Literal["biologic", "small_molecule", "unknown"]
+
+
+class FactRow(_Model):
+    """A label/value pair (summary rows, locked facts, estimates)."""
+
+    label: str
+    value: str
+
+
+class SummaryRow(_Model):
+    """One row of a protocol / budget summary card."""
+
+    #: SpecField.path the row summarises.
+    path: str
+    label: str
+    value: str | None = None
+    status: FieldStatus
+    source: FieldSource | None = None
+    #: True while the value is only ``proposed`` (set by the assistant, not yet
+    #: confirmed by a click or a verified quote): the card highlights it.
+    needs_check: bool = False
+
+
+# -- drug_matches / drug_add_offer ------------------------------------------
+
+
+class DrugMatchItem(_Model):
+    id: str
+    inn: str
+    brand_names: list[str] = Field(default_factory=list)
+    modality: Modality = "unknown"
+    #: Study types this drug may run; empty when the modality is unknown (unrestricted).
+    allowed_study_types: list[str] = Field(default_factory=list)
+
+
+class DrugMatchesCardData(_Model):
+    query: str
+    matches: list[DrugMatchItem] = Field(default_factory=list)
+    #: True when more catalogue rows matched than are listed.
+    truncated: bool = False
+    #: Drug id currently chosen in the spec, if any (the card then shows it as selected).
+    selected_drug_id: str | None = None
+
+
+class DrugAddOfferCardData(_Model):
+    query: str
+    #: Normalised INN the add_drug action would send; null when ``query`` is not a valid INN.
+    inn: str | None = None
+    valid: bool
+    message: str
+    modality: Modality = "unknown"
+    allowed_study_types: list[str] = Field(default_factory=list)
+
+
+# -- study_type ---------------------------------------------------------------
+
+
+class StudyTypeOption(_Model):
+    value: StudyTypeLiteral
+    label: str
+    allowed: bool
+    #: Why a disallowed option is disabled (the server's own gate wording).
+    reason: str | None = None
+
+
+class StudyTypeCardData(_Model):
+    drug_inn: str | None = None
+    modality: Modality = "unknown"
+    options: list[StudyTypeOption] = Field(default_factory=list)
+    selected: StudyTypeLiteral | None = None
+    #: Set when an attempted choice was refused (shown above the options).
+    gate_message: str | None = None
+
+
+# -- population / cv_override_warning ----------------------------------------
+
+
+class PopulationValues(_Model):
+    """Mirror of the wizard's ``PopulationConfig`` (frontend/src/types.ts)."""
+
+    subject_type: Literal["healthy", "patient"] = "healthy"
+    age_min: int = 18
+    age_max: int = 55
+    sex: Literal["male", "female", "both"] = "both"
+    weight_min: int = 50
+    weight_max: int = 100
+    exclusion_presets: list[str] = Field(default_factory=list)
+    cv_intra: float | None = None
+    dose_strength: str | None = None
+    reference_product: str | None = None
+    is_nti: bool | None = None
+    additional_pk_timepoints_hours: str | None = None
+    additional_immunogenicity_timepoints_months: str | None = None
+
+
+class PopulationRanges(_Model):
+    """The UI / chat validation ranges (the server itself accepts any value)."""
+
+    age_min: int = 18
+    age_max: int = 80
+    weight_min: int = 40
+    weight_max: int = 150
+    cv_min: float = 1.0
+    cv_max: float = 120.0
+
+
+class PopulationCardData(_Model):
+    drug_inn: str | None = None
+    study_type: StudyTypeLiteral | None = None
+    values: PopulationValues
+    ranges: PopulationRanges = Field(default_factory=PopulationRanges)
+    #: Drug-agnostic exclusion criteria offered as toggles (drug-specific ones
+    #: come from the interaction_screening card).
+    generic_exclusion_options: list[str] = Field(default_factory=list)
+    #: ``SpecField.path`` -> FieldStatus value, for the fields shown.
+    field_status: dict[str, str] = Field(default_factory=dict)
+    #: Patch for the "Looks good" quick-confirm (an ``update_population`` payload).
+    confirm_patch: dict[str, Any] = Field(default_factory=dict)
+
+
+class CvOverrideWarningCardData(_Model):
+    cv_intra: float
+    message: str
+    consequences: list[str] = Field(default_factory=list)
+    #: ``update_population`` patch that removes the override: ``{"cv_intra": null}``.
+    clear_patch: dict[str, Any] = Field(default_factory=dict)
+
+
+# -- interaction_screening ----------------------------------------------------
+
+
+class DdiRowData(_Model):
+    key: str
+    label: str
+    #: "prohibited" | "restricted" | "permitted" (open string: engine-owned).
+    status: str
+    pathway: str | None = None
+    examples: list[str] = Field(default_factory=list)
+    washout_days: float | None = None
+    washout_basis: str | None = None
+    history_exclusion: bool = False
+    rationale: str | None = None
+    conditions: str | None = None
+    escalated_by_nti: bool = False
+    assumption: str | None = None
+    #: Matched DailyMed label text backing the row (display as quoted data).
+    evidence_quote: str | None = None
+    #: The exclusion-criterion sentence the toggle adds (same wording rule as the wizard).
+    criterion_text: str
+    #: True when ``criterion_text`` is currently in the spec's exclusion list.
+    selected: bool = False
+
+
+class InteractionScreeningCardData(_Model):
+    drug_inn: str | None = None
+    design_key: str | None = None
+    is_nti: bool | None = None
+    pathway_keys: list[str] = Field(default_factory=list)
+    prohibited: list[DdiRowData] = Field(default_factory=list)
+    restricted: list[DdiRowData] = Field(default_factory=list)
+    permitted: list[DdiRowData] = Field(default_factory=list)
+    max_washout_days: float | None = None
+    screening_history_window_days: float | None = None
+    #: Number of unresolved-pathway notes (engine fell back to a pan-pathway prohibition).
+    unresolved_count: int = 0
+    summary: str | None = None
+
+
+# -- design_decisions ---------------------------------------------------------
+
+
+class DesignDecisionData(_Model):
+    key: str
+    label: str
+    value: str
+    rationale: str = ""
+    evidence: str = ""
+    options: list[str] = Field(default_factory=list)
+
+
+class DesignDecisionsCardData(_Model):
+    drug_inn: str | None = None
+    study_type: StudyTypeLiteral | None = None
+    decisions: list[DesignDecisionData] = Field(default_factory=list)
+    #: True once the user clicked "Confirm design" for these decisions.
+    confirmed: bool = False
+
+
+# -- indication ---------------------------------------------------------------
+
+
+class IndicationCandidateData(_Model):
+    indication: str
+    on_label: bool = False
+    label_evidence: str | None = None
+    therapeutic_area: str | None = None
+    setting_note: str | None = None
+    monotherapy: str | None = None
+    pk_variability: str | None = None
+    observed_cv_pct: float | None = None
+    recruitment: str | None = None
+    rank_reason: str | None = None
+
+
+class IndicationCardData(_Model):
+    #: False when the study is not a patient biosimilar study (the engine says why in ``reason``).
+    applicable: bool
+    reason: str | None = None
+    drug_inn: str | None = None
+    drug_class: str | None = None
+    label_verified: bool | None = None
+    recommended: IndicationCandidateData | None = None
+    ranked: list[IndicationCandidateData] = Field(default_factory=list)
+    user_indication: str | None = None
+    user_indication_warnings: list[str] = Field(default_factory=list)
+    #: The indication currently chosen in the spec (null = the engine chooses).
+    selected_indication: str | None = None
+    summary: str | None = None
+
+
+# -- guideline ----------------------------------------------------------------
+
+
+class GuidelineOptionData(_Model):
+    id: str
+    display_name: str
+    regulator: str
+    region: str
+    citation: str
+    is_current: bool = True
+    submission_pathway: str = ""
+
+
+class GuidelineCardData(_Model):
+    selected: str
+    default: str = DEFAULT_GUIDELINE_VERSION
+    options: list[GuidelineOptionData] = Field(default_factory=list)
+
+
+# -- protocol_summary / generation_progress / protocol_ready -------------------
+
+
+class ProtocolSummaryCardData(_Model):
+    rows: list[SummaryRow] = Field(default_factory=list)
+    ready: bool
+    #: Labels of what is still required (empty when ready).
+    missing: list[str] = Field(default_factory=list)
+    #: A server refusal that blocks Generate even though the spec is complete
+    #: (e.g. the study-type gate); the server's own wording.
+    blocking_issue: str | None = None
+    notes: list[str] = Field(default_factory=list)
+
+
+class GenerationProgressCardData(_Model):
+    protocol_id: str
+    drug_inn: str | None = None
+    #: "generating" | "complete" | "failed" (Protocol.generation_status).
+    status: str = "generating"
+    error: str | None = None
+
+
+class ProtocolReadyCardData(_Model):
+    protocol_id: str
+    drug_inn: str | None = None
+    study_type: str | None = None
+    guideline_version: str | None = None
+    section_count: int = 0
+    version: int = 1
+
+
+# -- budget_preview / budget_summary / budget_ready ---------------------------
+
+
+class BudgetDefaultsData(_Model):
+    n_enrolled: int | None = None
+    n_sites: int | None = None
+    n_countries: int | None = None
+    project_duration_months: float | None = None
+    startup_months: float | None = None
+    recruitment_months: float | None = None
+    treatment_months: float | None = None
+    followup_months: float | None = None
+    closeout_months: float | None = None
+    n_expected_saes: int | None = None
+    geography_profile: str | None = None
+
+
+class BudgetPreviewCardData(_Model):
+    """Projection of ``BudgetProfilePreview`` (the engine's resolved profile)."""
+
+    drug_inn: str
+    modality: Modality = "unknown"
+    allowed_study_types: list[str] = Field(default_factory=list)
+    study_type: str = ""
+    subject_profile: str
+    subject_profile_source: str = ""
+    subject_profile_basis: str = ""
+    therapeutic_area: str = "unknown"
+    profile_key: str | None = None
+    defaults: BudgetDefaultsData = Field(default_factory=BudgetDefaultsData)
+    estimated_grand_total: float
+    currency: str = "USD"
+    category_count: int = 0
+    disclaimer: str = ""
+
+
+class ProtocolOption(_Model):
+    id: str
+    drug_inn: str
+    study_type: str
+    status: str
+    version: int
+    created_at: str | None = None
+
+
+class BudgetSummaryCardData(_Model):
+    rows: list[SummaryRow] = Field(default_factory=list)
+    ready: bool
+    missing: list[str] = Field(default_factory=list)
+    blocking_issue: str | None = None
+    #: The protocol currently linked in the spec, if any.
+    linked_protocol: ProtocolOption | None = None
+    #: Org protocols that can be linked (empty unless the assistant listed them).
+    protocol_options: list[ProtocolOption] = Field(default_factory=list)
+    #: Engine's estimate for the current drug (null until a preview ran).
+    estimated_grand_total: float | None = None
+    currency: str = "USD"
+    notes: list[str] = Field(default_factory=list)
+
+
+class BudgetReadyCardData(_Model):
+    budget_id: str
+    name: str
+    drug_inn: str | None = None
+    study_type: str | None = None
+    currency: str = "USD"
+    grand_total: float | None = None
+    category_count: int = 0
+    n_enrolled: int | None = None
+    protocol_id: str | None = None
+
+
+# -- protocol_overview / edit_impact / edit_progress / edit_diff ---------------
+
+
+class SectionStat(_Model):
+    name: str
+    label: str
+    words: int
+
+
+class ProtocolOverviewCardData(_Model):
+    protocol_id: str
+    drug_inn: str | None = None
+    status: str
+    version: int
+    study_type: str
+    guideline_version: str
+    generation_status: str = "complete"
+    #: True when chat edits are allowed (status == draft and generation complete).
+    editable: bool
+    blocked_reason: str | None = None
+    sections: list[SectionStat] = Field(default_factory=list)
+    #: Engine-locked facts (N, design, CV and its source, decisions, DDI rows...).
+    locked_facts: list[FactRow] = Field(default_factory=list)
+
+
+class EditChange(_Model):
+    field: str
+    label: str
+    before: str | None = None
+    after: str | None = None
+
+
+class EditEstimate(_Model):
+    label: str
+    rows: list[FactRow] = Field(default_factory=list)
+    note: str = ""
+
+
+class EditImpactCardData(_Model):
+    #: Pre-minted id of the proposal the confirm_edit action will create.
+    proposal_id: str
+    kind: ProposalKind
+    base_version: int
+    editable: bool = True
+    blocked_reason: str | None = None
+    #: engine edits: the inputs that change.
+    changes: list[EditChange] = Field(default_factory=list)
+    #: prose edits: the section names to rewrite and the instruction.
+    sections: list[str] = Field(default_factory=list)
+    instruction: str | None = None
+    estimate: EditEstimate | None = None
+    warnings: list[str] = Field(default_factory=list)
+    rerun_note: str = ""
+
+
+class EditProgressCardData(_Model):
+    proposal_id: str
+    kind: ProposalKind
+    status: ProposalStatus = ProposalStatus.generating
+    error: str | None = None
+
+
+class EditDiffCardData(_Model):
+    proposal_id: str
+    kind: ProposalKind
+    status: ProposalStatus = ProposalStatus.ready
+    base_version: int
+    #: True when the protocol changed after the proposal was made (Apply is blocked).
+    stale: bool = False
+    sections: list[SectionDiffItem] = Field(default_factory=list)
+    qc: JsonObject | None = None
+    facts_before: list[FactRow] = Field(default_factory=list)
+    facts_after: list[FactRow] = Field(default_factory=list)
+    applied_version: int | None = None
+
+
+# -- notice -------------------------------------------------------------------
+
+
+class NoticeCardData(_Model):
+    level: NoticeLevel = "info"
+    text: str
+    code: str | None = None
+
+
+#: CardType -> the model of its ``data`` (the builders in cards.py validate against it).
+CARD_DATA_MODELS: dict[CardType, type[_Model]] = {
+    CardType.drug_matches: DrugMatchesCardData,
+    CardType.drug_add_offer: DrugAddOfferCardData,
+    CardType.study_type: StudyTypeCardData,
+    CardType.population: PopulationCardData,
+    CardType.cv_override_warning: CvOverrideWarningCardData,
+    CardType.interaction_screening: InteractionScreeningCardData,
+    CardType.design_decisions: DesignDecisionsCardData,
+    CardType.indication: IndicationCardData,
+    CardType.guideline: GuidelineCardData,
+    CardType.protocol_summary: ProtocolSummaryCardData,
+    CardType.generation_progress: GenerationProgressCardData,
+    CardType.protocol_ready: ProtocolReadyCardData,
+    CardType.budget_preview: BudgetPreviewCardData,
+    CardType.budget_summary: BudgetSummaryCardData,
+    CardType.budget_ready: BudgetReadyCardData,
+    CardType.protocol_overview: ProtocolOverviewCardData,
+    CardType.edit_impact: EditImpactCardData,
+    CardType.edit_progress: EditProgressCardData,
+    CardType.edit_diff: EditDiffCardData,
+    CardType.notice: NoticeCardData,
+}

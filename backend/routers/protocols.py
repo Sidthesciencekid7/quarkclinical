@@ -72,7 +72,14 @@ from services.design_decisions import (
 )
 from auth import require_user
 from services.bioanalytical import plan_bioanalytical
-from services.biostatistics import recommend_sample_size
+from services.biostatistics import (
+    WASHOUT_DESIGN_KEYS,
+    WASHOUT_HALF_LIVES,
+    engine_default_washout,
+    format_washout_duration,
+    recommend_sample_size,
+    validate_washout_override,
+)
 from services.crf_dmp import build_crf_spec
 from services.ddi_screening import screen_interactions
 from services.guideline_coverage import compute_coverage
@@ -747,6 +754,105 @@ def _randomization_seed(
     return int.from_bytes(digest[:6], "big")
 
 
+def _lock_washout(ss: dict[str, Any], cfg: dict[str, Any]) -> None:
+    """Decide the washout between periods AND the basis it is presented under,
+    together, and lock both into the sample-size recommendation ``ss``.
+
+    Same contract as ``_resolve_powering_cv``: this is the ONLY place the
+    washout figure and its provenance are set, so a number can never travel
+    with a source that does not belong to it. ``ss["washout_days"]`` (with
+    ``washout_hours``) is what ai_service._locked_design_directive tells the
+    model to use verbatim, what protocol_qc checks the prose against, and what
+    the export reads - before this the figure was left for the model to
+    re-derive from t1/2, so it could (and did) differ between sections.
+
+    * ``cfg["washout_days"]`` (an investigator/sponsor request, e.g. from chat)
+      is validated by ``biostatistics.validate_washout_override`` against the
+      design the engines actually chose and the t1/2 they actually used
+      (``ss["t_half_hours"]``). A parallel design, a value below 7 x t1/2, an
+      implausible value, or an unknown t1/2 raises 422 - the override is refused
+      outright, never silently replaced by the default. (In the production
+      background path that 422 is recorded as the generation's failure reason.)
+    * Otherwise the engine default (7 x t1/2) is computed and locked as a
+      number, for crossover / replicate designs only.
+    * A parallel design is locked as "not applicable". A crossover/replicate
+      design whose t1/2 is unknown gets no number (nothing honest to state).
+
+    Keys written to ``ss``: ``washout_applicable``, ``washout_days``,
+    ``washout_hours``, ``washout_is_user_override``, ``washout_minimum_days``
+    (the engine floor), ``washout_source``.
+    """
+    design_key = ss.get("design_key")
+    t_half = ss.get("t_half_hours")
+
+    raw = cfg.get("washout_days")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        cfg.pop("washout_days", None)
+        raw = None
+
+    if raw is not None:
+        value: Any = raw
+        if isinstance(raw, str):
+            try:
+                value = float(raw.strip())
+            except ValueError:
+                value = raw  # the validator rejects a non-number with its message
+        ok, minimum, message = validate_washout_override(design_key, t_half, value)
+        if not ok:
+            raise HTTPException(status_code=422, detail=message)
+        days = float(value)
+        cfg["washout_days"] = days
+        ss.update({
+            "washout_applicable": True,
+            "washout_days": days,
+            "washout_hours": round(days * 24.0, 6),
+            "washout_is_user_override": True,
+            "washout_minimum_days": minimum,
+            "washout_source": (
+                "user override (investigator-specified; engine minimum "
+                f"{WASHOUT_HALF_LIVES:.0f} x t1/2 = {format_washout_duration(minimum)})"
+            ),
+        })
+        return
+
+    if design_key == "parallel" or design_key not in WASHOUT_DESIGN_KEYS:
+        ss.update({
+            "washout_applicable": False,
+            "washout_days": None,
+            "washout_hours": None,
+            "washout_is_user_override": False,
+            "washout_minimum_days": None,
+            "washout_source": "not applicable (parallel-group design has no washout period)"
+            if design_key == "parallel" else "not applicable (no multi-period design)",
+        })
+        return
+
+    default = engine_default_washout(t_half)
+    if default is None:
+        ss.update({
+            "washout_applicable": True,
+            "washout_days": None,
+            "washout_hours": None,
+            "washout_is_user_override": False,
+            "washout_minimum_days": None,
+            "washout_source": "unavailable (no terminal half-life to apply "
+                              f"{WASHOUT_HALF_LIVES:.0f} x t1/2 to)",
+        })
+        return
+    ss.update({
+        "washout_applicable": True,
+        "washout_days": default["days"],
+        "washout_hours": default["hours"],
+        "washout_is_user_override": False,
+        "washout_minimum_days": default["days"],
+        "washout_source": (
+            f"engine: {WASHOUT_HALF_LIVES:.0f} x t1/2 = "
+            f"{format_washout_duration(default['days'])} "
+            f"(t1/2 = {default['t_half_hours']:.1f} h)"
+        ),
+    })
+
+
 def _augment_config_with_design(
     population_config: dict[str, Any],
     study_type: str,
@@ -836,6 +942,10 @@ def _augment_config_with_design(
     # cv_table / cv_source / cv_is_user_override all arrive from the single
     # resolver above. Nothing else in this module writes them.
     ss.update(cv_provenance)
+    # The washout between periods is locked HERE, with its source, from the
+    # design just chosen and the t1/2 just used - and a requested override
+    # (population_config["washout_days"]) is validated against exactly those.
+    _lock_washout(ss, cfg)
     cfg["_sample_size"] = ss
     # Surfaced separately so the appendix renderer and the SAP prompt can reach
     # the per-study table without digging through the sample-size dict. Same

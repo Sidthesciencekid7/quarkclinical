@@ -19,6 +19,7 @@ import {
   UserButton,
   useClerk,
 } from '@clerk/clerk-react'
+import { Button, Card, Wordmark } from '../ui'
 
 export const CLERK_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined
 export const authEnabled = Boolean(CLERK_KEY)
@@ -141,27 +142,23 @@ export function Protected({ children }: { children: ReactNode }) {
 function SignInGate() {
   const { login, signup } = useLaunch()
   return (
-    <div
-      className="min-h-screen grid place-items-center px-4 py-10"
-      style={{ background: 'radial-gradient(120% 80% at 50% 0%, #122a52 0%, #0B1E3D 60%)' }}
-    >
-      <div className="text-center max-w-sm">
-        <h1 className="text-white text-2xl font-bold tracking-tight mb-2">Sign in to continue</h1>
-        <p className="text-slate-400 text-sm mb-8">You need an account to access QuarkClinical.</p>
-        <div className="flex flex-col gap-3">
-          <button
-            onClick={() => login()}
-            className="w-full py-3 rounded-xl font-bold text-sm text-white bg-gradient-to-r from-cyan-500 to-teal-500 shadow-lg shadow-cyan-500/30 cursor-pointer"
-          >
-            Log in
-          </button>
-          <button
-            onClick={() => signup()}
-            className="w-full py-3 rounded-xl font-bold text-sm text-white bg-white/10 border border-white/15 hover:bg-white/15 transition-colors cursor-pointer"
-          >
-            Sign up
-          </button>
+    <div className="app-canvas grid min-h-screen place-items-center px-4 py-10">
+      <div className="w-full max-w-sm">
+        <div className="mb-6 flex justify-center">
+          <Wordmark showMark size="lg" />
         </div>
+        <Card padding="lg" className="text-center">
+          <h1 className="text-h2 text-fg">Sign in to continue</h1>
+          <p className="mt-1 text-body text-fg-muted">You need an account to access QuarkClinical.</p>
+          <div className="mt-6 flex flex-col gap-2.5">
+            <Button size="lg" fullWidth onClick={() => login()}>
+              Log in
+            </Button>
+            <Button size="lg" variant="secondary" fullWidth onClick={() => signup()}>
+              Sign up
+            </Button>
+          </div>
+        </Card>
       </div>
     </div>
   )
@@ -202,19 +199,20 @@ function AdminSignInGate() {
   }
 
   return (
-    <div
-      className="min-h-screen grid place-items-center px-4 py-10"
-      style={{ background: 'radial-gradient(120% 80% at 50% 0%, #122a52 0%, #0B1E3D 60%)' }}
-    >
-      <div className="text-center max-w-sm">
-        <h1 className="text-white text-2xl font-bold tracking-tight mb-2">Admin sign in</h1>
-        <p className="text-slate-400 text-sm mb-8">Restricted — authorized operators only.</p>
-        <button
-          onClick={handleLogin}
-          className="w-full py-3 rounded-xl font-bold text-sm text-white bg-gradient-to-r from-cyan-500 to-teal-500 shadow-lg shadow-cyan-500/30 cursor-pointer"
-        >
-          Log in
-        </button>
+    <div className="app-canvas grid min-h-screen place-items-center px-4 py-10">
+      <div className="w-full max-w-sm">
+        <div className="mb-6 flex justify-center">
+          <Wordmark showMark size="lg" />
+        </div>
+        <Card padding="lg" className="text-center">
+          <h1 className="text-h2 text-fg">Admin sign in</h1>
+          <p className="mt-1 text-body text-fg-muted">Restricted — authorized operators only.</p>
+          <div className="mt-6">
+            <Button size="lg" fullWidth onClick={handleLogin}>
+              Log in
+            </Button>
+          </div>
+        </Card>
       </div>
     </div>
   )

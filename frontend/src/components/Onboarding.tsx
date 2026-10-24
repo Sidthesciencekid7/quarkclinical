@@ -1,8 +1,14 @@
 import { useState } from 'react'
 import { api } from '../api/client'
-import { authEnabled } from '../lib/auth'
+import { AccountButton, authEnabled } from '../lib/auth'
+import { Banner, Button, Card, Field, Input, PillNav, Wordmark } from '../ui'
 
 type Mode = 'create' | 'join'
+
+const MODE_ITEMS = [
+  { id: 'create', label: 'Create organization' },
+  { id: 'join', label: 'Join a team' },
+]
 
 function extractToken(input: string): string {
   const trimmed = input.trim()
@@ -59,86 +65,78 @@ export default function Onboarding() {
     (authEnabled || email.trim().length > 0)
 
   return (
-    <div className="app-canvas min-h-screen flex items-center justify-center px-4">
-      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xl max-w-md w-full p-8">
-        <h1 className="text-lg font-bold text-slate-900 mb-1">Set up your workspace</h1>
-        <p className="text-sm text-slate-500 mb-6 leading-relaxed">
-          Your account isn&rsquo;t part of an organization yet. Create a new one, or join an
-          existing team with an invite link or code.
-        </p>
+    <div className="app-canvas flex min-h-screen flex-col px-4 py-6">
+      <div className="mx-auto flex w-full max-w-md items-center justify-between">
+        <Wordmark showMark />
+        <AccountButton />
+      </div>
+      <div className="mx-auto flex w-full max-w-md flex-1 items-center py-8">
+        <Card padding="lg" className="w-full">
+          <h1 className="text-h2 text-fg">Set up your workspace</h1>
+          <p className="mt-1 text-body text-fg-muted">
+            Your account isn&rsquo;t part of an organization yet. Create a new one, or join an
+            existing team with an invite link or code.
+          </p>
 
-        <div className="flex rounded-xl border border-slate-200 p-1 mb-6 bg-slate-50">
-          <button
-            type="button"
-            onClick={() => { setMode('create'); setError(null) }}
-            className={[
-              'flex-1 text-sm font-semibold py-2 rounded-lg transition-colors cursor-pointer',
-              mode === 'create' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500',
-            ].join(' ')}
+          <PillNav
+            ariaLabel="Create or join"
+            items={MODE_ITEMS}
+            value={mode}
+            onChange={id => {
+              setMode(id as Mode)
+              setError(null)
+            }}
+            className="mt-5 flex w-full [&>button]:flex-1"
+          />
+
+          <form
+            className="mt-5 flex flex-col gap-4"
+            onSubmit={e => {
+              e.preventDefault()
+              if (submitting || !canSubmit) return
+              void (mode === 'create' ? handleCreate() : handleJoin())
+            }}
           >
-            Create organization
-          </button>
-          <button
-            type="button"
-            onClick={() => { setMode('join'); setError(null) }}
-            className={[
-              'flex-1 text-sm font-semibold py-2 rounded-lg transition-colors cursor-pointer',
-              mode === 'join' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500',
-            ].join(' ')}
-          >
-            Join a team
-          </button>
-        </div>
+            {!authEnabled && (
+              <Field label="Your email" hint="Dev mode: there is no Clerk session to take it from.">
+                <Input
+                  type="email"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  placeholder="you@company.com"
+                  autoComplete="email"
+                />
+              </Field>
+            )}
 
-        {!authEnabled && (
-          <div className="mb-4">
-            <label className="block text-xs font-semibold text-slate-500 mb-1.5">
-              Your email (dev mode — no Clerk session to derive it from)
-            </label>
-            <input
-              type="email"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              placeholder="you@company.com"
-              className="input-base"
-            />
-          </div>
-        )}
+            {mode === 'create' ? (
+              <Field label="Organization name">
+                <Input
+                  type="text"
+                  value={name}
+                  onChange={e => setName(e.target.value)}
+                  placeholder="Acme Pharma"
+                  autoComplete="organization"
+                />
+              </Field>
+            ) : (
+              <Field label="Invite link or code">
+                <Input
+                  type="text"
+                  value={token}
+                  onChange={e => setToken(e.target.value)}
+                  placeholder="Paste the link or code your admin shared"
+                />
+              </Field>
+            )}
 
-        {mode === 'create' ? (
-          <div className="mb-2">
-            <label className="block text-xs font-semibold text-slate-500 mb-1.5">Organization name</label>
-            <input
-              type="text"
-              value={name}
-              onChange={e => setName(e.target.value)}
-              placeholder="Acme Pharma"
-              className="input-base"
-            />
-          </div>
-        ) : (
-          <div className="mb-2">
-            <label className="block text-xs font-semibold text-slate-500 mb-1.5">Invite link or code</label>
-            <input
-              type="text"
-              value={token}
-              onChange={e => setToken(e.target.value)}
-              placeholder="Paste the link or code your admin shared"
-              className="input-base"
-            />
-          </div>
-        )}
+            {error ? <Banner tone="danger">{error}</Banner> : null}
 
-        {error && <p className="text-xs text-red-500 mt-2">{error}</p>}
-
-        <button
-          type="button"
-          onClick={mode === 'create' ? handleCreate : handleJoin}
-          disabled={submitting || !canSubmit}
-          className="mt-5 w-full py-3 rounded-xl font-bold text-sm text-white bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 transition-colors cursor-pointer"
-        >
-          {submitting ? 'Working…' : mode === 'create' ? 'Create organization' : 'Join'}
-        </button>
+            <Button type="submit" size="lg" fullWidth loading={submitting} disabled={!canSubmit}>
+              {submitting ? 'Working…' : mode === 'create' ? 'Create organization' : 'Join'}
+            </Button>
+          </form>
+        </Card>
       </div>
     </div>
   )

@@ -1,0 +1,114 @@
+/* ════════════════════════════════════════════════════════════════════
+   Public landing page - landing-only styles (redesign F5).
+
+   Imported by src/pages/Landing.tsx only. Every rule is scoped under
+   `.lp-root` (the landing's root element): that raises specificity above the
+   Tailwind utilities in index.css, which is bundled AFTER this file, so these
+   rules win regardless of stylesheet order. Colours come from the surface
+   tokens (--pillnav-bg, --fg, ...) so they flip with data-surface.
+   ════════════════════════════════════════════════════════════════════ */
+
+/* Hero: dark navy radial. */
+.lp-root .lp-hero-bg {
+  background: radial-gradient(120% 80% at 50% 0%, #122a52 0%, #0b1e3d 45%, #081226 100%);
+}
+
+/* Subtle blueprint grid, softer than the legacy .hero-grid. */
+.lp-root .lp-grid {
+  background-image:
+    linear-gradient(rgba(103, 232, 249, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(103, 232, 249, 0.045) 1px, transparent 1px);
+  background-size: 48px 48px;
+  -webkit-mask-image: radial-gradient(ellipse 75% 55% at 50% 28%, #000 35%, transparent 75%);
+  mask-image: radial-gradient(ellipse 75% 55% at 50% 28%, #000 35%, transparent 75%);
+}
+
+/* Glass pill (the NORMA wordmark pill, the eyebrow pill). Dark surface only. */
+.lp-root .lp-glass {
+  background-color: var(--pillnav-bg);
+  box-shadow: inset 0 0 0 1px var(--pillnav-border);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+}
+
+/* Once the page has scrolled off the dark hero the floating pills sit over
+   light sections, where white-at-10% glass and a white primary pill would
+   vanish. Switch the tokens the pills read to a navy glass and a black
+   primary so they stay legible on any background. */
+.lp-root .lp-nav[data-over-light="true"] {
+  --pillnav-bg: rgb(11 30 61 / 0.9);
+  --pillnav-border: rgb(255 255 255 / 0.14);
+  --btn-secondary-bg: rgb(11 30 61 / 0.9);
+  --btn-secondary-border: rgb(255 255 255 / 0.16);
+  --btn-secondary-hover-bg: rgb(18 37 72 / 0.96);
+  --btn-primary-bg: #0a0a0a;
+  --btn-primary-fg: #ffffff;
+  --btn-primary-hover: #27272a;
+  --glass-filter: blur(16px) saturate(140%);
+}
+.lp-root .lp-nav[data-over-light="true"] .btn-primary {
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.14);
+}
+
+/* Mobile menu sheet: always a navy panel, so its buttons keep the on-dark
+   look (white primary, white-glass secondary) even when the header has
+   switched to its over-light tokens. */
+.lp-root .lp-sheet {
+  --btn-primary-bg: #ffffff;
+  --btn-primary-fg: #0a0a0a;
+  --btn-primary-hover: #e4e4e7;
+  --btn-secondary-bg: rgb(255 255 255 / 0.1);
+  --btn-secondary-border: rgb(255 255 255 / 0.14);
+  --btn-secondary-hover-bg: rgb(255 255 255 / 0.16);
+  --pillnav-border: rgb(255 255 255 / 0.1);
+  background-color: rgb(11 30 61 / 0.94);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.12), 0 16px 40px -12px rgb(0 0 0 / 0.55);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  backdrop-filter: blur(20px) saturate(140%);
+}
+
+/* FAQ accordion: smooth height via the grid-rows trick, and fully hidden
+   (not focusable, not announced) while collapsed. */
+.lp-root .lp-acc {
+  display: grid;
+  grid-template-rows: 0fr;
+  visibility: hidden;
+  transition: grid-template-rows 0.3s cubic-bezier(0.16, 1, 0.3, 1), visibility 0s linear 0.3s;
+}
+.lp-root .lp-acc[data-open="true"] {
+  grid-template-rows: 1fr;
+  visibility: visible;
+  transition: grid-template-rows 0.3s cubic-bezier(0.16, 1, 0.3, 1), visibility 0s linear 0s;
+}
+.lp-root .lp-acc > div {
+  overflow: hidden;
+}
+
+/* Soft glow behind the final call-to-action card. */
+.lp-root .lp-cta-bg {
+  background: radial-gradient(120% 120% at 50% 0%, #143063 0%, #0b1e3d 60%);
+}
+
+/* Reduced motion: the global rule in index.css already stops animation
+   iteration; also make the decorative blobs static, stop smooth scrolling
+   (index.css sets html { scroll-behavior: smooth } unconditionally) and drop
+   the card hover lift. */
+@media (prefers-reduced-motion: reduce) {
+  html[lang] {
+    scroll-behavior: auto;
+  }
+  .lp-root .blob {
+    animation: none;
+  }
+  .lp-root .lp-lift:hover {
+    transform: none;
+  }
+}
+
+/* Gentle hover lift for the product / why cards. */
+.lp-root .lp-lift {
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s ease-out, border-color 0.25s ease-out;
+}
+.lp-root .lp-lift:hover {
+  transform: translateY(-3px);
+}

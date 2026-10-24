@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import Stepper from './components/Stepper'
 import DrugSelector from './components/DrugSelector'
 import StudyTypeSelector, { allowedStudyTypes } from './components/StudyTypeSelector'
@@ -124,8 +124,14 @@ function Header({ view, onNavReports, onNavNew, onNavTeam }: {
   )
 }
 
-export default function ProtocolApp() {
-  const [view, setView] = useState<AppView>('reports')
+/** `embedded`: rendered inside the app shell (src/shell), which supplies the
+ *  sidebar, top bar, identity controls and the protocol list/editor/CSR/team
+ *  routes. The wizard then starts on its first step, hides its own header, and
+ *  hands a finished protocol to `/app/protocols/:id` instead of opening the
+ *  editor itself. Temporary: this file is deleted when chat replaces the wizard. */
+export default function ProtocolApp({ embedded = false }: { embedded?: boolean }) {
+  const navigate = useNavigate()
+  const [view, setView] = useState<AppView>(embedded ? 'wizard' : 'reports')
   const [step, setStep] = useState(0)
   const [drug, setDrug] = useState<Drug | null>(null)
   const [studyType, setStudyType] = useState<StudyType | null>(null)
@@ -200,15 +206,15 @@ export default function ProtocolApp() {
   if (csrProtocol) {
     return (
       <div className="app-canvas min-h-screen">
-        <Header view="reports" onNavReports={goToReports} onNavNew={goToNew} onNavTeam={goToTeam} />
+        {!embedded && <Header view="reports" onNavReports={goToReports} onNavNew={goToNew} onNavTeam={goToTeam} />}
         <CSRView protocol={csrProtocol} onBack={goToReports} />
       </div>
     )
   }
 
   return (
-    <div className="app-canvas min-h-screen">
-      <Header view={view} onNavReports={goToReports} onNavNew={goToNew} onNavTeam={goToTeam} />
+    <div className={embedded ? 'app-canvas min-h-full' : 'app-canvas min-h-screen'}>
+      {!embedded && <Header view={view} onNavReports={goToReports} onNavNew={goToNew} onNavTeam={goToTeam} />}
 
       {view === 'reports' ? (
         <ReportsView onOpen={openReport} onNew={goToNew} onOpenCsr={openCsr} openingId={openingId} openError={openError} onDismissOpenError={() => setOpenError(null)} />
@@ -274,7 +280,7 @@ export default function ProtocolApp() {
                 studyType={studyType}
                 populationConfig={populationConfig}
                 designDecisions={designDecisions ?? []}
-                onSuccess={result => setProtocol(result)}
+                onSuccess={result => (embedded ? navigate(`/app/protocols/${result.id}`) : setProtocol(result))}
               />
             )}
           </div>

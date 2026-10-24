@@ -147,28 +147,238 @@ def _has_any(text: str, *tokens: str) -> bool:
     return any(t.lower() in low for t in tokens)
 
 
+# A washout duration in prose. The number may be a decimal ("11.7 days") and the
+# unit must END at a word boundary: without that, the "h" of "half-lives" would
+# match, reading "washout of 7 half-lives" as seven HOURS; and without the
+# decimal, "11.7-day washout" would read as 7 days.
+_WASHOUT_NUM = r"(\d{1,4}(?:\.\d+)?)"
+_WASHOUT_UNIT = r"(hours?|hrs?|h|days?|weeks?)\b"
+_WASHOUT_PATTERNS = (
+    # "washout (period) of (at least) 7 days", "washout: 12 days", "washout (>= 12 days)"
+    re.compile(
+        r"washout(?:\s+period)?[\s:=(≥>~]*"
+        r"(?:(?:of|is|was|will\s+be|at\s+least|a\s+minimum\s+of|minimum\s+of|"
+        r"approximately|about|around)[\s:=(≥>~]*)*"
+        + _WASHOUT_NUM + r"\s*-?\s*" + _WASHOUT_UNIT,
+        re.IGNORECASE,
+    ),
+    # "7-day washout", "11.7 day washout period"
+    re.compile(r"(?<![\d.])" + _WASHOUT_NUM + r"\s*-?\s*" + _WASHOUT_UNIT + r"\s+washout", re.IGNORECASE),
+)
+
+
+def _washout_match_hours(m: "re.Match[str]") -> float:
+    n = float(m.group(1))
+    unit = m.group(2).lower()
+    if unit.startswith("h"):
+        return n
+    if unit.startswith("d"):
+        return n * 24
+    return n * 24 * 7  # weeks
+
+
 def _find_washout_hours(text: str) -> Optional[float]:
     """Parse a washout duration from prose; returns hours or None."""
     if not text:
         return None
     low = text.lower()
-    # "washout (period) of (at least) 7 days/weeks/hours"  OR  "7-day washout"
-    pats = [
-        r"washout\s+(?:period\s+)?(?:of\s+)?(?:at\s+least\s+)?(\d{1,3})\s*(hours?|h|days?|weeks?)",
-        r"(\d{1,3})\s*-?\s*(hours?|h|days?|weeks?)\s+washout",
-    ]
-    for pat in pats:
-        m = re.search(pat, low)
+    for pat in _WASHOUT_PATTERNS:
+        m = pat.search(low)
         if m:
-            n = float(m.group(1))
-            unit = m.group(2)
-            if unit.startswith(("hour", "h")):
-                return n
-            if unit.startswith("day"):
-                return n * 24
-            if unit.startswith("week"):
-                return n * 24 * 7
+            return _washout_match_hours(m)
     return None
+
+
+# ---------------------------------------------------------------------------
+# Locked washout between periods
+# ---------------------------------------------------------------------------
+# The engine locks the washout between dosing periods (routers/protocols.py::
+# _lock_washout -> population_config["_sample_size"]["washout_days"]) and tells
+# the model to state it verbatim. _check_locked_washout proves the prose did.
+#
+# The word "washout" is used for TWO different intervals in one protocol: the
+# gap between dosing periods (the locked one) and the stop-taking-it interval
+# for a prohibited concomitant medication before first dose. Only the first is
+# checked, so each mention is classified from its own sentence before it is
+# compared; an interval that reads as a concomitant-medication washout is never
+# held against the between-period figure.
+
+_BLOCK_CLOSE_RE = re.compile(r"(?i)</(?:p|li|tr|h[1-6]|div|table|ul|ol)\s*>|<br\s*/?>")
+_TAG_RE = re.compile(r"<[^>]+>")
+_SENTENCE_BREAK_RE = re.compile(r"[.!?]\s+(?=[A-Z(])")
+
+_COMED_CUE_RE = re.compile(
+    r"prohibit|concomitant|co-?medicat|con-?med|"
+    r"(?:prior\s+to|before)\s+(?:the\s+)?(?:first|study|screening|check-?in|enrol)|"
+    r"enzyme[-\s]induc|\binducers?\b|\binhibitors?\b|herbal|supplement|"
+    r"prior\s+(?:therapy|treatment|biologic|medication|drug|use)|\bprevious\w*|"
+    r"screening|eligib\w*|investigational|vaccin\w*|donat\w*",
+    re.IGNORECASE,
+)
+_BETWEEN_CUE_RE = re.compile(
+    r"between\b[^.\n]{0,60}?\b(?:periods?|treatments?|doses|dosing|sequences?|crossover)|"
+    r"\b(?:each|every|successive|consecutive|subsequent)\s+(?:dosing\s+|treatment\s+|study\s+)?periods?|"
+    r"inter-?period|\bcrossover\b|carry-?over|\bperiods?\s*[1-4]\b|"
+    r"separat\w*[^.\n]{0,40}?periods?|\btwo\s+(?:treatment\s+|dosing\s+)?periods\b",
+    re.IGNORECASE,
+)
+# Wording that explains the 7 x t1/2 RULE rather than stating the study's washout.
+_WASHOUT_RULE_CUE_RE = re.compile(
+    r"7\s*[x×*]\s*t|half-?li|t½|t1/2|\bminimum\b|\bfloor\b|at\s+least\s+the",
+    re.IGNORECASE,
+)
+
+# Matching tolerance: a prose figure agrees with the locked one when it differs
+# by no more than the rounding of a one-decimal day (0.1 day = 2.4 h), or one
+# hour for a sub-day washout.
+_WASHOUT_TOL_HOURS = 2.5
+_WASHOUT_TOL_HOURS_SUBDAY = 1.0
+
+
+def _plain_text(markup: str) -> str:
+    """Section HTML as text: block ends become newlines, other tags vanish."""
+    text = _BLOCK_CLOSE_RE.sub("\n", markup or "")
+    text = _TAG_RE.sub(" ", text)
+    text = text.replace("&nbsp;", " ").replace("&#160;", " ")
+    text = re.sub(r"[ \t ]+", " ", text)
+    return text
+
+
+def _nearest_cue_distance(pattern: "re.Pattern[str]", ctx: str, a: int, b: int) -> Optional[int]:
+    """Characters between the mention (ctx[a:b]) and the closest match of
+    ``pattern`` in ctx; None when the pattern does not occur."""
+    best: Optional[int] = None
+    for m in pattern.finditer(ctx):
+        if m.end() <= a:
+            d = a - m.end()
+        elif m.start() >= b:
+            d = m.start() - b
+        else:
+            d = 0
+        best = d if best is None else min(best, d)
+    return best
+
+
+def _washout_mentions(markup: str) -> list[dict[str, Any]]:
+    """Every washout duration stated in a section, each classified.
+
+    Returns dicts ``{"hours", "kind", "rule"}`` where ``kind`` is "between"
+    (the washout between dosing periods) or "comed" (a concomitant-medication
+    washout), and ``rule`` is True when the sentence is explaining the
+    7 x t1/2 rule. A mention with no concomitant-medication cue is taken to be
+    the between-period washout; one with both kinds of cue goes to whichever
+    cue is nearer, ties to "comed" (the conservative side: ignored).
+    """
+    txt = _plain_text(markup)  # original case kept: sentence breaks need capitals
+    found: dict[int, dict[str, Any]] = {}
+    spans: list[tuple[int, int]] = []
+    for pat in _WASHOUT_PATTERNS:
+        for m in pat.finditer(txt):
+            a, b = m.span()
+            if any(a < fb and fa < b for fa, fb in spans):
+                continue  # the same statement matched by both patterns
+            spans.append((a, b))
+            s_start = txt.rfind("\n", 0, a) + 1
+            for brk in _SENTENCE_BREAK_RE.finditer(txt, s_start, a):
+                s_start = brk.end()
+            nl = txt.find("\n", b)
+            s_end = len(txt) if nl == -1 else nl
+            brk = _SENTENCE_BREAK_RE.search(txt, b, s_end)
+            if brk:
+                s_end = brk.start() + 1
+            lo, hi = max(s_start, a - 120), min(s_end, b + 120)
+            ctx, ra, rb = txt[lo:hi], a - lo, b - lo
+            comed_d = _nearest_cue_distance(_COMED_CUE_RE, ctx, ra, rb)
+            between_d = _nearest_cue_distance(_BETWEEN_CUE_RE, ctx, ra, rb)
+            if comed_d is None:
+                kind = "between"
+            elif between_d is None or comed_d <= between_d:
+                kind = "comed"
+            else:
+                kind = "between"
+            found[m.start()] = {
+                "hours": _washout_match_hours(m),
+                "kind": kind,
+                "rule": bool(_WASHOUT_RULE_CUE_RE.search(ctx)),
+            }
+    return [found[k] for k in sorted(found)]
+
+
+def _fmt_washout(hours: float) -> str:
+    days = hours / 24.0
+    if days < 1.0:
+        n = round(hours)
+        return f"{n} hour" + ("" if n == 1 else "s")
+    txt = f"{days:.2f}".rstrip("0").rstrip(".")
+    return f"{txt} day" + ("" if txt == "1" else "s")
+
+
+def _check_locked_washout(
+    add: "_Add",
+    sections: dict[str, str],
+    ss: dict[str, Any],
+    label_of: Callable[[str], str],
+) -> None:
+    """FAIL any section whose prose states a between-period washout different
+    from the one the engine locked; PASS when every stated one agrees; WARN when
+    none is stated. A no-op when nothing was locked (an older protocol, a
+    parallel design, or no half-life)."""
+    days = _f(ss.get("washout_days"))
+    if days is None or days <= 0 or ss.get("design_key") == "parallel":
+        return
+    locked_h = _f(ss.get("washout_hours")) or days * 24.0
+    tol = _WASHOUT_TOL_HOURS if locked_h >= 24.0 else _WASHOUT_TOL_HOURS_SUBDAY
+    source = str(ss.get("washout_source") or "locked by the design engine")
+    is_override = bool(ss.get("washout_is_user_override"))
+    minimum_days = _f(ss.get("washout_minimum_days"))
+    floor_h = minimum_days * 24.0 if minimum_days else None
+    locked_txt = _fmt_washout(locked_h)
+
+    mismatched: dict[str, list[float]] = {}
+    agreeing: list[str] = []
+    for name, body in sections.items():
+        if not isinstance(body, str) or not body.strip():
+            continue
+        for mention in _washout_mentions(body):
+            if mention["kind"] != "between":
+                continue
+            h = mention["hours"]
+            if abs(h - locked_h) <= tol:
+                agreeing.append(name)
+                continue
+            # An override sits ABOVE the engine minimum, and the prose may say so
+            # ("meets the 7 x t1/2 minimum of 11.7 days"). That is the rule being
+            # explained, not a second washout - it is not held against the lock.
+            if is_override and floor_h and mention["rule"] and abs(h - floor_h) <= tol:
+                continue
+            mismatched.setdefault(name, []).append(h)
+
+    if mismatched:
+        for name, hours in mismatched.items():
+            stated = ", ".join(sorted({_fmt_washout(h) for h in hours}))
+            add(QCFinding(
+                id=f"washout_locked_{name}", category="PK & design",
+                title="Washout differs from the locked value", status=QCStatus.FAIL,
+                detail=f"{label_of(name)} states a washout between periods of {stated}, but "
+                       f"the locked washout is {locked_txt} (source: {source}). Every "
+                       f"section must state the locked figure.",
+                section=name,
+            ))
+    elif agreeing:
+        add(QCFinding(
+            id="washout_locked", category="PK & design",
+            title="Washout matches the locked value", status=QCStatus.PASS,
+            detail=f"The stated washout between periods agrees with the locked "
+                   f"{locked_txt} (source: {source}) in {len(set(agreeing))} section(s).",
+            section="study_design"))
+    else:
+        add(QCFinding(
+            id="washout_locked", category="PK & design",
+            title="Locked washout not stated", status=QCStatus.WARNING,
+            detail=f"The engine locked a washout between periods of {locked_txt} "
+                   f"(source: {source}) but no washout duration was found in the "
+                   f"text. State it in the Synopsis and Study Design.",
+            section="study_design"))
 
 
 # ---------------------------------------------------------------------------
@@ -594,6 +804,10 @@ def run_qc(
                 title="Cannot verify washout (no half-life)", status=QCStatus.WARNING,
                 detail="No terminal half-life was available, so washout adequacy can't be checked.",
                 section="study_assessments"))
+
+    # ── 4b. Washout vs the washout the engine LOCKED (incl. a user override) ──
+    if ss:
+        _check_locked_washout(add, sections, ss, label_of)
 
     # ── 5. PK sampling schedule vs the locked schedule ────────────────────
     _check_sampling(add, sections, population_config)

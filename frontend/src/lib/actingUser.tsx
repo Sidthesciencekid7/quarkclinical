@@ -13,6 +13,7 @@ import type { ReactNode } from 'react'
 import { api } from '../api/client'
 import { authEnabled } from './auth'
 import { ROLE_DISPLAY_NAMES } from '../types'
+import { Badge, ChevronDown } from '../ui'
 import type { AppUser } from '../types'
 
 const STORAGE_KEY = 'protocolai_acting_user_id'
@@ -126,54 +127,53 @@ export function ActingUserProvider({ children }: { children: ReactNode }) {
   )
 }
 
-/** App-header identity control. When identity is bound to the verified Clerk
- *  session it renders a static "Signed in as …" label; in local mode it's the
- *  free "Acting as" dropdown for role-switching demos. */
+/** Identity control. When identity is bound to the verified Clerk session it
+ *  renders a static "Signed in as ..." pill; in local mode it is the free
+ *  "Acting as" pill-select for role-switching demos. In the app shell the same
+ *  switch lives in the workspace menu (shell/WorkspaceMenu.tsx); this component
+ *  remains for the classic headers and renders on its own white pill, so it
+ *  reads on both light and navy backgrounds. */
 export function ActingUserPicker() {
   const { users, currentUser, setCurrentUserId, loading, bound, error } = useActingUser()
 
   if (loading) {
-    return <span className="text-[11px] text-slate-400 font-medium">Loading users…</span>
+    return <Badge variant="neutral">Loading users…</Badge>
   }
   if (error) {
     return (
-      <span className="text-[11px] text-amber-400 font-medium" title={error}>
+      <Badge variant="warning" title={error}>
         Account not provisioned — ask an administrator
-      </span>
+      </Badge>
     )
   }
   if (users.length === 0) {
-    return (
-      <span className="text-[11px] text-amber-400 font-medium">
-        No users seeded — create/edit is disabled
-      </span>
-    )
+    return <Badge variant="warning">No users seeded — create/edit is disabled</Badge>
   }
   if (bound && currentUser) {
     return (
-      <span className="text-[11px] font-medium text-slate-300/80">
-        Signed in as{' '}
-        <span className="text-slate-100 font-semibold">
-          {currentUser.email} — {ROLE_DISPLAY_NAMES[currentUser.role]}
+      <Badge variant="neutral" title={currentUser.email} className="max-w-full">
+        <span className="truncate">
+          Signed in as {currentUser.email} — {ROLE_DISPLAY_NAMES[currentUser.role]}
         </span>
-      </span>
+      </Badge>
     )
   }
 
   return (
-    <label className="flex items-center gap-1.5 text-[11px] font-medium text-slate-300/80">
-      Acting as
+    <label className="relative inline-flex h-8 max-w-full items-center gap-1.5 rounded-pill border border-ink-200 bg-white pl-3 pr-2 text-small font-medium text-ink-500 shadow-xs">
+      <span className="flex-none">Acting as</span>
       <select
         value={currentUser?.id ?? ''}
         onChange={e => setCurrentUserId(e.target.value)}
-        className="bg-white/5 border border-white/10 rounded-md px-1.5 py-1 text-slate-100 text-[11px] font-semibold focus:outline-none focus:ring-1 focus:ring-cyan-400/50 cursor-pointer"
+        className="min-w-0 cursor-pointer appearance-none rounded-pill bg-transparent py-1 pl-1 pr-6 text-small font-semibold text-ink-950 outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
       >
         {users.map(u => (
-          <option key={u.id} value={u.id} className="text-slate-900">
+          <option key={u.id} value={u.id}>
             {u.email} — {ROLE_DISPLAY_NAMES[u.role]}
           </option>
         ))}
       </select>
+      <ChevronDown aria-hidden className="pointer-events-none absolute right-2.5 h-3.5 w-3.5 text-ink-500" />
     </label>
   )
 }

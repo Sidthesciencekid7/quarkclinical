@@ -2,7 +2,7 @@ import LegalLayout from './LegalLayout'
 
 export default function Privacy() {
   return (
-    <LegalLayout title="Privacy Policy" updated="July 12, 2026">
+    <LegalLayout title="Privacy Policy" updated="October 24, 2026">
       <p>
         This Privacy Policy describes what information QuarkClinical (&ldquo;we&rdquo;, &ldquo;us&rdquo;) collects
         when you use the Service, how it is used, and the choices available to you.
@@ -21,6 +21,11 @@ export default function Privacy() {
         <li>
           <strong>Protocol content</strong> &mdash; drug names, study parameters, and the resulting generated
           protocol text, PK data, and exports you create using the Service.
+        </li>
+        <li>
+          <strong>Chat conversations</strong> &mdash; the messages you exchange with the in-app assistant are
+          stored in your organization&rsquo;s workspace and are visible only to the person who created the
+          conversation.
         </li>
         <li>
           <strong>Sales inquiries</strong> &mdash; company name, contact name, email, and any message you submit

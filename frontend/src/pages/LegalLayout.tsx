@@ -1,7 +1,11 @@
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
-import QuarkLogo from '../components/QuarkLogo'
+import { ButtonLink, Surface } from '../ui'
+import { Wordmark } from '../components/QuarkLogo'
 
+/** Shared shell for the public legal pages (Terms, Privacy): a light header
+ *  with the wordmark and a "Back to home" pill, a readable prose column and a
+ *  small footer cross-linking the two documents. */
 export default function LegalLayout({
   title,
   updated,
@@ -12,30 +16,41 @@ export default function LegalLayout({
   children: ReactNode
 }) {
   return (
-    <div className="bg-slate-50 min-h-screen">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="max-w-3xl mx-auto px-5 h-16 flex items-center justify-between">
-          <Link to="/" className="flex items-center gap-2.5">
-            <span className="w-8 h-8 rounded-lg bg-cyan-50 border border-cyan-200 flex items-center justify-center text-cyan-600">
-              <QuarkLogo size={18} />
-            </span>
-            <span className="font-extrabold tracking-tight text-slate-900">
-              Quark<span className="text-cyan-600">Clinical</span>
-            </span>
+    <Surface tone="light" className="min-h-screen bg-surface-canvas">
+      <header className="border-b border-line bg-surface">
+        <div className="mx-auto flex h-16 max-w-3xl items-center justify-between px-5">
+          <Link to="/" aria-label="QuarkClinical home" className="rounded-md">
+            <Wordmark tone="light" size="md" showMark />
           </Link>
-          <Link to="/" className="text-sm font-medium text-slate-500 hover:text-slate-900 transition-colors">
+          <ButtonLink as={Link} to="/" variant="secondary" size="md">
             Back to home
-          </Link>
+          </ButtonLink>
         </div>
       </header>
 
-      <main className="max-w-3xl mx-auto px-5 py-16">
-        <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight mb-2">{title}</h1>
-        <p className="text-sm text-slate-400 mb-10">Last updated {updated}</p>
-        <div className="prose prose-slate prose-headings:font-bold prose-a:text-cyan-600 max-w-none">
+      <main id="main" className="mx-auto max-w-3xl px-5 py-14 sm:py-16">
+        <h1 className="mb-2 text-[2rem] font-semibold leading-tight tracking-[-0.025em] text-fg sm:text-[2.5rem]">
+          {title}
+        </h1>
+        <p className="mb-10 text-small text-fg-subtle">Last updated {updated}</p>
+        <div className="prose prose-zinc max-w-none prose-headings:font-semibold prose-headings:tracking-[-0.01em] prose-a:text-accent-700 prose-a:underline-offset-2 prose-strong:text-fg">
           {children}
         </div>
       </main>
-    </div>
+
+      <footer className="border-t border-line bg-surface">
+        <div className="mx-auto flex max-w-3xl flex-wrap items-center justify-between gap-3 px-5 py-6 text-small text-fg-subtle">
+          <p className="m-0">© {new Date().getFullYear()} QuarkClinical</p>
+          <nav aria-label="Legal" className="flex items-center gap-4">
+            <Link to="/terms" className="rounded-md text-fg-muted hover:text-fg">
+              Terms
+            </Link>
+            <Link to="/privacy" className="rounded-md text-fg-muted hover:text-fg">
+              Privacy
+            </Link>
+          </nav>
+        </div>
+      </footer>
+    </Surface>
   )
 }

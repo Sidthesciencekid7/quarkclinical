@@ -78,6 +78,156 @@ ASSUMED_CV_PCT = 25.0
 
 
 # ---------------------------------------------------------------------------
+# Washout between periods: the engine default and the user-override check
+# ---------------------------------------------------------------------------
+# The washout between dosing periods used to be an arithmetic the PROMPT asked
+# the model to do (ai_service's locked-design block restated 7 x t1/2). Nothing
+# validated a figure a user asked for instead. These helpers make it an engine
+# input with the same shape as the CV override: the number and the basis it is
+# presented under are decided together (routers/protocols.py::_lock_washout),
+# and an override is rejected here rather than written into a regulated
+# document. The floor is the engine's own 7 x t1/2 (WASHOUT_HALF_LIVES above);
+# that multiple is the user's decision, pending pharmacologist confirmation.
+
+# A sponsor-specified washout above this is far beyond any real crossover and is
+# nearly always a unit slip (hours typed as days), so it is refused outright.
+MAX_WASHOUT_OVERRIDE_DAYS = 365.0
+
+# The only designs with more than one dosing period, hence the only ones that
+# carry a washout. A parallel-group design has none.
+WASHOUT_DESIGN_KEYS = ("crossover", "replicate")
+
+_WASHOUT_EPS = 1e-9
+
+
+def _positive_finite(value: object) -> Optional[float]:
+    """``value`` as a float if it is a real, finite, positive number, else None.
+    Booleans are rejected (``True`` is an int in Python and must not read as 1)."""
+    if isinstance(value, bool):
+        return None
+    try:
+        v = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) and v > 0 else None
+
+
+def engine_default_washout(t_half_hours: object) -> Optional[dict]:
+    """The washout between periods the engine states by default: 7 x t1/2.
+
+    Returns ``None`` when the terminal half-life is unknown (no number can be
+    stated honestly). Otherwise a dict with the STATED figure - ``hours`` and
+    ``days`` - plus ``exact_hours`` (the unrounded 7 x t1/2).
+
+    The stated figure uses the rounding the protocol's locked-design block has
+    always used, and which the ICF (services/icf.py::_washout) and the CRF
+    (services/crf_dmp.py::_washout_days) independently repeat: whole hours,
+    rounded UP, when 7 x t1/2 is under a day; otherwise days to one decimal
+    (rounded to nearest, so it can sit up to 0.05 day under the exact product).
+    Keeping that rounding is deliberate - it is the number every document in the
+    package already prints - and it is also the floor ``validate_washout_override``
+    enforces, so the "minimum" in a validation message is the figure the
+    documents show by default.
+    """
+    t = _positive_finite(t_half_hours)
+    if t is None:
+        return None
+    exact_hours = WASHOUT_HALF_LIVES * t
+    if exact_hours < 24.0:
+        hours = float(math.ceil(exact_hours - _WASHOUT_EPS))
+        days = hours / 24.0
+    else:
+        days = round(exact_hours / 24.0, 1)
+        hours = round(days * 24.0, 6)
+    return {
+        "hours": hours,
+        "days": days,
+        "exact_hours": exact_hours,
+        "t_half_hours": t,
+        "rule": f"{WASHOUT_HALF_LIVES:.0f} x t1/2",
+    }
+
+
+def default_washout_days(t_half_hours: object) -> Optional[float]:
+    """The engine's default washout in days (``engine_default_washout()['days']``),
+    or None when the half-life is unknown."""
+    d = engine_default_washout(t_half_hours)
+    return d["days"] if d else None
+
+
+def format_washout_duration(days: float) -> str:
+    """Human wording for a washout length: ``"14 days"``, ``"11.7 days"`` or, for
+    anything under one day, whole-or-decimal ``"14 hours"``."""
+    if days < 1.0:
+        hours = days * 24.0
+        txt = f"{round(hours)}" if abs(hours - round(hours)) < 1e-6 else f"{hours:.1f}"
+        return f"{txt} hour" + ("" if txt == "1" else "s")
+    txt = f"{days:.2f}".rstrip("0").rstrip(".")
+    return f"{txt} day" + ("" if txt == "1" else "s")
+
+
+def validate_washout_override(
+    design_key: Optional[str], t_half_hours: Optional[float], days: object
+) -> tuple[bool, Optional[float], str]:
+    """Check a user-specified washout (``days``) against the design and t1/2.
+
+    Returns ``(ok, minimum_days, message)``. ``minimum_days`` is the engine
+    floor (7 x t1/2, in days, stated as ``engine_default_washout`` states it),
+    or ``None`` when no floor applies or can be computed. ``message`` is a
+    sentence fit to show the user, on success as well as failure.
+
+    Rejected, in this order:
+
+    1. a parallel design - it has no washout period at all;
+    2. any design that is not crossover / replicate (it cannot be checked);
+    3. a non-numeric, non-positive, non-finite value, or one above
+       ``MAX_WASHOUT_OVERRIDE_DAYS``;
+    4. an UNKNOWN terminal half-life. This is the conservative choice: the floor
+       cannot be checked, and a washout shorter than 7 x t1/2 risks carryover
+       into the next period, so an unverifiable override is refused rather than
+       accepted with a flag. It can be set once a half-life exists;
+    5. a value below the floor, with the minimum stated in days.
+    """
+    key = (design_key or "").strip().lower()
+    if key == "parallel":
+        return (False, None,
+                "A parallel design has no washout period, so a washout cannot be set. "
+                "Each subject is dosed once; only a crossover or replicate design "
+                "has a washout between periods.")
+    if key not in WASHOUT_DESIGN_KEYS:
+        return (False, None,
+                "The study design is not a crossover or replicate design, so a "
+                "washout between periods cannot be set or checked.")
+
+    value = _positive_finite(days)
+    if value is None:
+        return (False, None, "The washout must be a positive number of days.")
+    if value > MAX_WASHOUT_OVERRIDE_DAYS:
+        return (False, None,
+                f"A washout of {format_washout_duration(value)} is not plausible; the "
+                f"longest washout accepted is {MAX_WASHOUT_OVERRIDE_DAYS:.0f} days.")
+
+    default = engine_default_washout(t_half_hours)
+    if default is None:
+        return (False, None,
+                "The terminal half-life (t1/2) for this drug is not available, so the "
+                f"minimum washout ({WASHOUT_HALF_LIVES:.0f} x t1/2) cannot be checked and "
+                "the washout was not changed. It can be set once a half-life is "
+                "available.")
+
+    minimum = default["days"]
+    basis = f"{WASHOUT_HALF_LIVES:.0f} x t1/2 with t1/2 = {default['t_half_hours']:.1f} h"
+    if value < minimum - _WASHOUT_EPS:
+        return (False, minimum,
+                f"A washout of {format_washout_duration(value)} is shorter than the "
+                f"minimum of {format_washout_duration(minimum)} ({basis}) needed to "
+                "avoid carryover between periods.")
+    return (True, minimum,
+            f"A washout of {format_washout_duration(value)} meets the minimum of "
+            f"{format_washout_duration(minimum)} ({basis}).")
+
+
+# ---------------------------------------------------------------------------
 # Special functions (no SciPy)
 # ---------------------------------------------------------------------------
 

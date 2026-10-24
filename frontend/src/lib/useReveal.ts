@@ -1,8 +1,25 @@
 import { useEffect, useRef, useState } from 'react'
 
-const prefersReducedMotion = () =>
+/** True when the visitor asked for reduced motion. Safe where `matchMedia` is
+ *  missing (SSR, jsdom): returns false there. */
+export const prefersReducedMotion = (): boolean =>
   typeof window !== 'undefined' &&
+  typeof window.matchMedia === 'function' &&
   window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+/** Reactive reduced-motion flag (updates if the OS setting changes mid-visit). */
+export function useReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(prefersReducedMotion)
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const onChange = () => setReduced(mq.matches)
+    onChange()
+    mq.addEventListener?.('change', onChange)
+    return () => mq.removeEventListener?.('change', onChange)
+  }, [])
+  return reduced
+}
 
 /**
  * Reveal-on-scroll. Adds `is-visible` the first time the element enters the
@@ -18,7 +35,9 @@ export function useReveal<T extends HTMLElement = HTMLDivElement>(
   useEffect(() => {
     const el = ref.current
     if (!el || shown) return
-    if (prefersReducedMotion()) {
+    // Reduced motion, or no IntersectionObserver (old browsers, jsdom): show
+    // the content straight away rather than leaving it invisible.
+    if (prefersReducedMotion() || typeof IntersectionObserver === 'undefined') {
       setShown(true)
       return
     }
@@ -54,7 +73,7 @@ export function useCountUp(
   useEffect(() => {
     const el = ref.current
     if (!el) return
-    if (prefersReducedMotion()) {
+    if (prefersReducedMotion() || typeof IntersectionObserver === 'undefined') {
       setValue(target)
       return
     }
