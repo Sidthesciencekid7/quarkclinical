@@ -62,6 +62,16 @@ describe('crumbsForPath', () => {
     ])
   })
 
+  it('edit and budget conversations sit under their own section once the kind is published', () => {
+    const labels = { [crumbKey.chat('e1')]: 'Edit adalimumab', [crumbKey.chatKind('e1')]: 'protocol_edit' }
+    expect(crumbsForPath('/app/chat/e1', labels)).toEqual([
+      { label: 'Protocols', to: '/app/protocols' },
+      { label: 'Edit adalimumab' },
+    ])
+    expect(crumbsForPath('/app/chat/b1', { [crumbKey.chatKind('b1')]: 'budget' })[0]).toEqual({ label: 'Budgets', to: '/app/budgets' })
+    expect(crumbsForPath('/app/chat/p1', { [crumbKey.chatKind('p1')]: 'protocol' })[0]).toEqual({ label: 'New study', to: '/app/chat/new' })
+  })
+
   it('the classic wizards sit under New study', () => {
     expect(crumbsForPath('/app/protocol')).toEqual([{ label: 'New study', to: '/app/chat/new' }, { label: 'Protocol wizard' }])
     expect(crumbsForPath('/app/budgeting')).toEqual([{ label: 'New study', to: '/app/chat/new' }, { label: 'Budget wizard' }])

@@ -1426,7 +1426,15 @@ class BudgetDraftSpec(_SpecBase):
             rows.append(SpecField(path=path, label=label, display_value=display, status=status, source=source))
 
         row("drug_inn", "Drug", self.effective_drug())
-        row("study_type", "Study type", STUDY_TYPE_LABELS.get(self.study_type or "") if self.study_type else "Engine default")
+        linked_type = (self.protocol or {}).get("study_type")
+        if self.study_type:
+            study_type_display = STUDY_TYPE_LABELS.get(self.study_type)
+        elif linked_type:
+            # Budget creation takes the study type from the linked protocol.
+            study_type_display = f"{STUDY_TYPE_LABELS.get(linked_type, linked_type)} (from linked protocol)"
+        else:
+            study_type_display = "Engine default"
+        row("study_type", "Study type", study_type_display)
         profile = self.resolved_subject_profile()
         row(
             "subject_profile", "Participants",

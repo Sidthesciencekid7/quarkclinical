@@ -175,26 +175,42 @@ const SECTION_BADGE: Record<SectionDiffItem['status'], { label: string; variant:
 
 const MAX_DIFF_LINES = 120
 
+/** A unified-diff line as prose: file/hunk headers dropped, the +/-/space marker
+ *  turned into a change kind so reviewers read sentences, not diff syntax. */
+function parseDiffLines(lines: string[]): { kind: 'added' | 'removed' | 'same'; text: string }[] {
+  return lines
+    .filter(l => !l.startsWith('+++') && !l.startsWith('---') && !l.startsWith('@@'))
+    .map(l => {
+      const kind = l.startsWith('+') ? 'added' : l.startsWith('-') ? 'removed' : 'same'
+      return { kind, text: kind === 'same' && !l.startsWith(' ') ? l : l.slice(1) }
+    })
+}
+
 function DiffLines({ lines }: { lines: string[] }) {
   const [all, setAll] = useState(false)
-  const shown = all ? lines : lines.slice(0, MAX_DIFF_LINES)
+  const shown = parseDiffLines(all ? lines : lines.slice(0, MAX_DIFF_LINES))
   return (
     <>
-      <pre className="m-0 max-h-96 overflow-auto rounded-input border border-line bg-surface-muted p-3 font-mono text-[12px] leading-5">
-        {shown.map((line, i) => (
-          <span
-            key={i}
-            className={cx(
-              'block whitespace-pre-wrap break-words',
-              line.startsWith('+') && !line.startsWith('+++') && 'bg-[var(--ok-bg)] text-[color:var(--ok-fg)]',
-              line.startsWith('-') && !line.startsWith('---') && 'bg-[var(--bad-bg)] text-[color:var(--bad-fg)]',
-              line.startsWith('@@') && 'text-fg-subtle',
-            )}
-          >
-            {line || ' '}
-          </span>
-        ))}
-      </pre>
+      <div className="max-h-96 overflow-auto rounded-input border border-line bg-surface-muted p-3 text-small leading-6">
+        {shown.map((line, i) =>
+          line.text.trim() === '' ? (
+            <div key={i} className="h-2" aria-hidden />
+          ) : (
+            <p
+              key={i}
+              className={cx(
+                'm-0 whitespace-pre-wrap break-words border-l-2 px-2.5',
+                line.kind === 'added' && 'border-[color:var(--ok-fg)] bg-[var(--ok-bg)] text-[color:var(--ok-fg)]',
+                line.kind === 'removed' && 'border-[color:var(--bad-fg)] bg-[var(--bad-bg)] text-[color:var(--bad-fg)] line-through decoration-1',
+                line.kind === 'same' && 'border-transparent text-fg-muted',
+              )}
+            >
+              {line.kind !== 'same' ? <span className="sr-only">{line.kind === 'added' ? 'Added: ' : 'Removed: '}</span> : null}
+              {line.text}
+            </p>
+          ),
+        )}
+      </div>
       {lines.length > MAX_DIFF_LINES && !all ? (
         <Button variant="link" size="sm" onClick={() => setAll(true)}>
           Show all {lines.length} lines

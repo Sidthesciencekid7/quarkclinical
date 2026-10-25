@@ -22,6 +22,14 @@ export const crumbKey = {
   protocol: (id: string) => `protocol:${id}`,
   budget: (id: string) => `budget:${id}`,
   chat: (id: string) => `chat:${id}`,
+  /** The chat's session kind, so its trail sits under the right section. */
+  chatKind: (id: string) => `chatkind:${id}`,
+}
+
+/** Where each kind of conversation lives in the trail. */
+const CHAT_PARENT: Record<string, Crumb> = {
+  protocol_edit: { label: 'Protocols', to: '/app/protocols' },
+  budget: { label: 'Budgets', to: '/app/budgets' },
 }
 
 /** Pure: the trail for a pathname. `labels` maps crumb keys to display names. */
@@ -37,7 +45,7 @@ export function crumbsForPath(pathname: string, labels: Record<string, string> =
     case 'chat':
       if (!id || id === 'new') return [{ label: 'New study' }]
       return [
-        { label: 'New study', to: '/app/chat/new' },
+        CHAT_PARENT[labels[crumbKey.chatKind(id)] ?? ''] ?? { label: 'New study', to: '/app/chat/new' },
         { label: labels[crumbKey.chat(id)] ?? 'Conversation' },
       ]
     case 'protocols': {

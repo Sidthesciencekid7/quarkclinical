@@ -22,6 +22,7 @@ function ChatSessionPage({ sessionId }: { sessionId: string }) {
   const firstUserText = firstUser && firstUser.kind === 'message' ? firstUser.message.text : ''
   const label = session?.title || firstUserText || (session ? `${KIND_LABELS[session.kind]} conversation` : '')
   useSetCrumb(crumbKey.chat(sessionId), label ? ellipsize(label) : null)
+  useSetCrumb(crumbKey.chatKind(sessionId), session?.kind ?? null)
 
   return (
     <div className="h-[calc(100dvh-3.5rem)] min-h-0 w-full">

@@ -411,7 +411,10 @@ describe('card actions send the contract payloads', () => {
     }, { actions: [act('apply_edit', 'Apply to protocol'), act('discard_edit', 'Discard', 'ghost')] })
     const { ctx } = show(c)
     expect(screen.getByText('Adverse Events')).toBeInTheDocument()
-    expect(screen.getByText('+New sentence.')).toBeInTheDocument()
+    // Diff markers become readable changes (announced as Added/Removed), not raw +/- syntax.
+    expect(screen.getByText(/New sentence\./)).toHaveTextContent('Added: New sentence.')
+    expect(screen.getByText(/Old sentence\./)).toHaveTextContent('Removed: Old sentence.')
+    expect(screen.queryByText('+New sentence.')).toBeNull()
     expect(screen.getByText('−12 words')).toBeInTheDocument()
     expect(screen.getByText('1 other section unchanged.')).toBeInTheDocument()
     expect(screen.getByText('24%')).toBeInTheDocument()
