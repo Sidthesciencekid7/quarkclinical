@@ -32,6 +32,7 @@ from models import (
     AuditLog,
     Budget,
     BudgetCategory,
+    ChatSession,
     License,
     LicenseStatus,
     Organization,
@@ -49,6 +50,7 @@ _PATH_TO_RESOURCE: dict[str, str] = {
     "audit": "audit",
     "orgs": "organization",
     "budgets": "budget",
+    "chat": "chat_session",
 }
 
 _LOG_METHODS = frozenset({"POST", "PATCH", "PUT", "DELETE"})
@@ -296,6 +298,35 @@ async def get_budget_scoped(
             403, detail="Budget belongs to a different organization."
         )
     return budget
+
+
+async def get_chat_session_scoped(
+    db: AsyncSession, session_id: uuid.UUID, actor: User,
+) -> ChatSession:
+    """Fetch a chat session for its CREATOR only: 404 if missing, 403 if it
+    belongs to a different org, and 403 if another member of the same org
+    started it. Unlike protocols and budgets (org-shared), chat transcripts are
+    private to the person who started them (user decision 2026-10-23); the org
+    check still applies on top. ``detail`` is the chat routes' ``{code, message}``
+    object so the browser can tell the cases apart."""
+    from services.chat.contract import ChatErrorCode, error_detail  # pure module
+
+    result = await db.execute(select(ChatSession).where(ChatSession.id == session_id))
+    row = result.scalar_one_or_none()
+    if not row:
+        raise HTTPException(404, detail=error_detail(ChatErrorCode.not_found, "Chat not found."))
+    if row.org_id != actor.org_id:
+        raise HTTPException(
+            403, detail=error_detail(ChatErrorCode.forbidden, "Chat belongs to a different organization."),
+        )
+    if row.created_by != actor.id:
+        raise HTTPException(
+            403,
+            detail=error_detail(
+                ChatErrorCode.forbidden, "Chat transcripts are visible only to the person who started them.",
+            ),
+        )
+    return row
 
 
 def _admin_emails() -> set[str]:
