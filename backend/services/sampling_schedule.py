@@ -650,6 +650,7 @@ def compute_sampling_schedule(
     subject_type: str = "healthy",
     additional_timepoints_hours: Optional[list[float]] = None,
     additional_immunogenicity_months: Optional[list[float]] = None,
+    washout_days: Optional[float] = None,
 ) -> dict[str, Any]:
     """Compute THE blood-sampling schedule for this study.
 
@@ -727,6 +728,17 @@ def compute_sampling_schedule(
         the single source of truth this function and
         services.comparative_safety.build_duration_plan() both call, so the
         two never propose different ADA schedules for the same protocol.
+    washout_days:
+        The washout between periods the protocol LOCKED
+        (``_sample_size["washout_days"]``, set by
+        routers/protocols.py::_lock_washout: the engine default or an
+        investigator-specified override). Only the blood-volume audit uses it,
+        to space the periods on the study timeline. Omitted (None) it falls back
+        to 7 x t1/2, the engine default - which (to within the engine's own
+        one-decimal rounding) is never longer than a locked washout, because an
+        override is validated to be at least that. Shorter spacing can only
+        over-state the worst 8-week blood loss of a crossover, not under-state
+        it, so the fallback is conservative.
 
     Returns
     -------
@@ -1307,6 +1319,7 @@ def compute_sampling_schedule(
         extra_profile_offset_hours=(
             (steady_state_dose_number - 1) * tau if dual_profile_biosimilar else None
         ),
+        washout_days=washout_days,
     )
     if not blood["within_limit"]:
         flags.append({
@@ -1414,14 +1427,17 @@ def _blood_volume_audit(
     ada_hours: list[float],
     trough_draws: int,
     extra_profile_offset_hours: Optional[float] = None,
+    washout_days: Optional[float] = None,
 ) -> dict[str, Any]:
     """Total and worst-8-week blood volume, against the healthy-volunteer limit.
 
     The 8-week window is what the limit is actually written against, and in a
     crossover two whole periods can land inside one window - which is precisely
-    the case a per-period total would miss. Period p starts one washout
-    (7 x t1/2, the same figure the protocol already locks) plus one full profile
-    after period p-1.
+    the case a per-period total would miss. Period p starts one washout plus one
+    full profile after period p-1. The washout is the figure the protocol
+    already locks: ``washout_days`` when the caller passes it (the engine
+    default or an investigator-specified override), else 7 x t1/2 - the engine
+    default, never longer than a locked washout.
 
     ``extra_profile_offset_hours``: a multiple-dose biosimilar study collects a
     SECOND full profile (the steady-state one) at this many hours after the
@@ -1438,7 +1454,14 @@ def _blood_volume_audit(
     trough_ml = trough_draws * draw_volume_ml * periods
     total = per_period_pk * periods + ada_ml + trough_ml + SAFETY_LAB_VOLUME_ML
 
-    washout_hours = 0.0 if design == "parallel" else WASHOUT_HALF_LIVES * t_half
+    if design == "parallel":
+        washout_hours = 0.0
+    elif (not isinstance(washout_days, bool)
+          and isinstance(washout_days, (int, float))
+          and math.isfinite(washout_days) and washout_days > 0):
+        washout_hours = float(washout_days) * 24.0   # the protocol's locked washout
+    else:
+        washout_hours = WASHOUT_HALF_LIVES * t_half
     cycle = t_last + washout_hours
 
     # Every draw on one study timeline, then the worst rolling 8-week window.

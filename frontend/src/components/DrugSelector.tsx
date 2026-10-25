@@ -1,271 +1,170 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { useEffect, useId, useRef, useState } from 'react'
 import { api } from '../api/client'
-import type { Drug } from '../types'
+import { Badge, Button, IconButton, Input, Pill, Plus, Search, Spinner, X, cx } from '../ui'
+import type { Drug, DrugModality } from '../types'
 
 interface Props {
-  value: Drug | null
+  /** Currently chosen drug. When set, the selector shows it (with a clear button) instead of the search box. */
+  value?: Drug | null
+  /** Called with the picked drug, or null when the selection is cleared. */
   onChange: (drug: Drug | null) => void
+  /** Label of each result's button (default "Use"), e.g. "Use" -> "Use adalimumab". */
+  pickLabel?: string
+  /**
+   * Called when a valid drug name has no match. Adding a drug to the shared
+   * catalogue is a confirm-card step in chat, so this only *asks* for that
+   * (the assistant then offers the confirm card); the selector never creates a
+   * drug itself. Omit to hide the offer.
+   */
+  onAddRequest?: (inn: string) => void
+  disabled?: boolean
+  autoFocus?: boolean
+  className?: string
 }
 
-function SearchIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-      <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M10 10l3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  )
+const INN_PATTERN = /^[a-zA-Z][a-zA-Z\s-]{1,63}$/
+const isValidInn = (s: string) => INN_PATTERN.test(s.trim())
+
+const MODALITY_LABELS: Record<DrugModality, string> = {
+  biologic: 'Biologic',
+  small_molecule: 'Small molecule',
+  unknown: 'Unclassified',
 }
 
-function SpinnerIcon({ color = '#0891b2' }: { color?: string }) {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="animate-spin">
-      <circle cx="8" cy="8" r="6" stroke="#e2e8f0" strokeWidth="2.5" />
-      <path d="M8 2a6 6 0 016 6" stroke={color} strokeWidth="2.5" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-function XIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-      <path d="M2.5 2.5l8 8M10.5 2.5l-8 8" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-function PlusIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-      <path d="M6.5 2v9M2 6.5h9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-export default function DrugSelector({ value, onChange }: Props) {
+/**
+ * Drug search by INN. Results are listed inline (never in a portal), so it
+ * works inside a scrolling chat card, a drawer or a modal without clipping.
+ * Search starts at 2 characters with a 300 ms debounce.
+ */
+export default function DrugSelector({ value = null, onChange, pickLabel = 'Use', onAddRequest, disabled, autoFocus, className }: Props) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<Drug[]>([])
-  const [isLoading, setIsLoading] = useState(false)
-  const [isAdding, setIsAdding] = useState(false)
-  const [addError, setAddError] = useState<string | null>(null)
-  const [fetchError, setFetchError] = useState<string | null>(null)
-  const [open, setOpen] = useState(false)
-  const [noResults, setNoResults] = useState(false)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const menuRef = useRef<HTMLDivElement>(null)
-  const searchIdRef = useRef(0)
-  const [menuRect, setMenuRect] = useState<{ top: number; left: number; width: number } | null>(null)
-
-  const INN_PATTERN = /^[a-zA-Z][a-zA-Z\s-]{1,63}$/
-  const isValidInn = (s: string) => INN_PATTERN.test(s.trim())
-
-  const menuVisible = (open && results.length > 0) || (noResults && !isLoading)
-
-  // The results dropdown is portaled to <body> (see render) so it can never be
-  // clipped or covered by an ancestor's overflow/stacking context — e.g. the
-  // wizard's Back/Continue button row, which sits right below this card and
-  // was visually swallowing the bottom of the dropdown when it was positioned
-  // as a normal in-flow-relative child. Position is computed from the input
-  // row's real screen coordinates and kept in sync while open.
-  useLayoutEffect(() => {
-    if (!menuVisible) return
-    const updateRect = () => {
-      const el = containerRef.current
-      if (!el) return
-      const rect = el.getBoundingClientRect()
-      setMenuRect({ top: rect.bottom + 8, left: rect.left, width: rect.width })
-    }
-    updateRect()
-    window.addEventListener('scroll', updateRect, true)
-    window.addEventListener('resize', updateRect)
-    return () => {
-      window.removeEventListener('scroll', updateRect, true)
-      window.removeEventListener('resize', updateRect)
-    }
-  }, [menuVisible])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [searched, setSearched] = useState(false)
+  const searchId = useRef(0)
+  const listId = useId()
 
   useEffect(() => {
-    if (query.length < 2) {
+    if (query.trim().length < 2) {
+      searchId.current++
       setResults([])
-      setOpen(false)
-      setNoResults(false)
+      setSearched(false)
+      setError(null)
+      setLoading(false)
       return
     }
-    setNoResults(false)
-    setFetchError(null)
     const t = window.setTimeout(async () => {
-      const requestId = ++searchIdRef.current
-      setIsLoading(true)
+      const mine = ++searchId.current
+      setLoading(true)
+      setError(null)
       try {
-        const data = await api.searchDrugs(query)
-        if (searchIdRef.current !== requestId) return
+        const data = await api.searchDrugs(query.trim())
+        if (mine !== searchId.current) return
         setResults(data)
-        setOpen(data.length > 0)
-        setNoResults(data.length === 0)
-      } catch (err) {
-        if (searchIdRef.current !== requestId) return
+        setSearched(true)
+      } catch (e) {
+        if (mine !== searchId.current) return
         setResults([])
-        setOpen(false)
-        setNoResults(true)
-        setFetchError(err instanceof Error ? err.message : 'Could not reach backend')
+        setSearched(true)
+        setError(e instanceof Error ? e.message : 'Could not reach the server')
       } finally {
-        if (searchIdRef.current === requestId) setIsLoading(false)
+        if (mine === searchId.current) setLoading(false)
       }
     }, 300)
-    return () => clearTimeout(t)
+    return () => window.clearTimeout(t)
   }, [query])
 
-  useEffect(() => {
-    function handle(e: MouseEvent) {
-      const target = e.target as Node
-      const insideInput = containerRef.current?.contains(target)
-      const insideMenu = menuRef.current?.contains(target)
-      if (!insideInput && !insideMenu) {
-        setOpen(false)
-        setNoResults(false)
-      }
-    }
-    document.addEventListener('mousedown', handle)
-    return () => document.removeEventListener('mousedown', handle)
-  }, [])
-
-  const handleSelect = (drug: Drug) => {
+  const pick = (drug: Drug) => {
     onChange(drug)
     setQuery('')
-    setOpen(false)
-    setNoResults(false)
-    setAddError(null)
-    setFetchError(null)
     setResults([])
-  }
-
-  const handleAdd = async () => {
-    setIsAdding(true)
-    setAddError(null)
-    try {
-      const drug = await api.createDrug(query)
-      handleSelect(drug)
-    } catch (err) {
-      setAddError(err instanceof Error ? err.message : 'Failed to add drug')
-    } finally {
-      setIsAdding(false)
-    }
+    setSearched(false)
   }
 
   if (value) {
     return (
-      <div className="flex items-center gap-4 p-4 bg-cyan-50 border border-cyan-200 rounded-xl">
-        <div className="w-10 h-10 bg-cyan-100 rounded-xl flex items-center justify-center flex-shrink-0 border border-cyan-200">
-          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-            <rect x="2" y="7" width="14" height="4" rx="2" stroke="#0891b2" strokeWidth="1.5" />
-            <path d="M7 9h4" stroke="#0891b2" strokeWidth="1.5" strokeLinecap="round" />
-            <path d="M9 7V5M9 11v2" stroke="#0891b2" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
+      <div className={cx('flex items-center gap-3 rounded-input border border-line bg-surface-muted p-3', className)}>
+        <span aria-hidden className="flex h-9 w-9 flex-none items-center justify-center rounded-xl bg-surface text-fg-muted">
+          <Pill className="h-4 w-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-body font-semibold capitalize text-fg">{value.inn}</p>
+          {value.brand_names.length > 0 ? <p className="truncate text-small text-fg-muted">{value.brand_names.join(' · ')}</p> : null}
         </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-base font-bold text-slate-900 capitalize">{value.inn}</p>
-          {value.brand_names.length > 0 && (
-            <p className="text-xs text-cyan-600 font-medium mt-0.5">{value.brand_names.join(' · ')}</p>
-          )}
-          {value.rxnorm_id && (
-            <p className="text-xs text-slate-400 mt-0.5 font-mono">RxNorm: {value.rxnorm_id}</p>
-          )}
-        </div>
-        <button
-          onClick={() => onChange(null)}
-          className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-white rounded-lg transition-colors"
-          aria-label="Clear selection"
-        >
-          <XIcon />
-        </button>
+        <IconButton label="Clear selected drug" icon={<X />} size="sm" disabled={disabled} onClick={() => onChange(null)} />
       </div>
     )
   }
 
+  const trimmed = query.trim()
+  const noMatch = searched && !loading && !error && results.length === 0
+
   return (
-    <div ref={containerRef} className="relative">
-      <div className="relative">
-        <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
-          {isLoading ? <SpinnerIcon /> : <SearchIcon />}
-        </span>
-        <input
-          type="text"
-          value={query}
-          onChange={e => setQuery(e.target.value)}
-          onFocus={() => { if (results.length > 0) setOpen(true) }}
-          onKeyDown={e => {
-            if (e.key === 'Enter') {
-              e.preventDefault()
-              if (results.length > 0) handleSelect(results[0])
-              else if (noResults && isValidInn(query)) handleAdd()
-            }
-            if (e.key === 'Escape') { setOpen(false); setNoResults(false) }
-          }}
-          placeholder="Search any drug by INN — e.g. ibuprofen, semaglutide…"
-          className="input-base pl-10"
-          autoComplete="off"
-        />
-      </div>
+    <div className={className}>
+      <Input
+        shape="pill"
+        type="search"
+        autoComplete="off"
+        autoFocus={autoFocus}
+        disabled={disabled}
+        value={query}
+        onChange={e => setQuery(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            if (results.length > 0) pick(results[0])
+          }
+          if (e.key === 'Escape') setQuery('')
+        }}
+        placeholder="Search any drug by INN, e.g. ibuprofen"
+        aria-label="Search drugs by INN"
+        aria-controls={listId}
+        leftIcon={loading ? <Spinner size={16} /> : <Search />}
+      />
 
-      <p className="text-xs text-slate-400 mt-2 leading-relaxed">
-        Type any INN — if not in the database, you can add it on the spot.
-      </p>
+      <div id={listId} aria-live="polite">
+        {error ? <p className="mt-2 text-small text-[color:var(--bad-fg)]">Search failed: {error}</p> : null}
 
-      {menuVisible && menuRect && createPortal(
-        <div
-          ref={menuRef}
-          style={{ position: 'fixed', top: menuRect.top, left: menuRect.left, width: menuRect.width, zIndex: 9999 }}
-        >
-          {open && results.length > 0 && (
-            <ul className="bg-white border border-slate-200 rounded-xl shadow-xl max-h-64 overflow-y-auto divide-y divide-slate-100">
-              {results.map(drug => (
-                <li key={drug.id}>
-                  <button
-                    type="button"
-                    onClick={() => handleSelect(drug)}
-                    className="w-full text-left px-4 py-3 hover:bg-cyan-50 transition-colors first:rounded-t-xl last:rounded-b-xl cursor-pointer"
-                  >
-                    <p className="text-sm font-semibold text-slate-900 capitalize">{drug.inn}</p>
-                    {drug.brand_names.length > 0 && (
-                      <p className="text-xs text-slate-500 mt-0.5">{drug.brand_names.join(' · ')}</p>
-                    )}
-                    {drug.rxnorm_id && (
-                      <p className="text-xs text-slate-400 mt-0.5 font-mono">RxNorm: {drug.rxnorm_id}</p>
-                    )}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-
-          {noResults && !isLoading && (
-            <div className="bg-white border border-slate-200 rounded-xl shadow-xl p-5 text-center">
-              {fetchError ? (
-                <p className="text-sm text-red-500 font-medium">Backend error: {fetchError}</p>
-              ) : (
-                <>
-                  <p className="text-sm text-slate-600 font-medium">
-                    No results for &ldquo;{query}&rdquo;
+        {results.length > 0 ? (
+          <ul className="m-0 mt-2 max-h-64 list-none divide-y divide-line overflow-y-auto rounded-input border border-line p-0">
+            {results.map(drug => (
+              <li key={drug.id} className="flex items-center gap-3 px-3 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-body font-semibold capitalize text-fg">{drug.inn}</p>
+                  <p className="flex flex-wrap items-center gap-x-2 text-small text-fg-muted">
+                    {drug.brand_names.length > 0 ? <span className="truncate">{drug.brand_names.join(' · ')}</span> : null}
+                    {drug.modality && drug.modality !== 'unknown' ? <Badge variant="neutral">{MODALITY_LABELS[drug.modality]}</Badge> : null}
                   </p>
-                  <p className="text-xs text-slate-400 mt-0.5">Add it to the database to continue</p>
-                </>
-              )}
-              {addError && <p className="text-xs text-red-500 mt-1">{addError}</p>}
-              {!isValidInn(query) && <p className="text-xs text-amber-600 mt-1">Drug name must be 2-64 letters, spaces, or hyphens only.</p>}
-              <button
-                type="button"
-                onClick={handleAdd}
-                disabled={isAdding || !isValidInn(query)}
-                className="mt-3 inline-flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-60 text-white text-sm font-semibold rounded-lg transition-colors cursor-pointer"
+                </div>
+                <Button size="sm" variant="secondary" disabled={disabled} onClick={() => pick(drug)} aria-label={`${pickLabel} ${drug.inn}`}>
+                  {pickLabel}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+
+        {noMatch ? (
+          <div className="mt-2 rounded-input border border-line px-3 py-2.5 text-small">
+            <p className="text-fg-muted">No drug in the catalogue matches &ldquo;{trimmed}&rdquo;.</p>
+            {!isValidInn(trimmed) ? (
+              <p className="mt-1 text-[color:var(--warn-fg)]">A drug name is 2 to 64 letters, spaces or hyphens only.</p>
+            ) : onAddRequest ? (
+              <Button
+                size="sm"
+                variant="secondary"
+                className="mt-2"
+                leftIcon={<Plus />}
+                disabled={disabled}
+                onClick={() => onAddRequest(trimmed.toLowerCase())}
               >
-                {isAdding ? <SpinnerIcon color="white" /> : <PlusIcon />}
-                {isAdding ? 'Adding…' : `Add "${query.trim().toLowerCase()}"`}
-              </button>
-            </div>
-          )}
-        </div>,
-        document.body
-      )}
+                Ask to add &ldquo;{trimmed.toLowerCase()}&rdquo;
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
     </div>
   )
 }

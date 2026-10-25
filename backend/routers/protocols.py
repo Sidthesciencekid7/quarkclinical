@@ -1063,6 +1063,9 @@ def _augment_config_with_design(
         additional_immunogenicity_months=_parse_number_list(
             cfg.get("additional_immunogenicity_timepoints_months")
         ),
+        # The locked washout (engine default or validated override) so the
+        # blood-volume cycle spaces periods exactly as the protocol states.
+        washout_days=(cfg.get("_sample_size") or {}).get("washout_days"),
     )
     sched = cfg.get("_sampling_schedule")
 
@@ -1611,6 +1614,9 @@ async def list_protocols(
             status=p.status,
             section_count=sum(1 for v in (p.sections or {}).values() if v),
             created_at=p.created_at,
+            # Rows that predate migration 007 (or a NULL read) count as finished.
+            generation_status=p.generation_status or "complete",
+            generation_error=p.generation_error,
         )
         for p in protocols
     ]

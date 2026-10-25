@@ -65,7 +65,7 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any, Optional
 
-from services.biostatistics import WASHOUT_HALF_LIVES
+from services.biostatistics import WASHOUT_HALF_LIVES, format_washout_duration
 from services.design_decisions import extract_label_routes
 from services.guidelines import get_profile
 
@@ -1393,11 +1393,101 @@ def _n_periods(ss: dict[str, Any]) -> tuple[int, str]:
     return 2, "two-period crossover"
 
 
+def _locked_washout_days(ss: dict[str, Any]) -> Optional[float]:
+    """The engine-locked washout between periods in days
+    (routers/protocols.py::_lock_washout -> ``ss["washout_days"]``), or None when
+    it is absent, not a real positive number, or the lock states no figure."""
+    value = ss.get("washout_days")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return float(value)
+
+
+def _locked_washout_facts(
+    ss: dict[str, Any], days: float, t_half: Optional[float]
+) -> dict[str, Any]:
+    """The consent form's washout facts for a figure the ENGINE locked.
+
+    Wording mirrors ``ai_service._locked_washout_line`` so the two documents
+    cannot state the figure differently: an investigator-specified override is
+    stated as the planned washout (``format_washout_duration``, no ">="), the
+    engine default keeps the ">= N days" / ">= N hours" form (hours below one
+    day) the form has always used."""
+    hours = ss.get("washout_hours")
+    if (isinstance(hours, bool) or not isinstance(hours, (int, float))
+            or not math.isfinite(hours) or hours <= 0):
+        hours = days * 24.0
+    source = ss.get("washout_source")
+    basis_from_lock = (
+        f"locked in the protocol - {source}" if source else "locked in the protocol"
+    )
+
+    if ss.get("washout_is_user_override") is True:
+        stated = format_washout_duration(days)
+        return {
+            "applicable": True,
+            "hours": round(float(hours), 1),
+            "days": round(days, 4),
+            "protocol_text": stated,
+            "plain": (
+                f"There is a gap of {stated} between stays so the medicine leaves "
+                "your body."
+            ),
+            "basis": basis_from_lock,
+            "locked": True,
+            "is_user_override": True,
+        }
+
+    if days < 1.0:
+        whole_hours = round(days * 24.0)
+        text = f">= {whole_hours} hours"
+        plain = (
+            f"There is a gap of at least {whole_hours} hours between stays so "
+            "the medicine leaves your body."
+        )
+    else:
+        text = f">= {days:.1f} days"
+        plain = (
+            f"There is a gap of about {days:.0f} days between stays so the "
+            "medicine leaves your body."
+        )
+    basis = (
+        f"{WASHOUT_HALF_LIVES:.0f} x terminal half-life (t1/2 = {float(t_half):.1f} h)"
+        if t_half else basis_from_lock
+    )
+    return {
+        "applicable": True,
+        "hours": round(float(hours), 1),
+        "days": round(days, 4),
+        "protocol_text": text,
+        "plain": plain,
+        "basis": basis,
+        "locked": True,
+        "is_user_override": False,
+    }
+
+
 def _washout(ss: dict[str, Any], t_half: Optional[float]) -> dict[str, Any]:
-    """Washout between periods, computed with the SAME rule and formatting the
-    protocol's locked-design block uses (7 x t1/2, hours below one day). Any
-    divergence here would put a different number in the two documents."""
-    if ss.get("design_key") == "parallel":
+    """Washout between periods. The protocol's ENGINE-LOCKED value wins; only a
+    protocol stored before the lock existed recomputes it.
+
+    * The sample-size block carries ``washout_applicable`` once
+      ``_lock_washout`` has decided the washout. Then this function states that
+      value and nothing else: the engine default (7 x t1/2) or an
+      investigator-specified override (``washout_is_user_override``), with the
+      same wording the protocol's locked-design block uses for each. A locked
+      "not applicable" is the parallel-group answer; a locked "applicable but no
+      figure" (no half-life) falls through to the visible placeholder, never to
+      a number the protocol does not state.
+    * Without those keys (an older stored protocol) the original rule is kept
+      unchanged: the SAME rule and formatting the protocol's locked-design block
+      used (7 x t1/2, hours below one day). Any divergence here would put a
+      different number in the two documents."""
+    lock = ss.get("washout_applicable")
+    locked = isinstance(lock, bool)
+    if ss.get("design_key") == "parallel" or (locked and lock is False):
         return {
             "applicable": False,
             "hours": None,
@@ -1406,6 +1496,14 @@ def _washout(ss: dict[str, Any], t_half: Optional[float]) -> dict[str, Any]:
             "plain": "You take the study medicine once, so there is no gap to wait through.",
             "basis": "parallel-group design",
         }
+    if locked:
+        locked_days = _locked_washout_days(ss)
+        if locked_days is not None:
+            return _locked_washout_facts(ss, locked_days, t_half)
+        # The lock found no half-life to apply 7 x t1/2 to, so the protocol
+        # states no figure - and this form must not invent one from a half-life
+        # the protocol did not use.
+        t_half = None
     if not t_half:
         return {
             "applicable": True,
@@ -2141,9 +2239,16 @@ def _build_sections(
         f"about {dur['nights_per_period']} night(s) each.",
     ]
     if washout.get("applicable") and washout.get("days"):
-        duration_bullets.append(
-            f"Gap between stays: about {washout['days']:.0f} days."
-        )
+        if washout.get("is_user_override"):
+            # An investigator-specified figure is stated as given: "about" plus
+            # a whole-day rounding would turn 10.5 days into "about 10 days".
+            duration_bullets.append(
+                f"Gap between stays: {format_washout_duration(washout['days'])}."
+            )
+        else:
+            duration_bullets.append(
+                f"Gap between stays: about {washout['days']:.0f} days."
+            )
     if dur["ambulatory_visits_per_period"]:
         duration_bullets.append(
             f"Return visits for blood samples: about "

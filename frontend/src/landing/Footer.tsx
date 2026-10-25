@@ -9,13 +9,13 @@ const PRODUCT_LINKS: [string, string][] = [
   ['FAQ', '#faq'],
 ]
 
-const LINK_CLASS =
-  'rounded-md text-small text-fg-muted transition-colors duration-fast hover:text-fg'
+const LINK_CLASS = 'rounded-md text-small text-fg-muted transition-colors duration-fast hover:text-fg'
 
 export function Footer({ onContact }: { onContact: () => void }) {
   return (
-    <Surface as="footer" tone="dark">
-      <div className="mx-auto grid max-w-6xl grid-cols-2 gap-8 px-5 py-14 md:grid-cols-4">
+    <Surface as="footer" tone="dark" className="relative">
+      <div aria-hidden className="lp-hair absolute inset-x-0 top-0" />
+      <div className="mx-auto grid max-w-6xl grid-cols-2 gap-8 px-5 py-16 md:grid-cols-4">
         <div className="col-span-2 md:col-span-1">
           <Wordmark tone="dark" size="md" showMark />
           <p className="mt-4 max-w-xs text-small text-fg-muted">
@@ -38,12 +38,7 @@ export function Footer({ onContact }: { onContact: () => void }) {
           <p className="mb-4 text-eyebrow uppercase text-fg-subtle">Company</p>
           <ul className="m-0 flex list-none flex-col gap-2.5 p-0">
             <li>
-              <Button
-                variant="link"
-                size="sm"
-                onClick={onContact}
-                className="!text-fg-muted hover:!text-fg"
-              >
+              <Button variant="link" size="sm" onClick={onContact} className="!text-fg-muted hover:!text-fg">
                 Book a demo
               </Button>
             </li>
@@ -67,7 +62,9 @@ export function Footer({ onContact }: { onContact: () => void }) {
       </div>
       <div className="border-t border-line">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 px-5 py-6 text-small text-fg-subtle sm:flex-row">
-          <p className="m-0">© {new Date().getFullYear()} QuarkClinical. For investigational use; outputs require expert review.</p>
+          <p className="m-0">
+            © {new Date().getFullYear()} QuarkClinical. For investigational use; outputs require expert review.
+          </p>
           <p className="m-0">Audit trail · Role-based review · Electronic signature</p>
         </div>
       </div>

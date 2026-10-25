@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
+import { Badge, Button, Input, cx } from '../ui'
+import type { BadgeVariant } from '../ui'
 import { USER_INDICATION_MAX_CHARS } from '../types'
 import type { Drug, IndicationCandidate, PatientPopulationPreview, StudyType } from '../types'
 
@@ -8,6 +10,7 @@ interface Props {
   studyType: StudyType
   value: string
   onChange: (text: string) => void
+  className?: string
 }
 
 const DEBOUNCE_MS = 700
@@ -16,11 +19,12 @@ const DEBOUNCE_MS = 700
 // stripped client-side; the server sanitises again and is authoritative.
 const UNSAFE_CHARS = /[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u2028\u2029]/g
 
-function clean(text: string): string {
+/** Strip unsafe characters and cap at the indication limit (used by every indication input). */
+export function cleanIndication(text: string): string {
   return text.replace(UNSAFE_CHARS, ' ').replace(/ {2,}/g, ' ').slice(0, USER_INDICATION_MAX_CHARS)
 }
 
-const SETTING_LABELS: Record<string, string> = {
+export const SETTING_LABELS: Record<string, string> = {
   adjuvant: 'Adjuvant (post-surgery)',
   low_burden: 'Low tumour burden',
   high_burden: 'Metastatic / high tumour burden',
@@ -28,38 +32,42 @@ const SETTING_LABELS: Record<string, string> = {
   unknown: 'Setting not established',
 }
 
-const MONO_LABELS: Record<string, string> = {
+export const MONO_LABELS: Record<string, string> = {
   yes: 'Monotherapy',
   possible: 'Monotherapy possible',
   no: 'With background therapy',
 }
 
-function Badge({ tone, children }: { tone: 'emerald' | 'amber' | 'cyan' | 'slate'; children: React.ReactNode }) {
-  const cls = {
-    emerald: 'text-emerald-700 bg-emerald-50 border-emerald-100',
-    amber: 'text-amber-700 bg-amber-50 border-amber-200',
-    cyan: 'text-cyan-700 bg-cyan-50 border-cyan-100',
-    slate: 'text-slate-600 bg-slate-50 border-slate-200',
-  }[tone]
-  return <span className={`text-[10px] font-bold border px-1.5 py-0.5 rounded-full ${cls}`}>{children}</span>
+/** The candidate fields the badges read (wizard `IndicationCandidate` and the chat card's candidate both fit). */
+export interface CandidateBadgeSource {
+  on_label: boolean
+  tumor_setting?: string | null
+  monotherapy?: string | null
 }
 
-function CandidateBadges({ c }: { c: IndicationCandidate }) {
+export function CandidateBadges({ c, className }: { c: CandidateBadgeSource; className?: string }) {
   const setting = c.tumor_setting
-  const settingTone = setting === 'adjuvant' || setting === 'low_burden' || setting === 'not_applicable'
-    ? 'emerald'
-    : setting === 'high_burden' ? 'amber' : 'slate'
-  const monoTone = c.monotherapy === 'yes' ? 'emerald' : c.monotherapy === 'possible' ? 'cyan' : 'amber'
+  const settingTone: BadgeVariant =
+    setting === 'adjuvant' || setting === 'low_burden' || setting === 'not_applicable' ? 'success' : setting === 'high_burden' ? 'warning' : 'neutral'
+  const mono = c.monotherapy ?? ''
+  const monoTone: BadgeVariant = mono === 'yes' ? 'success' : mono === 'possible' ? 'info' : 'warning'
   return (
-    <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
-      {c.on_label ? <Badge tone="emerald">On label</Badge> : <Badge tone="amber">Not confirmed on label</Badge>}
-      {setting && <Badge tone={settingTone}>{SETTING_LABELS[setting] ?? setting}</Badge>}
-      {MONO_LABELS[c.monotherapy] && <Badge tone={monoTone}>{MONO_LABELS[c.monotherapy]}</Badge>}
+    <div className={cx('mt-1.5 flex flex-wrap items-center gap-1.5', className)}>
+      {c.on_label ? <Badge variant="success">On label</Badge> : <Badge variant="warning">Not confirmed on label</Badge>}
+      {setting ? <Badge variant={settingTone}>{SETTING_LABELS[setting] ?? setting}</Badge> : null}
+      {MONO_LABELS[mono] ? <Badge variant={monoTone}>{MONO_LABELS[mono]}</Badge> : null}
     </div>
   )
 }
 
-export default function PatientIndicationPanel({ drug, studyType, value, onChange }: Props) {
+/**
+ * Live indication ranking for a patient biosimilar PK study: type an
+ * indication (or keep the engine's pick) and see it checked against the label.
+ * Self-contained: it fetches the credit-free `indication-preview` itself. The
+ * chat indication card shows the same information from the server's card data
+ * and re-uses `CandidateBadges` / `cleanIndication` from here.
+ */
+export default function PatientIndicationPanel({ drug, studyType, value, onChange, className }: Props) {
   const [draft, setDraft] = useState(value)
   const [preview, setPreview] = useState<PatientPopulationPreview | null>(null)
   const [loading, setLoading] = useState(false)
@@ -76,10 +84,17 @@ export default function PatientIndicationPanel({ drug, studyType, value, onChang
     const mine = ++seq.current
     setLoading(true)
     setError(null)
-    api.indicationPreview(drug.id, studyType, text || undefined)
-      .then(res => { if (mine === seq.current) setPreview(res) })
-      .catch(e => { if (mine === seq.current) setError(e instanceof Error ? e.message : 'request failed') })
-      .finally(() => { if (mine === seq.current) setLoading(false) })
+    api
+      .indicationPreview(drug.id, studyType, text || undefined)
+      .then(res => {
+        if (mine === seq.current) setPreview(res)
+      })
+      .catch(e => {
+        if (mine === seq.current) setError(e instanceof Error ? e.message : 'request failed')
+      })
+      .finally(() => {
+        if (mine === seq.current) setLoading(false)
+      })
   }
 
   useEffect(() => {
@@ -104,147 +119,134 @@ export default function PatientIndicationPanel({ drug, studyType, value, onChang
     pending.current = true
     timer.current = setTimeout(() => {
       pending.current = false
-      const text = clean(draft).trim()
+      const text = cleanIndication(draft).trim()
       onChangeRef.current(text)
       load(text)
     }, DEBOUNCE_MS)
-    return () => { if (timer.current) clearTimeout(timer.current) }
+    return () => {
+      if (timer.current) clearTimeout(timer.current)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft])
 
   // Commit immediately (not after the debounce) on blur and on unmount, so
-  // typing an indication and clicking Next/Back straight away never drops it.
+  // typing an indication and moving on straight away never drops it.
   const flush = () => {
     if (!pending.current) return
     pending.current = false
     if (timer.current) clearTimeout(timer.current)
-    const text = clean(draftRef.current).trim()
+    const text = cleanIndication(draftRef.current).trim()
     onChangeRef.current(text)
     load(text)
   }
-  useEffect(() => () => {
-    if (!pending.current) return
-    pending.current = false
-    onChangeRef.current(clean(draftRef.current).trim())
-  }, [])
+  useEffect(
+    () => () => {
+      if (!pending.current) return
+      pending.current = false
+      onChangeRef.current(cleanIndication(draftRef.current).trim())
+    },
+    [],
+  )
 
   const engine = preview?.engine_recommended ?? null
   const ranked = preview?.ranked ?? []
   const unavailable = error !== null || (preview !== null && preview.applicable === false)
   const unavailableReason = error ?? preview?.reason ?? 'not applicable to this product'
 
+  const badgeSource = (c: IndicationCandidate): CandidateBadgeSource => ({ on_label: c.on_label, tumor_setting: c.tumor_setting, monotherapy: c.monotherapy })
+
   return (
-    <div className="section-card px-4 py-3.5 space-y-3">
+    <div className={cx('space-y-3 rounded-input border border-line bg-surface px-4 py-3.5', className)}>
       <div>
-        <span className="text-sm font-semibold text-slate-900">Study indication</span>
-        <p className="text-[13px] text-slate-500 leading-snug mt-1">
-          Ranked by the engine: on-label → biologic-naive → lowest-variability setting (adjuvant / low tumour burden /
-          non-oncology) → monotherapy → lowest PK variability → recruitability. You may enter your own indication
-          instead; it is checked against the label and compared with the engine&apos;s pick.
+        <span className="text-body font-semibold text-fg">Study indication</span>
+        <p className="mt-1 text-small text-fg-muted">
+          Ranked by the engine: on-label, then biologic-naive, then lowest-variability setting (adjuvant / low tumour burden / non-oncology),
+          then monotherapy, lowest PK variability and recruitability. You may enter your own indication instead; it is checked against the
+          label and compared with the engine&apos;s pick.
         </p>
       </div>
 
       <div>
         <div className="flex items-center justify-between">
-          <label htmlFor="user-indication" className="text-[11px] font-bold text-slate-500 uppercase tracking-widest">
+          <label htmlFor="user-indication" className="text-eyebrow uppercase text-fg-subtle">
             Your indication (optional)
           </label>
-          <span className="text-[11px] text-slate-400 tabular-nums">{draft.length}/{USER_INDICATION_MAX_CHARS}</span>
+          <span className="text-small tabular-nums text-fg-subtle">
+            {draft.length}/{USER_INDICATION_MAX_CHARS}
+          </span>
         </div>
-        <div className="flex gap-2 mt-1.5">
-          <input
+        <div className="mt-1.5 flex gap-2">
+          <Input
             id="user-indication"
             type="text"
             maxLength={USER_INDICATION_MAX_CHARS}
             value={draft}
-            onChange={e => setDraft(clean(e.target.value))}
+            onChange={e => setDraft(cleanIndication(e.target.value))}
             onBlur={flush}
             placeholder="e.g. Resected stage III melanoma (adjuvant, monotherapy)"
-            className="input-base flex-1"
           />
-          <button
-            type="button"
-            onClick={() => setDraft('')}
-            disabled={draft === ''}
-            className="btn-ghost disabled:opacity-40 disabled:cursor-not-allowed"
-          >
+          <Button variant="ghost" onClick={() => setDraft('')} disabled={draft === ''}>
             Clear
-          </button>
+          </Button>
         </div>
       </div>
 
-      {loading && !preview && !error && (
-        <div className="h-[56px] rounded-xl border border-slate-200 bg-slate-50/60 animate-pulse" />
-      )}
+      {loading && !preview && !error ? <div className="h-14 animate-pulse rounded-input border border-line bg-surface-muted" /> : null}
 
-      {unavailable && (
-        <div className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-[13px] text-slate-500">
+      {unavailable ? (
+        <div className="rounded-input border border-line bg-surface-muted px-3.5 py-2.5 text-small text-fg-muted">
           Indication ranking unavailable: {unavailableReason}
         </div>
-      )}
+      ) : null}
 
-      {!unavailable && preview && engine && (
-        <div className="rounded-xl border border-cyan-100 bg-cyan-50/40 px-3.5 py-2.5">
+      {!unavailable && preview && engine ? (
+        <div className="rounded-input border border-[color:var(--info-border)] bg-[var(--info-bg)] px-3.5 py-2.5">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-semibold text-slate-900">{engine.indication}</span>
-            <Badge tone="cyan">Engine recommendation</Badge>
+            <span className="text-body font-semibold text-fg">{engine.indication}</span>
+            <Badge variant="info">Engine recommendation</Badge>
           </div>
-          <CandidateBadges c={engine} />
-          {engine.rank_reason && <p className="text-[12px] text-slate-500 leading-snug mt-1.5">{engine.rank_reason}</p>}
+          <CandidateBadges c={badgeSource(engine)} />
+          {engine.rank_reason ? <p className="mt-1.5 text-small text-fg-muted">{engine.rank_reason}</p> : null}
         </div>
-      )}
+      ) : null}
 
-      {!unavailable && preview?.user_specified && preview.recommended && (
-        <div className="rounded-xl border border-slate-300 bg-white px-3.5 py-2.5">
-          <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest">
-            Your indication (locked into the protocol)
-          </p>
-          <p className="text-sm font-semibold text-slate-900 mt-1">{preview.recommended.indication}</p>
-          <CandidateBadges c={preview.recommended} />
+      {!unavailable && preview?.user_specified && preview.recommended ? (
+        <div className="rounded-input border border-line-strong bg-surface px-3.5 py-2.5">
+          <p className="text-eyebrow uppercase text-fg-subtle">Your indication (locked into the protocol)</p>
+          <p className="mt-1 text-body font-semibold text-fg">{preview.recommended.indication}</p>
+          <CandidateBadges c={badgeSource(preview.recommended)} />
           {(preview.user_indication_warnings ?? []).map((w, i) => (
-            <div key={i} className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800 leading-snug">
+            <div key={i} className="mt-2 rounded-input border border-[color:var(--warn-border)] bg-[var(--warn-bg)] px-3 py-2 text-small text-[color:var(--warn-fg)]">
               {w}
             </div>
           ))}
-          {engine && (
-            <p className="text-[12px] text-slate-500 mt-2">
-              Engine recommendation for comparison: {engine.indication}
-            </p>
-          )}
+          {engine ? <p className="mt-2 text-small text-fg-muted">Engine recommendation for comparison: {engine.indication}</p> : null}
         </div>
-      )}
+      ) : null}
 
-      {!unavailable && ranked.length > 0 && (
+      {!unavailable && ranked.length > 0 ? (
         <div>
-          <button
-            type="button"
-            onClick={() => setShowAll(v => !v)}
-            className="text-[12px] font-semibold text-cyan-700 hover:text-cyan-800 cursor-pointer"
-          >
+          <Button variant="link" size="sm" onClick={() => setShowAll(v => !v)} aria-expanded={showAll}>
             {showAll ? 'Hide candidates' : `Show all ${ranked.length} candidates`}
-          </button>
-          {showAll && (
-            <ul className="mt-2 space-y-2">
+          </Button>
+          {showAll ? (
+            <ul className="m-0 mt-2 list-none space-y-2 p-0">
               {ranked.map((c, i) => (
-                <li key={`${c.indication}-${i}`} className="rounded-xl border border-slate-200 px-3.5 py-2.5 flex items-start gap-3">
+                <li key={`${c.indication}-${i}`} className="flex items-start gap-3 rounded-input border border-line px-3.5 py-2.5">
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold text-slate-800">{c.indication}</p>
-                    <CandidateBadges c={c} />
-                    {c.rank_reason && <p className="text-[12px] text-slate-500 leading-snug mt-1.5">{c.rank_reason}</p>}
+                    <p className="text-body font-semibold text-fg">{c.indication}</p>
+                    <CandidateBadges c={badgeSource(c)} />
+                    {c.rank_reason ? <p className="mt-1.5 text-small text-fg-muted">{c.rank_reason}</p> : null}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setDraft(i === 0 ? '' : c.indication)}
-                    className="btn-ghost flex-shrink-0"
-                  >
+                  <Button variant="secondary" size="sm" className="flex-none" onClick={() => setDraft(i === 0 ? '' : c.indication)}>
                     Use this
-                  </button>
+                  </Button>
                 </li>
               ))}
             </ul>
-          )}
+          ) : null}
         </div>
-      )}
+      ) : null}
     </div>
   )
 }

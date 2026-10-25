@@ -1,13 +1,14 @@
-import { useRef, useState } from 'react'
-import { buttonClasses, cx, Surface } from '../ui'
+import { useEffect, useRef, useState } from 'react'
+import { buttonClasses, cx } from '../ui'
 import { useLaunch } from '../lib/auth'
 import { prefersReducedMotion } from '../lib/useReveal'
 import ContactSalesModal from '../components/ContactSalesModal'
 import { Nav } from '../landing/Nav'
 import { Hero } from '../landing/Hero'
+import { Story } from '../landing/Story'
+import { Metrics } from '../landing/Metrics'
 import { Guidance } from '../landing/Guidance'
 import { Products } from '../landing/Products'
-import { TalkItThrough } from '../landing/TalkItThrough'
 import { Why } from '../landing/Why'
 import { HowItWorks } from '../landing/HowItWorks'
 import { Walkthrough } from '../landing/Walkthrough'
@@ -16,21 +17,34 @@ import { Faq } from '../landing/Faq'
 import { FinalCta } from '../landing/FinalCta'
 import { Footer } from '../landing/Footer'
 import { useActiveSection } from '../landing/useActiveSection'
+import { useLandingMotion } from '../landing/useLandingMotion'
 import '../landing/landing.css'
 
 /**
- * Public landing page (redesign F5). Layout: a dark navy nav + hero, light
- * middle sections, a dark final call-to-action card and a dark footer. The
- * sections live in src/landing/; this file only wires them together.
+ * Public landing page: near-black throughout, scroll-driven. The sections live
+ * in src/landing/; this file only wires them together and owns the pieces of
+ * state that must reach the smooth-scroll engine (dialogs pause it).
  *
- * Nothing from the signed-in app (chat, shell, editor) is imported here, so
- * the public bundle stays small and never loads app code for a visitor.
+ * Motion (Lenis + GSAP) is started by useLandingMotion as a separately loaded
+ * chunk and torn down when this page unmounts, so the signed-in app never
+ * inherits it. Nothing from the signed-in app (chat, shell, editor) is
+ * imported here either.
  */
 export default function Landing() {
   const { login } = useLaunch()
   const [contactInterest, setContactInterest] = useState<string | null>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
   const active = useActiveSection()
+  const rootRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
+  const motion = useLandingMotion(rootRef)
+
+  // The demo dialog and the mobile menu own the scroll while they are open.
+  const { setLocked } = motion
+  const locked = menuOpen || contactInterest !== null
+  useEffect(() => {
+    setLocked(locked)
+  }, [locked, setLocked])
 
   const openDemo = () => setContactInterest('Book a demo')
 
@@ -38,15 +52,16 @@ export default function Landing() {
   const startWithStudy = () => {
     const el = composerRef.current
     if (!el) return
-    el.scrollIntoView({ block: 'center', behavior: prefersReducedMotion() ? 'auto' : 'smooth' })
+    if (!motion.scrollTo(el, { center: true })) {
+      el.scrollIntoView({ block: 'center', behavior: prefersReducedMotion() ? 'auto' : 'smooth' })
+    }
     el.focus({ preventScroll: true })
   }
 
   return (
-    <div className="lp-root overflow-x-clip bg-surface-canvas">
+    <div ref={rootRef} data-surface="dark" className="lp-root overflow-x-clip">
       <a
         href="#main"
-        data-surface="dark"
         className={cx(
           buttonClasses({ variant: 'primary', size: 'md' }),
           'sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[60] focus:px-4 focus:py-2',
@@ -55,21 +70,26 @@ export default function Landing() {
         Skip to main content
       </a>
 
-      <Nav active={active} onLogin={() => login()} onDemo={openDemo} />
+      <Nav
+        active={active}
+        menuOpen={menuOpen}
+        onMenuOpenChange={setMenuOpen}
+        onLogin={() => login()}
+        onDemo={openDemo}
+      />
 
       <main id="main" tabIndex={-1} className="outline-none">
         <Hero onDemo={openDemo} textareaRef={composerRef} />
-        <Surface tone="light">
-          <Guidance />
-          <Products />
-          <TalkItThrough />
-          <Why />
-          <HowItWorks />
-          <Walkthrough />
-          <Pricing onContact={setContactInterest} />
-          <Faq />
-          <FinalCta onDemo={openDemo} onStart={startWithStudy} />
-        </Surface>
+        <Story />
+        <Metrics />
+        <Guidance />
+        <Products />
+        <Why />
+        <HowItWorks />
+        <Walkthrough />
+        <Pricing onContact={setContactInterest} />
+        <Faq />
+        <FinalCta onDemo={openDemo} onStart={startWithStudy} />
       </main>
 
       <Footer onContact={openDemo} />

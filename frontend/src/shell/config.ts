@@ -2,13 +2,14 @@
  * Shell-wide switches and link builders.
  *
  * CHAT_ENABLED is the ONE flag that decides where "start a study" links go:
- *  - false (this wave): the chat routes are only a placeholder, so the New
- *    study tiles / Pinned items open the classic wizards that are mounted
- *    inside the shell (`/app/protocol`, `/app/budgeting`).
- *  - true (once the chat UI ships): they open `/app/chat/new?kind=...&preset=...`.
+ *  - true (now): the Home tiles, Pinned items, "New study", "Ask" and the Home
+ *    composer open `/app/chat/new?kind=...&preset=...`.
+ *  - false: they would open the classic wizards at `/app/protocol` and
+ *    `/app/budgeting`. Those wizards were deleted when chat shipped (the two
+ *    paths now redirect to the Protocols and Budgets lists), so leave this on.
  * Flip it here and every tile, pinned item and "New ..." button follows.
  */
-export const CHAT_ENABLED: boolean = false
+export const CHAT_ENABLED: boolean = true
 
 export type StudyKind = 'protocol' | 'budget'
 export type StudyPreset = 'biosimilar_pk' | 'be' | 'food_effect' | 'price'

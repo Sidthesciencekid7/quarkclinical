@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { Button, IconButton, PillNav, type PillNavItem } from '../ui'
 import { Wordmark } from '../components/QuarkLogo'
 import { Boxes, CircleDollarSign, CircleHelp, MenuIcon, Route, X } from './icons'
@@ -12,55 +12,44 @@ const NAV_ITEMS: PillNavItem[] = [
 ]
 
 /**
- * Floating glass navigation (the NORMA header): wordmark pill on the left,
- * segmented icon nav in the centre, "Log in" + "Book a demo" on the right.
- * Below 768px the centre nav collapses into a round menu button that opens a
- * glass sheet. The nav item for the section in view carries aria-current.
+ * Compact floating glass navigation: wordmark pill on the left, segmented icon
+ * nav in the centre, "Log in" + "Book a demo" on the right. The header itself
+ * ignores pointer events so the page stays clickable around the pills. Below
+ * 768px the centre nav collapses into a round menu button that opens a glass
+ * sheet. The nav item for the section in view carries aria-current.
+ *
+ * The menu state lives in the page (`menuOpen`) so it can pause smooth
+ * scrolling while the sheet is open.
  */
 export function Nav({
   active,
+  menuOpen,
+  onMenuOpenChange,
   onLogin,
   onDemo,
 }: {
   active: LandingSectionId | null
+  menuOpen: boolean
+  onMenuOpenChange: (open: boolean) => void
   onLogin: () => void
   onDemo: () => void
 }) {
-  // True once the page has scrolled past the dark hero, i.e. the floating
-  // pills now sit over light sections (they switch to a navy glass, see
-  // landing.css).
-  const [overLight, setOverLight] = useState(false)
-  const [menuOpen, setMenuOpen] = useState(false)
   const menuButtonRef = useRef<HTMLButtonElement>(null)
   const sheetRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const onScroll = () => {
-      const hero = document.getElementById('top')
-      setOverLight(hero ? hero.getBoundingClientRect().bottom < 140 : window.scrollY > 600)
-    }
-    onScroll()
-    window.addEventListener('scroll', onScroll, { passive: true })
-    window.addEventListener('resize', onScroll)
-    return () => {
-      window.removeEventListener('scroll', onScroll)
-      window.removeEventListener('resize', onScroll)
-    }
-  }, [])
 
   // Sheet: Esc closes and returns focus to the button; a click outside closes.
   useEffect(() => {
     if (!menuOpen) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        setMenuOpen(false)
+        onMenuOpenChange(false)
         menuButtonRef.current?.focus()
       }
     }
     const onPointer = (e: PointerEvent) => {
       const t = e.target as Node
       if (sheetRef.current?.contains(t) || menuButtonRef.current?.contains(t)) return
-      setMenuOpen(false)
+      onMenuOpenChange(false)
     }
     document.addEventListener('keydown', onKey)
     document.addEventListener('pointerdown', onPointer)
@@ -68,21 +57,23 @@ export function Nav({
       document.removeEventListener('keydown', onKey)
       document.removeEventListener('pointerdown', onPointer)
     }
-  }, [menuOpen])
+  }, [menuOpen, onMenuOpenChange])
 
   const current = active ? SECTION_TO_NAV[active] : ''
 
   return (
     <header
       data-surface="dark"
-      data-over-light={overLight}
-      className="lp-nav fixed inset-x-0 top-0 z-50 bg-transparent text-fg"
+      className="lp-nav pointer-events-none fixed inset-x-0 top-0 z-50 bg-transparent text-fg"
     >
-      <div className="relative mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 pt-3 sm:px-5 sm:pt-4 md:grid md:grid-cols-[1fr_auto_1fr]">
+      <div
+        data-lp="navin"
+        className="relative mx-auto flex max-w-[62rem] items-center justify-between gap-2 px-3 pt-3 sm:px-5 md:grid md:grid-cols-[1fr_auto_1fr]"
+      >
         <a
           href="#top"
           aria-label="QuarkClinical, back to top"
-          className="lp-glass inline-flex h-10 items-center rounded-pill px-4 md:justify-self-start"
+          className="lp-glass pointer-events-auto inline-flex h-9 items-center rounded-pill px-3.5 md:justify-self-start"
         >
           <Wordmark tone="dark" size="sm" showMark />
         </a>
@@ -91,26 +82,17 @@ export function Nav({
           mode="nav"
           current="true"
           ariaLabel="Main"
+          size="sm"
           items={NAV_ITEMS}
           value={current}
-          className="hidden md:inline-flex"
+          className="pointer-events-auto hidden md:inline-flex"
         />
 
-        <div className="flex items-center gap-2 md:justify-self-end">
-          <Button
-            variant="secondary"
-            size="md"
-            className="hidden h-10 md:inline-flex"
-            onClick={onLogin}
-          >
+        <div className="pointer-events-auto flex items-center gap-2 md:justify-self-end">
+          <Button variant="secondary" size="sm" className="hidden h-9 md:inline-flex" onClick={onLogin}>
             Log in
           </Button>
-          <Button
-            variant="primary"
-            size="md"
-            className="hidden h-10 min-[375px]:inline-flex"
-            onClick={onDemo}
-          >
+          <Button variant="primary" size="sm" className="hidden h-9 min-[375px]:inline-flex" onClick={onDemo}>
             Book a demo
           </Button>
           <IconButton
@@ -118,11 +100,11 @@ export function Nav({
             label={menuOpen ? 'Close menu' : 'Open menu'}
             icon={menuOpen ? <X /> : <MenuIcon />}
             variant="secondary"
-            size="md"
-            className="!h-10 !w-10 md:hidden"
+            size="sm"
+            className="!h-9 !w-9 md:hidden"
             aria-expanded={menuOpen}
             aria-controls="lp-mobile-menu"
-            onClick={() => setMenuOpen(o => !o)}
+            onClick={() => onMenuOpenChange(!menuOpen)}
           />
         </div>
 
@@ -130,7 +112,7 @@ export function Nav({
           <div
             ref={sheetRef}
             id="lp-mobile-menu"
-            className="lp-sheet absolute inset-x-4 top-full mt-2 rounded-[24px] p-3 sm:inset-x-5 md:hidden"
+            className="lp-sheet pointer-events-auto absolute inset-x-3 top-full mt-2 rounded-[24px] p-3 sm:inset-x-5 md:hidden"
           >
             <nav aria-label="Mobile">
               <ul className="m-0 flex list-none flex-col gap-1 p-0">
@@ -139,7 +121,7 @@ export function Nav({
                     <a
                       href={item.href}
                       aria-current={item.id === current ? 'true' : undefined}
-                      onClick={() => setMenuOpen(false)}
+                      onClick={() => onMenuOpenChange(false)}
                       className="flex h-12 items-center gap-3 rounded-2xl px-4 text-[15px] font-medium text-fg-muted transition-colors duration-fast hover:bg-surface-hover hover:text-fg aria-[current=true]:bg-surface-hover aria-[current=true]:text-fg [&>svg]:h-4 [&>svg]:w-4"
                     >
                       {item.icon}
@@ -155,7 +137,7 @@ export function Nav({
                 size="lg"
                 fullWidth
                 onClick={() => {
-                  setMenuOpen(false)
+                  onMenuOpenChange(false)
                   onLogin()
                 }}
               >
@@ -166,7 +148,7 @@ export function Nav({
                 size="lg"
                 fullWidth
                 onClick={() => {
-                  setMenuOpen(false)
+                  onMenuOpenChange(false)
                   onDemo()
                 }}
               >

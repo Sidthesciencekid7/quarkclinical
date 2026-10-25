@@ -2333,16 +2333,40 @@ def _sequences_for(design: str, periods: int) -> tuple[str, ...]:
 # ---------------------------------------------------------------------------
 
 
-def _washout_days(t_half_hours: Optional[float], design: str) -> Optional[float]:
-    """Washout between periods, on the SAME arithmetic the protocol locks.
+def _washout_days(
+    t_half_hours: Optional[float],
+    design: str,
+    ss: Optional[dict[str, Any]] = None,
+) -> Optional[float]:
+    """Washout between periods, on the SAME figure the protocol locks.
 
-    ``ai_service._locked_design_directive`` states washout as 7 x t1/2 and
-    instructs the model to use that exact figure everywhere. Re-deriving it
-    differently here would put the schedule of assessments in conflict with the
-    study design section, so the constant is imported rather than restated.
+    ``ai_service._locked_design_directive`` states the washout and instructs the
+    model to use that exact figure everywhere. Re-deriving it differently here
+    would put the schedule of assessments in conflict with the study design
+    section, so:
+
+    * when the sample-size block ``ss`` carries the ENGINE-LOCKED washout
+      (``washout_applicable`` set by ``routers/protocols.py::_lock_washout``),
+      that value is returned exactly - the engine default or an
+      investigator-specified override alike. A locked "not applicable", or a
+      lock that found no half-life and so states no figure, yields None rather
+      than a number the protocol does not state;
+    * otherwise (a protocol stored before the lock existed, or the engine driven
+      directly) the original 7 x t1/2 arithmetic is kept unchanged, with the
+      constant imported rather than restated.
+
+    A parallel design has no washout whatever ``ss`` says.
     """
     if (design or "").strip().lower() == "parallel":
         return None
+    if isinstance(ss, dict) and isinstance(ss.get("washout_applicable"), bool):
+        if not ss["washout_applicable"]:
+            return None
+        locked = ss.get("washout_days")
+        if (isinstance(locked, bool) or not isinstance(locked, (int, float))
+                or not math.isfinite(locked) or locked <= 0):
+            return None
+        return round(float(locked), 6)
     if not t_half_hours or float(t_half_hours) <= 0:
         return None
     return round(WASHOUT_HALF_LIVES * float(t_half_hours) / 24.0, 1)
@@ -3241,7 +3265,7 @@ def build_crf_spec(
         active.add("pd_coprimary")
 
     sequences = _sequences_for(design, periods)
-    washout = _washout_days(t_half, design)
+    washout = _washout_days(t_half, design, ss)
 
     # -- Instantiate the forms --------------------------------------------
     forms: list[dict[str, Any]] = []
@@ -3364,12 +3388,24 @@ def build_crf_spec(
                    f"adverse event frequency table internally inconsistent.")},
     ])
     if washout is not None:
+        if isinstance(ss, dict) and ss.get("washout_is_user_override") is True:
+            washout_basis = (
+                "Investigator-specified washout - the same figure locked in "
+                "the study design section"
+                + (f" ({ss['washout_source']})" if ss.get("washout_source") else "")
+                + ", reused here rather than re-derived so the schedule of "
+                "assessments cannot disagree with it."
+            )
+        else:
+            washout_basis = (
+                f"{WASHOUT_HALF_LIVES:.0f} x terminal t1/2 - the same "
+                f"figure locked in the study design section, reused here "
+                f"rather than re-derived so the schedule of assessments "
+                f"cannot disagree with it."
+            )
         assumptions.append({
             "key": "washout_days", "value": washout,
-            "basis": (f"{WASHOUT_HALF_LIVES:.0f} x terminal t1/2 - the same "
-                      f"figure locked in the study design section, reused here "
-                      f"rather than re-derived so the schedule of assessments "
-                      f"cannot disagree with it."),
+            "basis": washout_basis,
         })
 
     # -- Assemble ----------------------------------------------------------

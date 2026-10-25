@@ -51,7 +51,7 @@ describe('Landing page', () => {
 
   it('renders every section in order', () => {
     renderLanding()
-    const ids = ['top', 'products', 'chat', 'why', 'how', 'pricing', 'faq', 'cta']
+    const ids = ['top', 'chat', 'proof', 'products', 'why', 'how', 'pricing', 'faq', 'cta']
     const positions = ids.map(id => {
       const el = document.getElementById(id)
       expect(el, `#${id}`).not.toBeNull()
@@ -67,7 +67,7 @@ describe('Landing page', () => {
     expect(screen.getAllByText('Price on request')).toHaveLength(3)
     const text = document.body.textContent!.toLowerCase()
     expect(text).not.toMatch(/certified|testimonial/)
-    expect(screen.getByText(/illustration, example values/i)).toBeInTheDocument()
+    expect(screen.getByText('Illustration — example values')).toBeInTheDocument()
   })
 
   it('opens the contact modal from the pricing tiers with the matching interest pre-selected', () => {

@@ -5,6 +5,7 @@
  * landing sections never import lucide-react directly.
  */
 export {
+  ArrowUp,
   Check,
   ChevronDown,
   FileText,

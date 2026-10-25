@@ -1,6 +1,6 @@
 import { useId, useState } from 'react'
 import { FAQS } from './content'
-import { Reveal, SectionHeading } from './Reveal'
+import { SectionHeading } from './Reveal'
 import { ChevronDown } from './icons'
 
 /**
@@ -14,13 +14,12 @@ export function Faq({ items = FAQS, initialOpen = 0 }: { items?: { q: string; a:
   const baseId = useId()
 
   return (
-    <section id="faq" aria-labelledby="faq-heading" className="scroll-mt-24 bg-surface-canvas py-24">
+    <section id="faq" aria-labelledby="faq-heading" className="relative scroll-mt-20 py-28 sm:py-36">
+      <div aria-hidden className="lp-hair absolute inset-x-0 top-0" />
       <div className="mx-auto max-w-3xl px-5">
-        <Reveal>
-          <SectionHeading id="faq-heading" eyebrow="FAQ" title="Questions, answered" />
-        </Reveal>
+        <SectionHeading id="faq-heading" eyebrow="FAQ" title="Questions, answered." />
 
-        <div className="mt-12 flex flex-col gap-3">
+        <div data-lp="fade" className="mt-16 flex flex-col gap-3">
           {items.map((f, i) => {
             const isOpen = open === i
             const buttonId = `${baseId}-q${i}`
@@ -28,8 +27,8 @@ export function Faq({ items = FAQS, initialOpen = 0 }: { items?: { q: string; a:
             return (
               <div
                 key={f.q}
-                className={`rounded-card border bg-surface transition-colors duration-fast ${
-                  isOpen ? 'border-line-strong' : 'border-line hover:border-line-strong'
+                className={`rounded-[20px] border transition-colors duration-fast ${
+                  isOpen ? 'border-line-strong bg-white/[0.06]' : 'border-line bg-white/[0.025] hover:border-line-strong'
                 }`}
               >
                 <h3 className="m-0">
@@ -39,7 +38,7 @@ export function Faq({ items = FAQS, initialOpen = 0 }: { items?: { q: string; a:
                     aria-expanded={isOpen}
                     aria-controls={panelId}
                     onClick={() => setOpen(isOpen ? null : i)}
-                    className="flex w-full cursor-pointer items-center justify-between gap-4 rounded-card px-5 py-4 text-left text-body font-semibold text-fg"
+                    className="flex w-full cursor-pointer items-center justify-between gap-4 rounded-[20px] px-6 py-5 text-left text-[1.0625rem] font-semibold leading-6 tracking-[-0.01em] text-fg"
                   >
                     <span>{f.q}</span>
                     <ChevronDown
@@ -52,7 +51,7 @@ export function Faq({ items = FAQS, initialOpen = 0 }: { items?: { q: string; a:
                 </h3>
                 <div id={panelId} role="region" aria-labelledby={buttonId} data-open={isOpen} className="lp-acc">
                   <div>
-                    <p className="m-0 px-5 pb-5 text-body text-fg-muted">{f.a}</p>
+                    <p className="m-0 px-6 pb-6 text-body text-fg-muted">{f.a}</p>
                   </div>
                 </div>
               </div>

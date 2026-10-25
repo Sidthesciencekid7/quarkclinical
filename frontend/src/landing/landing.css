@@ -1,29 +1,128 @@
 /* ════════════════════════════════════════════════════════════════════
-   Public landing page - landing-only styles (redesign F5).
+   Public landing page - landing-only styles (scroll-driven redesign, L1).
 
    Imported by src/pages/Landing.tsx only. Every rule is scoped under
-   `.lp-root` (the landing's root element): that raises specificity above the
-   Tailwind utilities in index.css, which is bundled AFTER this file, so these
-   rules win regardless of stylesheet order. Colours come from the surface
-   tokens (--pillnav-bg, --fg, ...) so they flip with data-surface.
+   `.lp-root` (the landing's root element, which carries data-surface="dark"):
+   that raises specificity above the Tailwind utilities / design tokens in
+   index.css, which is bundled AFTER this file, so these rules win regardless
+   of stylesheet order.
+
+   Three render modes share ONE DOM (the pinned story needs >= 1024px; below
+   that, tablets and phones get the stacked story):
+     - static (default): everything visible, the story is a stacked list of
+       stages. Used for reduced motion, phones' fallback, no-JS, jsdom and
+       whenever the motion engine fails to load.
+     - `.lp-motion` (set by useLandingMotion before first paint, only when
+       motion is allowed): content that the engine will animate starts hidden
+       (until the engine claims it with `.lp-in`), and from 1024px up the story
+       becomes a sticky, scroll-scrubbed stage.
+   Removing `.lp-motion` always returns the page to the static mode.
    ════════════════════════════════════════════════════════════════════ */
 
-/* Hero: dark navy radial. */
-.lp-root .lp-hero-bg {
-  background: radial-gradient(120% 80% at 50% 0%, #122a52 0%, #0b1e3d 45%, #081226 100%);
+/* ───────────── tokens: near-black throughout ───────────── */
+
+.lp-root[data-surface="dark"],
+.lp-root [data-surface="dark"] {
+  --bg: #050506;
+  --bg-muted: rgb(255 255 255 / 0.05);
+  --bg-raised: rgb(255 255 255 / 0.04);
+  --bg-pop: #101013;
+  --canvas: #050506;
+  --overlay: rgb(0 0 0 / 0.7);
+  --border: rgb(255 255 255 / 0.1);
+  --border-strong: rgb(255 255 255 / 0.2);
+  --ring-offset: #050506;
+  --shadow-pop: 0 24px 60px -16px rgb(0 0 0 / 0.8);
+  --lp-cyan: #67e8f9;
+  --lp-cyan-strong: #22d3ee;
 }
 
-/* Subtle blueprint grid, softer than the legacy .hero-grid. */
-.lp-root .lp-grid {
-  background-image:
-    linear-gradient(rgba(103, 232, 249, 0.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(103, 232, 249, 0.045) 1px, transparent 1px);
-  background-size: 48px 48px;
-  -webkit-mask-image: radial-gradient(ellipse 75% 55% at 50% 28%, #000 35%, transparent 75%);
-  mask-image: radial-gradient(ellipse 75% 55% at 50% 28%, #000 35%, transparent 75%);
+.lp-root {
+  background-color: #050506;
+  color: var(--fg);
+  font-family: Figtree, -apple-system, BlinkMacSystemFont, 'SF Pro Display', Inter, system-ui, sans-serif;
 }
 
-/* Glass pill (the NORMA wordmark pill, the eyebrow pill). Dark surface only. */
+/* ───────────── typography ───────────── */
+
+.lp-root .lp-h1,
+.lp-root .lp-h2,
+.lp-root .lp-title {
+  font-weight: 700;
+  color: var(--fg);
+  text-wrap: balance;
+}
+.lp-root .lp-h1 {
+  font-size: clamp(2.5rem, 5.8vw, 5.25rem);
+  line-height: 0.98;
+  letter-spacing: -0.055em;
+}
+.lp-root .lp-h2 {
+  font-size: clamp(2.25rem, 5vw, 4.25rem);
+  line-height: 0.98;
+  letter-spacing: -0.05em;
+}
+.lp-root .lp-title {
+  font-size: clamp(1.5rem, 2.6vw, 2.25rem);
+  line-height: 1.04;
+  letter-spacing: -0.04em;
+}
+.lp-root .lp-eyebrow {
+  margin: 0;
+  font-size: 0.9375rem;
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--fg-muted);
+}
+.lp-root .lp-eyebrow--accent {
+  color: var(--lp-cyan);
+}
+.lp-root .lp-lead {
+  font-size: clamp(1.0625rem, 1.5vw, 1.3125rem);
+  line-height: 1.5;
+  letter-spacing: -0.012em;
+  color: var(--fg-muted);
+}
+
+/* Each char/word SplitText creates must not break words mid-way. */
+.lp-root [data-lp="split"] {
+  overflow-wrap: normal;
+}
+
+/* ───────────── hide-until-claimed (motion mode only) ───────────── */
+
+@media (prefers-reduced-motion: no-preference) {
+  .lp-root.lp-motion :is([data-lp="split"], [data-lp="fade"], [data-lp="navin"], [data-lp-item]):not(.lp-in) {
+    opacity: 0;
+  }
+  .lp-root.lp-motion [data-lp="clip"]:not(.lp-in) {
+    clip-path: inset(100% 0 0 0);
+  }
+  .lp-root.lp-motion :is([data-lp="bar"], [data-lp="line"]):not(.lp-in) {
+    transform: scaleX(0);
+    transform-origin: left center;
+  }
+}
+
+/* ───────────── Lenis (only present while the landing is mounted) ───────────── */
+
+html.lenis,
+html.lenis body {
+  height: auto;
+}
+/* index.css sets `html { scroll-behavior: smooth }`; while Lenis runs it owns
+   the easing, so native smoothing must be off even when Lenis is idle. */
+html.lenis,
+html.lenis body {
+  scroll-behavior: auto !important;
+}
+html.lenis.lenis-smooth iframe {
+  pointer-events: none;
+}
+
+/* ───────────── glass + nav ───────────── */
+
 .lp-root .lp-glass {
   background-color: var(--pillnav-bg);
   box-shadow: inset 0 0 0 1px var(--pillnav-border);
@@ -31,40 +130,101 @@
   backdrop-filter: var(--glass-filter);
 }
 
-/* Once the page has scrolled off the dark hero the floating pills sit over
-   light sections, where white-at-10% glass and a white primary pill would
-   vanish. Switch the tokens the pills read to a navy glass and a black
-   primary so they stay legible on any background. */
-.lp-root .lp-nav[data-over-light="true"] {
-  --pillnav-bg: rgb(11 30 61 / 0.9);
-  --pillnav-border: rgb(255 255 255 / 0.14);
-  --btn-secondary-bg: rgb(11 30 61 / 0.9);
-  --btn-secondary-border: rgb(255 255 255 / 0.16);
-  --btn-secondary-hover-bg: rgb(18 37 72 / 0.96);
-  --btn-primary-bg: #0a0a0a;
-  --btn-primary-fg: #ffffff;
-  --btn-primary-hover: #27272a;
-  --glass-filter: blur(16px) saturate(140%);
-}
-.lp-root .lp-nav[data-over-light="true"] .btn-primary {
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.14);
+/* The floating nav sits over anything (black, glows, bright screenshots), so
+   its glass is a darker, blurrier tint than the on-hero default. */
+.lp-root .lp-nav {
+  --pillnav-bg: rgb(14 14 16 / 0.66);
+  --pillnav-border: rgb(255 255 255 / 0.12);
+  --btn-secondary-bg: rgb(14 14 16 / 0.66);
+  --btn-secondary-border: rgb(255 255 255 / 0.14);
+  --btn-secondary-hover-bg: rgb(32 32 36 / 0.8);
+  --glass-filter: blur(22px) saturate(160%);
 }
 
-/* Mobile menu sheet: always a navy panel, so its buttons keep the on-dark
-   look (white primary, white-glass secondary) even when the header has
-   switched to its over-light tokens. */
 .lp-root .lp-sheet {
-  --btn-primary-bg: #ffffff;
-  --btn-primary-fg: #0a0a0a;
-  --btn-primary-hover: #e4e4e7;
   --btn-secondary-bg: rgb(255 255 255 / 0.1);
   --btn-secondary-border: rgb(255 255 255 / 0.14);
   --btn-secondary-hover-bg: rgb(255 255 255 / 0.16);
   --pillnav-border: rgb(255 255 255 / 0.1);
-  background-color: rgb(11 30 61 / 0.94);
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.12), 0 16px 40px -12px rgb(0 0 0 / 0.55);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
-  backdrop-filter: blur(20px) saturate(140%);
+  background-color: rgb(14 14 16 / 0.94);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.12), 0 16px 40px -12px rgb(0 0 0 / 0.7);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  backdrop-filter: blur(22px) saturate(150%);
+}
+
+/* ───────────── hero ───────────── */
+
+.lp-root .lp-hero-bg {
+  background:
+    radial-gradient(60% 45% at 50% 0%, rgb(34 211 238 / 0.13), transparent 70%),
+    #050506;
+}
+.lp-root .lp-grid {
+  background-image:
+    linear-gradient(rgb(255 255 255 / 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 0.035) 1px, transparent 1px);
+  background-size: 56px 56px;
+  -webkit-mask-image: radial-gradient(ellipse 70% 50% at 50% 24%, #000 20%, transparent 72%);
+  mask-image: radial-gradient(ellipse 70% 50% at 50% 24%, #000 20%, transparent 72%);
+}
+.lp-root .lp-orb {
+  background: radial-gradient(circle, rgb(34 211 238 / 0.16), transparent 62%);
+  pointer-events: none;
+}
+.lp-root .lp-orb--teal {
+  background: radial-gradient(circle, rgb(45 212 191 / 0.1), transparent 62%);
+}
+
+/* Fine hairline between sections. */
+.lp-root .lp-hair {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.14), transparent);
+}
+
+/* ───────────── cards ───────────── */
+
+.lp-root .lp-card {
+  border: 1px solid rgb(255 255 255 / 0.09);
+  border-radius: 24px;
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.055), rgb(255 255 255 / 0.018));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05);
+}
+.lp-root .lp-lift {
+  transition:
+    transform 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 0.25s ease-out,
+    background-color 0.25s ease-out;
+}
+.lp-root .lp-lift:hover {
+  transform: translateY(-4px);
+  border-color: rgb(255 255 255 / 0.2);
+}
+
+/* A dark, device-like window for product screenshots. */
+.lp-root .lp-device {
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 20px;
+  background: #0b0b0d;
+  box-shadow:
+    0 40px 90px -30px rgb(0 0 0 / 0.9),
+    0 0 0 1px rgb(0 0 0 / 0.6),
+    0 0 80px -30px rgb(34 211 238 / 0.25);
+  overflow: hidden;
+}
+.lp-root .lp-device__bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 14px;
+  border-bottom: 1px solid rgb(255 255 255 / 0.08);
+  background: rgb(255 255 255 / 0.04);
+}
+.lp-root .lp-device__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 9999px;
+  background: rgb(255 255 255 / 0.18);
 }
 
 /* FAQ accordion: smooth height via the grid-rows trick, and fully hidden
@@ -73,42 +233,316 @@
   display: grid;
   grid-template-rows: 0fr;
   visibility: hidden;
-  transition: grid-template-rows 0.3s cubic-bezier(0.16, 1, 0.3, 1), visibility 0s linear 0.3s;
+  transition:
+    grid-template-rows 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    visibility 0s linear 0.3s;
 }
 .lp-root .lp-acc[data-open="true"] {
   grid-template-rows: 1fr;
   visibility: visible;
-  transition: grid-template-rows 0.3s cubic-bezier(0.16, 1, 0.3, 1), visibility 0s linear 0s;
+  transition:
+    grid-template-rows 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    visibility 0s linear 0s;
 }
 .lp-root .lp-acc > div {
   overflow: hidden;
 }
 
-/* Soft glow behind the final call-to-action card. */
+/* Soft glow behind the final call-to-action. */
 .lp-root .lp-cta-bg {
-  background: radial-gradient(120% 120% at 50% 0%, #143063 0%, #0b1e3d 60%);
+  background:
+    radial-gradient(70% 90% at 50% 0%, rgb(34 211 238 / 0.14), transparent 70%),
+    linear-gradient(180deg, rgb(255 255 255 / 0.05), rgb(255 255 255 / 0.015));
 }
 
-/* Reduced motion: the global rule in index.css already stops animation
-   iteration; also make the decorative blobs static, stop smooth scrolling
-   (index.css sets html { scroll-behavior: smooth } unconditionally) and drop
-   the card hover lift. */
+/* ═══════════════════════════ THE STORY ═══════════════════════════
+   A study being built, in five stages. DOM (see Story.tsx):
+
+     section.lp-story
+       div.lp-story__track
+         div.lp-story__sticky
+           h2.lp-story__eyebrow
+           div.lp-stage[data-stage]  x5   (copy + panel each)
+           div.lp-story__prog        (progress pill, pinned mode only)
+           div.lp-frame              (persistent window chrome, pinned only)
+           p.lp-story__note          ("Illustration - example values")
+   ═════════════════════════════════════════════════════════════════ */
+
+/* --- static layout (default): a plain stacked list --- */
+
+.lp-root .lp-story__sticky {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(3.5rem, 8vw, 6rem);
+  max-width: 72rem;
+  margin-inline: auto;
+  padding: 6rem 1.25rem;
+}
+.lp-root .lp-story__eyebrow {
+  order: -2;
+  text-align: center;
+}
+.lp-root .lp-story__note {
+  order: -1;
+  margin: -2.5rem 0 0;
+  text-align: center;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  color: var(--fg-subtle);
+}
+.lp-root .lp-story__prog,
+.lp-root .lp-frame {
+  display: none;
+}
+.lp-root .lp-stage {
+  display: grid;
+  gap: 1.75rem;
+  align-items: center;
+}
+@media (min-width: 1024px) {
+  .lp-root .lp-stage {
+    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+    gap: 4rem;
+  }
+}
+.lp-root .lp-stage__title {
+  margin: 0;
+  font-size: clamp(2.25rem, 4.2vw, 3.75rem);
+  font-weight: 700;
+  line-height: 0.98;
+  letter-spacing: -0.052em;
+  color: var(--fg);
+  text-wrap: balance;
+}
+.lp-root .lp-stage__num {
+  margin: 0 0 0.75rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--lp-cyan);
+}
+.lp-root .lp-stage__body {
+  margin: 1.25rem 0 0;
+  max-width: 30rem;
+  font-size: 1.0625rem;
+  line-height: 1.55;
+  color: var(--fg-muted);
+}
+.lp-root .lp-stage__panel {
+  position: relative;
+  min-height: 22rem;
+  padding: 1.25rem;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 24px;
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.06), rgb(255 255 255 / 0.02));
+  box-shadow: 0 30px 80px -30px rgb(0 0 0 / 0.8), inset 0 1px 0 rgb(255 255 255 / 0.07);
+}
+
+/* progress pill */
+.lp-root .lp-story__prog {
+  align-items: center;
+  gap: 0.875rem;
+  width: max-content;
+  padding: 0.5rem 0.9rem 0.5rem 0.75rem;
+  border-radius: 9999px;
+  background: rgb(255 255 255 / 0.07);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.1);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--fg-muted);
+}
+.lp-root .lp-story__bar {
+  position: relative;
+  width: 6.5rem;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: rgb(255 255 255 / 0.16);
+}
+.lp-root .lp-story__fill {
+  position: absolute;
+  inset: 0;
+  transform: scaleX(0);
+  transform-origin: left center;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, var(--lp-cyan-strong), var(--lp-cyan));
+}
+
+/* persistent window chrome */
+.lp-root .lp-frame {
+  position: relative;
+  border: 1px solid rgb(255 255 255 / 0.13);
+  border-radius: 28px;
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.075), rgb(255 255 255 / 0.02));
+  box-shadow:
+    0 50px 120px -40px rgb(34 211 238 / 0.22),
+    0 30px 80px -20px rgb(0 0 0 / 0.85),
+    inset 0 1px 0 rgb(255 255 255 / 0.09);
+}
+.lp-root .lp-frame__bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 44px;
+  padding: 0 18px;
+  border-bottom: 1px solid rgb(255 255 255 / 0.08);
+}
+.lp-root .lp-frame__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 9999px;
+  background: rgb(255 255 255 / 0.18);
+}
+.lp-root .lp-frame__title {
+  margin-left: 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--fg-subtle);
+}
+
+/* --- pinned layout: sticky stage, scrubbed by scroll --- */
+
+@media (min-width: 1024px) and (prefers-reduced-motion: no-preference) {
+  .lp-root.lp-motion .lp-story__track {
+    height: 540vh;
+  }
+  .lp-root.lp-motion .lp-story__sticky {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    height: 100svh;
+    display: grid;
+    gap: 0 clamp(2rem, 5vw, 5rem);
+    padding: 4.5rem 1.25rem 1.5rem;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+    grid-template-rows: 1fr auto auto auto auto 1fr;
+    grid-template-areas:
+      '. frame'
+      'eyebrow frame'
+      'copy frame'
+      'prog frame'
+      'note frame'
+      '. frame';
+    --lp-frame-h: min(34rem, calc(100svh - 8rem));
+  }
+  .lp-root.lp-motion .lp-story__eyebrow {
+    order: 0;
+    grid-area: eyebrow;
+    margin-bottom: 1.25rem;
+    text-align: left;
+  }
+  .lp-root.lp-motion .lp-story__note {
+    order: 0;
+    grid-area: note;
+    margin: 1rem 0 0;
+    text-align: left;
+  }
+  .lp-root.lp-motion .lp-story__prog {
+    display: flex;
+    grid-area: prog;
+    margin-top: 2rem;
+  }
+  .lp-root.lp-motion .lp-frame {
+    display: block;
+    grid-area: frame;
+    align-self: center;
+    height: var(--lp-frame-h);
+    z-index: 0;
+  }
+  .lp-root.lp-motion .lp-stage {
+    display: contents;
+  }
+  .lp-root.lp-motion .lp-stage__copy {
+    grid-area: copy;
+    align-self: start;
+    will-change: opacity, filter, transform;
+  }
+  .lp-root.lp-motion .lp-stage__panel {
+    grid-area: frame;
+    align-self: center;
+    z-index: 1;
+    height: var(--lp-frame-h);
+    min-height: 0;
+    padding: 3.25rem 1.25rem 1.25rem;
+    overflow: hidden;
+    border: 0;
+    border-radius: 28px;
+    background: none;
+    box-shadow: none;
+    will-change: opacity, filter, transform;
+  }
+  /* Until the engine has set its own starting state, only stage 1 shows. */
+  .lp-root.lp-motion .lp-stage:not([data-stage="1"]) :is(.lp-stage__copy, .lp-stage__panel) {
+    opacity: 0;
+  }
+}
+
+/* --- story panel details --- */
+
+/* Panel content is centred, but never so tall that it climbs over the frame
+   bar: `safe` falls back to start alignment when it overflows. */
+.lp-root .lp-pcol {
+  justify-content: center;
+  justify-content: safe center;
+}
+
+/* The 17 protocol sections: one column on phones, two (reading down the
+   columns) from 640px. The pinned frame always uses two. */
+.lp-root .lp-p4-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.375rem 0.75rem;
+}
+@media (min-width: 640px) {
+  .lp-root .lp-p4-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-flow: column;
+    grid-template-rows: repeat(var(--lp-rows, 9), minmax(0, auto));
+  }
+}
+
+.lp-root .lp-pcard {
+  padding: 0.875rem 1rem;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  border-radius: 18px;
+  background: rgb(255 255 255 / 0.045);
+}
+.lp-root .lp-plabel {
+  display: inline-block;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--fg-subtle);
+}
+
+.lp-root .lp-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1.1em;
+  margin-left: 2px;
+  vertical-align: -0.18em;
+  background: var(--lp-cyan);
+  animation: lp-blink 1.05s steps(2, start) infinite;
+}
+@keyframes lp-blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+/* ───────────── reduced motion ───────────── */
+
 @media (prefers-reduced-motion: reduce) {
   html[lang] {
     scroll-behavior: auto;
   }
-  .lp-root .blob {
-    animation: none;
-  }
   .lp-root .lp-lift:hover {
     transform: none;
   }
-}
-
-/* Gentle hover lift for the product / why cards. */
-.lp-root .lp-lift {
-  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s ease-out, border-color 0.25s ease-out;
-}
-.lp-root .lp-lift:hover {
-  transform: translateY(-3px);
+  .lp-root .lp-caret {
+    animation: none;
+  }
 }

@@ -256,6 +256,16 @@ class ProtocolCreate(BaseModel):
     #   falls back to a clearly-flagged assumption when nothing is retrievable.
     #   See routers/protocols.py::_resolve_powering_cv.
     #
+    # washout_days (float, days) — INVESTIGATOR-SPECIFIED washout between
+    #   dosing periods (crossover / replicate designs only). Validated by
+    #   biostatistics.validate_washout_override (not below 7 x t1/2, at most 365
+    #   days, never on a parallel design; a refusal is a 422) and locked into
+    #   _sample_size (washout_days / washout_hours / washout_is_user_override /
+    #   washout_source) by routers/protocols.py::_lock_washout. The protocol text,
+    #   consent form (services/icf.py) and CRF visit schedule
+    #   (services/crf_dmp.py) then all read that one locked value. Omit it for
+    #   the engine default (7 x t1/2).
+    #
     # Deterministic-engine hints (each engine degrades gracefully without them):
     #   dosing ('single'|'multiple'), dosing_interval_hours (tau, hours)
     #       -> services/sampling_schedule.py
@@ -416,6 +426,14 @@ class ProtocolSummary(BaseModel):
     status: ProtocolStatus
     section_count: int
     created_at: datetime
+    # Async-generation lifecycle (Protocol.generation_status): "generating"
+    # while the background pipeline runs, "complete" once sections are filled,
+    # "failed" if it could not finish (generation_error holds the reason). Lets
+    # the app shell's protocol list show a "generating" indicator without a
+    # per-row GET /protocols/{id}. Defaults keep older callers/rows reading as
+    # finished.
+    generation_status: str = "complete"
+    generation_error: str | None = None
 
 
 class SectionPatch(BaseModel):

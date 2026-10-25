@@ -13,13 +13,15 @@ export function launchTargetFor(kind: PendingPromptKind): string {
   return `/app/chat/new?from=landing&kind=${kind}`
 }
 
-export type LandingSectionId = 'top' | 'products' | 'chat' | 'why' | 'how' | 'pricing' | 'faq' | 'cta'
+export type LandingSectionId = 'top' | 'chat' | 'proof' | 'products' | 'why' | 'how' | 'pricing' | 'faq' | 'cta'
 
-/** The nav item each section belongs to ('' = none highlighted). */
+/** The nav item each section belongs to ('' = none highlighted). The pinned
+ *  story ("chat") is the live demonstration of how it works. */
 export const SECTION_TO_NAV: Record<LandingSectionId, string> = {
   top: '',
+  chat: 'how',
+  proof: '',
   products: 'products',
-  chat: 'products',
   why: 'products',
   how: 'how',
   pricing: 'pricing',
@@ -27,7 +29,18 @@ export const SECTION_TO_NAV: Record<LandingSectionId, string> = {
   cta: '',
 }
 
-export const SECTION_ORDER: LandingSectionId[] = ['top', 'products', 'chat', 'why', 'how', 'pricing', 'faq', 'cta']
+/** Document order of the page's sections (the scroll-spy walks it top-down). */
+export const SECTION_ORDER: LandingSectionId[] = [
+  'top',
+  'chat',
+  'proof',
+  'products',
+  'why',
+  'how',
+  'pricing',
+  'faq',
+  'cta',
+]
 
 /**
  * Scroll-spy decision: given each section's current top offset (px from the

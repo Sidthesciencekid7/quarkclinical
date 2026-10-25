@@ -124,9 +124,10 @@ describe('nav active rules', () => {
   it('a pinned item is active only for its own preset', () => {
     const be = PINNED.find(p => p.preset === 'be')!
     const food = PINNED.find(p => p.preset === 'food_effect')!
-    expect(isPinnedActive(be, '/app/protocol', '?preset=be')).toBe(true)
-    expect(isPinnedActive(food, '/app/protocol', '?preset=be')).toBe(false)
-    expect(isPinnedActive(be, '/app/protocol', '')).toBe(false)
+    // CHAT_ENABLED is on: pinned items open the chat page for their kind + preset.
+    expect(isPinnedActive(be, '/app/chat/new', '?kind=protocol&preset=be')).toBe(true)
+    expect(isPinnedActive(food, '/app/chat/new', '?kind=protocol&preset=be')).toBe(false)
+    expect(isPinnedActive(be, '/app/chat/new', '?kind=protocol')).toBe(false)
   })
 })
 

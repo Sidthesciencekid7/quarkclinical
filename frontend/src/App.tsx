@@ -15,7 +15,8 @@ const AppShell = lazy(() => import('./shell/AppShell'))
 const JoinOrg = lazy(() => import('./pages/JoinOrg'))
 const AdminDashboard = lazy(() => import('./pages/AdminDashboard'))
 const Home = lazy(() => import('./pages/app/Home'))
-const NewChatPlaceholder = lazy(() => import('./pages/app/NewChatPlaceholder'))
+const NewChatPage = lazy(() => import('./chat/NewChatPage'))
+const ChatPage = lazy(() => import('./chat/ChatPage'))
 const ProtocolsPage = lazy(() => import('./pages/app/ProtocolsPage'))
 const ProtocolEditorPage = lazy(() => import('./pages/app/ProtocolEditorPage'))
 const CsrPage = lazy(() => import('./pages/app/CsrPage'))
@@ -23,10 +24,6 @@ const BudgetsPage = lazy(() => import('./pages/app/BudgetsPage'))
 const BudgetEditorPage = lazy(() => import('./pages/app/BudgetEditorPage'))
 const StudyReportsPage = lazy(() => import('./pages/app/StudyReportsPage'))
 const TeamPage = lazy(() => import('./pages/app/TeamPage'))
-// The classic wizards stay mounted inside the shell (`embedded`: no header of
-// their own) until the chat UI replaces them.
-const ProtocolApp = lazy(() => import('./ProtocolApp'))
-const BudgetingApp = lazy(() => import('./BudgetingApp'))
 
 function RouteLoading() {
   return (
@@ -58,8 +55,8 @@ export default function App() {
             }
           >
             <Route index element={<Home />} />
-            <Route path="chat/new" element={<NewChatPlaceholder />} />
-            <Route path="chat/:sessionId" element={<NewChatPlaceholder />} />
+            <Route path="chat/new" element={<NewChatPage />} />
+            <Route path="chat/:sessionId" element={<ChatPage />} />
             <Route path="protocols" element={<ProtocolsPage />} />
             <Route path="protocols/:id" element={<ProtocolEditorPage />} />
             <Route path="protocols/:id/report" element={<CsrPage />} />
@@ -67,8 +64,9 @@ export default function App() {
             <Route path="budgets/:id" element={<BudgetEditorPage />} />
             <Route path="reports" element={<StudyReportsPage />} />
             <Route path="team" element={<TeamPage />} />
-            <Route path="protocol" element={<ProtocolApp embedded />} />
-            <Route path="budgeting" element={<BudgetingApp embedded />} />
+            {/* The step-by-step wizards were replaced by chat; old links land on the lists. */}
+            <Route path="protocol" element={<Navigate to="/app/protocols" replace />} />
+            <Route path="budgeting" element={<Navigate to="/app/budgets" replace />} />
             <Route path="*" element={<Navigate to="/app" replace />} />
           </Route>
           <Route

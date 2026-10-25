@@ -219,6 +219,9 @@ export interface GeneratedProtocol {
   // Absent/'complete' for every already-generated protocol (server default).
   generation_status?: 'generating' | 'complete' | 'failed'
   generation_error?: string | null
+  /** Present on newer servers (ProtocolRead): the drug's INN and brand names. */
+  drug_inn?: string
+  drug_brand_names?: string[]
   created_by: string
   created_at: string
 }

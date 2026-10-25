@@ -18,6 +18,104 @@ export const SUGGESTIONS: Suggestion[] = [
   { text: 'Price a patient study for nivolumab', kind: 'budget' },
 ]
 
+/* ───────────── pinned story: a study being built ───────────── */
+
+/** The study the story builds. Same wording as the first hero suggestion. */
+export const STORY_PROMPT = 'Biosimilar PK study of adalimumab in healthy volunteers'
+
+/** Shown once in the story frame. Every number in the story is an example. */
+export const STORY_NOTE = 'Illustration — example values'
+
+export interface StoryStage {
+  n: number
+  title: string
+  body: string
+}
+
+export const STORY_STAGES: StoryStage[] = [
+  {
+    n: 1,
+    title: 'Describe the study.',
+    body: 'Say it the way you would to a colleague. QuarkClinical looks up the drug and asks only for what is missing.',
+  },
+  {
+    n: 2,
+    title: 'Confirm the design.',
+    body: 'The drug match and study type come back as cards. Adalimumab is a biologic, so it is set up as a biosimilar PK study; bioequivalence and food effect do not apply. Nothing is written until you confirm.',
+  },
+  {
+    n: 3,
+    title: 'Engines do the math.',
+    body: 'Sample size, the PK sampling schedule and the design decisions are computed by tested engines and locked once, each with its reasoning.',
+  },
+  {
+    n: 4,
+    title: 'The protocol writes itself around it.',
+    body: 'All 17 sections are drafted around the locked numbers, so the synopsis, design and statistics can never disagree.',
+  },
+  {
+    n: 5,
+    title: 'Priced from its own trial history.',
+    body: 'Enrollment, sites and countries come from the drug’s registered ClinicalTrials.gov trials. Every line shows its quantity basis and where its rate came from.',
+  },
+]
+
+/** The 17 sections of a generated protocol, in order (backend SECTION_DISPLAY_NAMES). */
+export const PROTOCOL_SECTIONS: { title: string; locked?: boolean }[] = [
+  { title: 'Title Page' },
+  { title: 'Synopsis', locked: true },
+  { title: 'Introduction' },
+  { title: 'Study Rationale & Risk/Benefit' },
+  { title: 'Study Objectives' },
+  { title: 'Study Endpoints' },
+  { title: 'Study Design', locked: true },
+  { title: 'Population' },
+  { title: 'Treatment' },
+  { title: 'Study Assessments' },
+  { title: 'Safety Monitoring' },
+  { title: 'Data Handling & Record Keeping' },
+  { title: 'Study Monitoring, Auditing & Inspecting' },
+  { title: 'Statistical Methods & Data Analysis', locked: true },
+  { title: 'Ethical & Regulatory Standards' },
+  { title: 'Administrative Procedures' },
+  { title: 'References' },
+]
+
+/** Example budget lines for the last stage. They sum to BUDGET_TOTAL. */
+export const BUDGET_LINES: { label: string; amount: number }[] = [
+  { label: 'Clinical unit and site fees', amount: 520000 },
+  { label: 'Bioanalysis', amount: 310000 },
+  { label: 'Data management and biostatistics', amount: 240000 },
+  { label: 'Project management and monitoring', amount: 200000 },
+  { label: 'Regulatory, ethics and start-up', amount: 150000 },
+]
+export const BUDGET_TOTAL = BUDGET_LINES.reduce((sum, l) => sum + l.amount, 0)
+
+/* ───────────── metrics band (true facts only) ───────────── */
+
+export const METRICS: { value: number; label: string; note: string }[] = [
+  {
+    value: 17,
+    label: 'protocol sections',
+    note: 'From the title page to the references, drafted around one set of locked numbers.',
+  },
+  {
+    value: 4,
+    label: 'guideline sets',
+    note: 'FDA bioequivalence 2014, EMA bioequivalence 2010, ICH M13A 2024 and the ICH M11 2025 template.',
+  },
+  {
+    value: 8,
+    label: 'deterministic engines',
+    note: 'Sampling schedule, drug interactions, safety gating, bioanalytical validation, ICF, randomization, CRF and data management, and IND safety reporting.',
+  },
+  {
+    value: 3,
+    label: 'tools, one study',
+    note: 'Protocol Generator, Budgeting Tool and Study Reports share the same study and the same numbers.',
+  },
+]
+
 /* ───────────── guidance ───────────── */
 
 export const GUIDANCE = [

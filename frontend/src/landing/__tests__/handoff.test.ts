@@ -22,9 +22,11 @@ describe('pickActiveSection (scroll-spy)', () => {
   })
 
   it('picks the last section whose top is at or above the line', () => {
-    expect(pickActiveSection({ top: -600, products: 100, chat: 900, how: 1700 }, line)).toBe('products')
-    expect(pickActiveSection({ top: -2000, products: -1400, chat: -500, why: 200, how: 900 }, line)).toBe('why')
-    expect(pickActiveSection({ top: -3000, products: -2000, how: 270 }, line)).toBe('how')
+    expect(pickActiveSection({ top: -2000, chat: -900, proof: -100, products: 100, why: 900, how: 1700 }, line)).toBe('products')
+    expect(pickActiveSection({ top: -4000, chat: -3000, proof: -2200, products: -1400, why: 200, how: 900 }, line)).toBe('why')
+    expect(pickActiveSection({ top: -6000, chat: -5000, products: -2000, how: 270 }, line)).toBe('how')
+    // Inside the pinned story the nav shows "How it works".
+    expect(pickActiveSection({ top: -1200, chat: -300, proof: 3000 }, line)).toBe('chat')
   })
 
   it('skips sections that are not on the page', () => {
@@ -35,7 +37,8 @@ describe('pickActiveSection (scroll-spy)', () => {
 describe('section to nav mapping', () => {
   it('maps every section, and the supporting sections to Products', () => {
     for (const id of SECTION_ORDER) expect(SECTION_TO_NAV).toHaveProperty(id)
-    expect(SECTION_TO_NAV.chat).toBe('products')
+    expect(SECTION_TO_NAV.chat).toBe('how')
+    expect(SECTION_TO_NAV.proof).toBe('')
     expect(SECTION_TO_NAV.why).toBe('products')
     expect(SECTION_TO_NAV.how).toBe('how')
     expect(SECTION_TO_NAV.faq).toBe('faq')
