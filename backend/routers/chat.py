@@ -198,9 +198,17 @@ def _merge_cards(*groups: list[c.Card]) -> list[c.Card]:
     return list(out.values())
 
 
-async def _announce(rec: SessionRecord, text: str, cards: list[c.Card]) -> None:
+async def _announce(rec: SessionRecord, text: str, cards: list[c.Card], *, once: bool = False) -> None:
     """Append a card-carrying transcript line that is NOT part of the model's
-    history (a ``ui_action`` row has no ``api_content``), and store ``cards`` on it."""
+    history (a ``ui_action`` row has no ``api_content``), and store ``cards`` on it.
+
+    ``once``: the first card has a stable id and the line must appear exactly once
+    even when several refreshes race (the client polls GET /chat/{sid} and the
+    proposal endpoint concurrently). The card is claimed with an atomic
+    insert-if-absent; only the request that creates it writes the line."""
+    if once and cards:
+        if not await repo.insert_card_if_absent(rec.id, org_id=rec.org_id, card=cards[0]):
+            return
     msg = await repo.append_message(
         rec.id, org_id=rec.org_id, role=c.MessageRole.ui_action, api_content=None,
         display={"text": text, "card_ids": [x.id for x in cards], "flags": {}},
@@ -347,7 +355,7 @@ async def _sync_generation_cards(db: AsyncSession, rec: SessionRecord, cards: li
         out[i] = fresh
         if status == "complete" and str(pid) not in ready_for:
             ready = _ready_card(rec.spec_version, protocol, drug_inn)
-            await _announce(rec, "Your protocol is ready.", [ready])
+            await _announce(rec, "Your protocol is ready.", [ready], once=True)
             out.append(ready)
             ready_for.add(str(pid))
     return out
@@ -389,7 +397,7 @@ async def _sync_edit_cards(db: AsyncSession, rec: SessionRecord, cards: list[c.C
                 view = await edits.build_view(db, proposal, protocol)
                 diff = K.build_edit_diff_card(rec.spec_version, view)
                 diff = diff.model_copy(update={"id": _card_uuid("edit_diff", str(proposal.id))})
-                await _announce(rec, "The proposed changes are ready to review.", [diff])
+                await _announce(rec, "The proposed changes are ready to review.", [diff], once=True)
                 out.append(diff)
                 have_diff.add(str(proposal.id))
         else:  # edit_diff
@@ -569,6 +577,38 @@ async def post_turn(sid: uuid.UUID, payload: c.TurnRequest, request: Request, db
 # ---------------------------------------------------------------------------
 
 
+_STUDY_TYPE_LABELS = {"BE": "Bioequivalence", "biosimilar_pk": "Biosimilar PK", "food_effect": "Food effect"}
+
+# Plain-language names for the population/budget fields a click can change.
+# The click label is shown in the transcript, so internal keys never leak.
+_FIELD_LABELS = {
+    "subject_type": "population",
+    "age_min": "minimum age",
+    "age_max": "maximum age",
+    "sex": "sex",
+    "weight_min": "minimum weight",
+    "weight_max": "maximum weight",
+    "exclusion_presets": "exclusion criteria",
+    "cv_intra": "within-subject CV",
+    "is_nti": "narrow therapeutic index",
+    "dose_strength": "dose strength",
+    "reference_product": "reference product",
+    "additional_pk_timepoints_hours": "extra PK timepoints",
+    "additional_immunogenicity_timepoints_months": "extra immunogenicity timepoints",
+    "washout_days": "washout",
+    "drug_inn": "drug",
+    "study_type": "study type",
+    "indication": "indication",
+    "n_sites": "number of sites",
+    "n_countries": "number of countries",
+    "n_enrolled": "number enrolled",
+}
+
+
+def _field_list(patch: dict[str, Any] | None) -> str:
+    return ", ".join(_FIELD_LABELS.get(k, k.replace("_", " ")) for k in sorted((patch or {}).keys()))
+
+
 def _click_label(payload: c.ActionRequest, clicked: c.Card | None, spec: Any) -> str:
     """The transcript line (and the model's next-turn hint) for a card click."""
     A = c.ActionType
@@ -581,16 +621,18 @@ def _click_label(payload: c.ActionRequest, clicked: c.Card | None, spec: Any) ->
     if a == A.add_drug:
         return f"Added '{p.get('inn')}' to the drug catalogue and selected it"
     if a == A.set_study_type:
-        return f"Chose study type: {p.get('study_type')}"
+        st = p.get("study_type")
+        return f"Chose study type: {_STUDY_TYPE_LABELS.get(st, st)}"
     if a == A.set_guideline:
-        return f"Chose guideline: {p.get('guideline_version')}"
+        version = str(p.get("guideline_version") or "")
+        return f"Chose guideline: {K._guideline_label(version, getattr(spec, 'study_type', None)) if version else 'default'}"
     if a == A.update_population:
-        keys = ", ".join(sorted((p.get("patch") or {}).keys()))
-        return f"Saved participants: {keys}" if keys else "Saved participants"
+        fields = _field_list(p.get("patch"))
+        return f"Saved participants ({fields})" if fields else "Saved participants"
     if a == A.toggle_exclusion:
         return f"{'Added' if p.get('on') else 'Removed'} exclusion criterion: {p.get('text')}"
     if a == A.set_design_decision:
-        return f"Set design decision {p.get('key')} to: {p.get('value')}"
+        return f"Set {str(p.get('key') or 'design decision').replace('_', ' ')} to: {p.get('value')}"
     if a == A.set_indication:
         return f"Chose indication: {p['text']}" if p.get("text") else "Let the engine choose the indication"
     if a == A.confirm_design:
@@ -598,8 +640,8 @@ def _click_label(payload: c.ActionRequest, clicked: c.Card | None, spec: Any) ->
     if a == A.generate_protocol:
         return button or "Clicked Generate protocol"
     if a == A.set_budget_fields:
-        keys = ", ".join(sorted((p.get("patch") or {}).keys()))
-        return f"Updated budget fields: {keys}"
+        fields = _field_list(p.get("patch"))
+        return f"Updated budget details ({fields})" if fields else "Updated budget details"
     if a == A.link_protocol:
         return "Linked a protocol to the budget" if p.get("protocol_id") else "Unlinked the protocol from the budget"
     if a == A.create_budget:

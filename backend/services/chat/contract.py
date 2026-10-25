@@ -1282,6 +1282,8 @@ class EditImpactCardData(_Model):
     changes: list[EditChange] = Field(default_factory=list)
     #: prose edits: the section names to rewrite and the instruction.
     sections: list[str] = Field(default_factory=list)
+    #: display titles for ``sections`` (section key -> the protocol's own title).
+    section_labels: dict[str, str] = Field(default_factory=dict)
     instruction: str | None = None
     estimate: EditEstimate | None = None
     warnings: list[str] = Field(default_factory=list)

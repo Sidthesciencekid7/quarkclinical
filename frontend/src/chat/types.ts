@@ -793,6 +793,8 @@ export interface EditImpactCardData {
   changes: EditChange[]
   /** Prose edits: the section names to rewrite. */
   sections: string[]
+  /** Display titles for `sections` (section key -> the protocol's own title). */
+  section_labels?: Record<string, string>
   instruction: string | null
   estimate: EditEstimate | null
   warnings: string[]

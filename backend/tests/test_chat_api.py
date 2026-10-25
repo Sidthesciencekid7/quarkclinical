@@ -469,6 +469,38 @@ async def test_generation_progress_card_refreshes_from_the_protocol_status(api_c
     assert sum(1 for x in detail2["cards"] if x["type"] == "protocol_ready") == 1
 
 
+async def test_concurrent_refreshes_announce_a_finished_protocol_once(api_client, seeded, offline, monkeypatch):
+    """The chat UI polls GET /chat/{sid} while another poll is in flight; two
+    refreshes that both see the protocol finish must not both write the
+    'Your protocol is ready.' line (a duplicate showed the ready card twice)."""
+    import asyncio
+
+    from routers import protocols as protocols_router
+
+    monkeypatch.setattr(protocols_router, "_generate_synchronously", lambda: False)
+    monkeypatch.setattr(protocols_router, "_spawn_generation", lambda **kw: None)
+
+    user, client = seeded.user, api_client
+    sid = (await create_chat(client, user))["id"]
+    await send_turn(client, user, sid, "A bioequivalence study of metformin")
+    matches = active((await get_chat(client, user, sid))["cards"], "drug_matches")
+    await click(client, user, sid, matches, "select_drug", {"drug_id": matches["data"]["matches"][0]["id"]})
+    summary = await drive_to_summary(client, user, sid)
+    body = (await click(client, user, sid, summary, "generate_protocol")).json()
+    protocol_id = next(x for x in body["cards"] if x["type"] == "generation_progress")["data"]["protocol_id"]
+
+    protocol = await seeded.db.get(Protocol, uuid.UUID(protocol_id))
+    protocol.generation_status = "complete"
+    protocol.sections = {"title": "<p>t</p>", "synopsis": "<p>s</p>"}
+    await seeded.db.commit()
+
+    await asyncio.gather(*(get_chat(client, user, sid) for _ in range(4)))
+    detail = await get_chat(client, user, sid)
+    ready_lines = [m for m in detail["messages"] if m["text"] == "Your protocol is ready."]
+    assert len(ready_lines) == 1, [m["text"] for m in detail["messages"]]
+    assert sum(1 for x in detail["cards"] if x["type"] == "protocol_ready") == 1
+
+
 async def test_a_failed_generation_is_reported_on_the_progress_card(api_client, seeded, offline, monkeypatch):
     from routers import protocols as protocols_router
 

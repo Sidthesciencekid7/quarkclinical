@@ -56,6 +56,7 @@ from services.chat.spec import (
     PendingEdit,
     PopulationDraft,
     ProtocolDraftSpec,
+    section_label,
     study_type_gate_message,
 )
 from services.design_decisions import (
@@ -736,7 +737,8 @@ def build_edit_impact_card(
     data = c.EditImpactCardData(
         proposal_id=pending.proposal_id, kind=pending.kind, base_version=pending.base_version,
         editable=spec.editable, blocked_reason=spec.blocked_reason, changes=changes,
-        sections=list(pending.sections), instruction=pending.instruction, estimate=estimate,
+        sections=list(pending.sections), section_labels={s: section_label(s) for s in pending.sections},
+        instruction=pending.instruction, estimate=estimate,
         warnings=list(warnings), rerun_note=RERUN_NOTE if pending.kind == "engine" else PROSE_NOTE,
     )
     actions = []

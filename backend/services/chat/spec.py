@@ -67,6 +67,19 @@ STUDY_TYPE_LABELS: dict[str, str] = {
     "food_effect": "Food Effect",
 }
 
+
+def section_label(name: str) -> str:
+    """The protocol's own display title for a section key (falls back to a
+    readable form of the key), so users never see internal names."""
+    try:
+        from routers.protocols import SECTION_DISPLAY_NAMES  # lazy: services must not import routers at load
+
+        label = SECTION_DISPLAY_NAMES.get(name)
+    except Exception:  # pragma: no cover - router unavailable in a stripped environment
+        label = None
+    return label or name.replace("_", " ").capitalize()
+
+
 #: The validation ranges chat enforces (the wizard's input ranges).
 RANGES = PopulationRanges()
 
@@ -1440,7 +1453,10 @@ class BudgetDraftSpec(_SpecBase):
             row("sponsor_name", "Sponsor", self.sponsor_name)
         if self.cro_name:
             row("cro_name", "CRO", self.cro_name)
-        row("protocol_id", "Linked protocol", (f"{self.protocol['drug_inn']} ({self.protocol['study_type']})" if self.protocol else None))
+        row("protocol_id", "Linked protocol", (
+            f"{self.protocol['drug_inn']} ({STUDY_TYPE_LABELS.get(self.protocol['study_type'] or '', self.protocol['study_type'])})"
+            if self.protocol else None
+        ))
         return rows
 
     # -- engine payload ---------------------------------------------------------
@@ -1755,7 +1771,7 @@ class EditSessionSpec(_SpecBase):
         elif self.pending.kind == "engine":
             rows.append(row("pending", "Requested change", ", ".join(self.pending.changes)))
         else:
-            rows.append(row("pending", "Requested change", f"Rewrite: {', '.join(self.pending.sections)}"))
+            rows.append(row("pending", "Requested change", f"Rewrite: {', '.join(section_label(s) for s in self.pending.sections)}"))
         return rows
 
 

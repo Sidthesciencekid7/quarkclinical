@@ -83,7 +83,10 @@ export function InteractionScreeningCard({ card }: { card: Card }) {
       ) : null}
       {d.summary ? <p className="mb-3 text-small text-fg-muted">{d.summary}</p> : null}
 
-      {(d.unresolved_count ?? 0) > 0 || pathways.length === 0 ? (
+      {/* Only the engine knows whether it fell back: a biologic legitimately has
+          no CYP/transporter pathways, and showing the fallback note there would
+          contradict the biologic-specific screening above it. */}
+      {(d.unresolved_count ?? 0) > 0 ? (
         <div className="mb-3">
           <Callout tone="warning">
             No metabolic or transporter pathway could be identified from the label, so a conservative pan-pathway restriction is applied at the longest window.

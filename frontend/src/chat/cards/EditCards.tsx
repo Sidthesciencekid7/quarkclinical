@@ -114,7 +114,10 @@ export function EditImpactCard({ card }: { card: Card }) {
         <>
           {sections.length > 0 ? (
             <p className="mb-2 text-small text-fg-muted">
-              Sections to rewrite: <span className="font-semibold text-fg">{sections.join(', ')}</span>
+              Sections to rewrite:{' '}
+              <span className="font-semibold text-fg">
+                {sections.map(s => d.section_labels?.[s] ?? s.replace(/_/g, ' ')).join(', ')}
+              </span>
             </p>
           ) : null}
           {d.instruction ? (

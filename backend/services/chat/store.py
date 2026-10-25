@@ -244,6 +244,11 @@ class ChatRepository(Protocol):
 
     async def upsert_card(self, session_id: str, *, org_id: str, card: Card, message_id: str | None = None) -> None: ...
 
+    async def insert_card_if_absent(self, session_id: str, *, org_id: str, card: Card) -> bool:
+        """Atomically store ``card`` only if no card with its id exists; True when
+        this call created it. Lets concurrent refreshes agree on a single winner
+        for a stable-id card (and so announce it exactly once)."""
+
     async def get_card(self, session_id: str, card_id: str) -> Card | None: ...
 
     async def list_cards(self, session_id: str) -> list[Card]:
@@ -399,6 +404,12 @@ class InMemoryRepository:
         elif message_id is not None:
             self.card_message[session_id][card.id] = message_id
         self.cards[session_id][card.id] = card.model_copy(deep=True)
+
+    async def insert_card_if_absent(self, session_id: str, *, org_id: str, card: Card) -> bool:
+        if card.id in self.cards[session_id]:
+            return False
+        await self.upsert_card(session_id, org_id=org_id, card=card)
+        return True
 
     async def get_card(self, session_id: str, card_id: str) -> Card | None:
         card = self.cards.get(session_id, {}).get(card_id)
@@ -694,6 +705,26 @@ class SqlChatRepository:
                     row.message_id = _uid(message_id)
                 row.updated_at = func.now()
             await s.commit()
+
+    async def insert_card_if_absent(self, session_id: str, *, org_id: str, card: Card) -> bool:
+        from sqlalchemy.dialects.postgresql import insert
+
+        from models import ChatCard
+
+        async with self._session() as s:
+            stmt = (
+                insert(ChatCard)
+                .values(
+                    id=_uid(card.id), session_id=_uid(session_id), org_id=org_id, message_id=None,
+                    type=card.type.value, status=card.status.value, data=self._card_data(card),
+                    spec_version=card.spec_version,
+                )
+                .on_conflict_do_nothing(index_elements=[ChatCard.id])
+                .returning(ChatCard.id)
+            )
+            created = (await s.execute(stmt)).scalar_one_or_none() is not None
+            await s.commit()
+            return created
 
     async def get_card(self, session_id: str, card_id: str) -> Card | None:
         from models import ChatCard
