@@ -173,9 +173,10 @@ async def health_check(db: AsyncSession = Depends(get_db)):
     Checks performed:
     - **database**: executes ``SELECT 1`` via the async DB connection.
     - **anthropic_api**: sends a lightweight GET to the Anthropic models list
-      endpoint.  HTTP 200 or 401 (invalid key but network reachable) are both
-      treated as ``"ok"``; the check confirms network reachability only, not
-      key validity.
+      endpoint.  HTTP 200 is ``"ok"``; 401 is ``"invalid_api_key"`` (the API is
+      reachable but every generation and chat call would fail - reporting that
+      as ``"ok"`` once hid a revoked key). The endpoint itself still answers 200,
+      so hosting liveness probes are unaffected; ``status`` becomes ``degraded``.
     """
     checks: dict[str, str] = {}
 
@@ -200,9 +201,10 @@ async def health_check(db: AsyncSession = Depends(get_db)):
                         "anthropic-version": _ANTHROPIC_VERSION_HEADER,
                     },
                 )
-            # 200 = success; 401 = key rejected but endpoint reachable
-            if resp.status_code in (200, 401):
+            if resp.status_code == 200:
                 checks["anthropic_api"] = "ok"
+            elif resp.status_code == 401:
+                checks["anthropic_api"] = "invalid_api_key"
             else:
                 checks["anthropic_api"] = f"http_{resp.status_code}"
         except httpx.ConnectError:

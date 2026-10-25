@@ -54,8 +54,9 @@ def _protocol_payload(drug_id: str, user_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-async def test_health_ok(api_client, httpx_mock):
-    """Health endpoint returns status=ok when DB is reachable and Anthropic is up."""
+async def test_health_reports_a_rejected_key(api_client, httpx_mock):
+    """A key Anthropic rejects is reported as invalid_api_key (status degraded),
+    not "ok" - every generation and chat call would fail with it."""
     import os
 
     os.environ.setdefault("ANTHROPIC_API_KEY", "test-key-health-check")
@@ -63,14 +64,26 @@ async def test_health_ok(api_client, httpx_mock):
     httpx_mock.add_response(
         method="GET",
         url=re.compile(r"^https://api\.anthropic\.com/v1/models(\?.*)?$"),
-        status_code=401,  # key rejected but endpoint reachable → "ok"
+        status_code=401,  # key rejected: reachable, but every AI call would fail
         json={"error": {"type": "authentication_error"}},
     )
 
     resp = await api_client.get("/health")
-    assert resp.status_code == 200
+    assert resp.status_code == 200  # liveness probes keep passing
     body = resp.json()
     assert body["checks"]["database"] == "ok"
+    assert body["checks"]["anthropic_api"] == "invalid_api_key"
+    assert body["status"] == "degraded"
+
+
+async def test_health_ok_with_a_valid_key(api_client, httpx_mock):
+    httpx_mock.add_response(
+        method="GET",
+        url=re.compile(r"^https://api\.anthropic\.com/v1/models(\?.*)?$"),
+        status_code=200,
+        json={"data": []},
+    )
+    body = (await api_client.get("/health")).json()
     assert body["checks"]["anthropic_api"] == "ok"
     assert body["status"] == "ok"
 
