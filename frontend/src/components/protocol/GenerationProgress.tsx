@@ -72,7 +72,7 @@ export function GenerationProgress({ phase, elapsedMs, error, className }: Gener
         <p>
           <span className="font-semibold">Still generating.</span> This is a long protocol and it has exceeded the time this page waits.
           It has <span className="font-semibold">not</span> failed: generation continues on the server and the finished protocol will appear
-          under <span className="font-semibold">Protocols</span>. Open it from there in a few minutes; there is no need to generate again.
+          under <span className="font-semibold">Protocols</span>. Open it from there once it finishes (it can take up to about half an hour); there is no need to generate again.
         </p>
       </div>
     )

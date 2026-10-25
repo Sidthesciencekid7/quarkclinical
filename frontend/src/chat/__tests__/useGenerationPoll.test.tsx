@@ -14,9 +14,9 @@ const proto = (generation_status: GeneratedProtocol['generation_status'], extra:
   ({ id: 'p1', generation_status, ...extra }) as GeneratedProtocol
 
 describe('pollUntilDone', () => {
-  it('uses a 3 s interval and 600 attempts', () => {
+  it('uses a 3 s interval and 1200 attempts (60 min; real generations take ~25 min)', () => {
     expect(GENERATION_POLL_INTERVAL_MS).toBe(3000)
-    expect(GENERATION_POLL_MAX_ATTEMPTS).toBe(600)
+    expect(GENERATION_POLL_MAX_ATTEMPTS).toBe(1200)
   })
 
   it('checks at once, then waits between polls, and resolves with the finished protocol', async () => {

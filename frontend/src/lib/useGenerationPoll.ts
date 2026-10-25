@@ -22,7 +22,7 @@ import { api } from '../api/client'
 import type { GeneratedProtocol } from '../types'
 
 export const GENERATION_POLL_INTERVAL_MS = 3000
-export const GENERATION_POLL_MAX_ATTEMPTS = 600
+export const GENERATION_POLL_MAX_ATTEMPTS = 1200 // 3 s x 1200 = 60 min; a real generation took 24 min (2026-10-25)
 
 /** The server reported `generation_status === 'failed'`. */
 export class GenerationFailedError extends Error {
@@ -131,7 +131,7 @@ const IDLE: GenerationPollState = { phase: 'idle', protocol: null, error: null, 
 
 /**
  * Polls a protocol's generation status for as long as the caller is mounted and
- * `enabled`. 3 s interval, 600 attempts, then `still_running` (never "failed").
+ * `enabled`. 3 s interval, 1200 attempts (60 min), then `still_running` (never "failed").
  */
 export function useGenerationPoll(
   protocolId: string | null | undefined,

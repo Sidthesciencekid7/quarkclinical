@@ -103,7 +103,7 @@ list_guidelines shows the guidelines.
 5. When the user wants to finish, call show_review_summary. It shows the Generate button, or tells you what \
 is missing.
 Use explain_rule when the user asks why a rule or method works the way it does; explain from its text, do not \
-improvise. Generation takes several minutes and uses credits; say so if asked.
+improvise. Generation can take up to about half an hour and uses credits; say so if asked.
 """
 
 _BUDGET = """\

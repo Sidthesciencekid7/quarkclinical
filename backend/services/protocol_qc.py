@@ -1456,6 +1456,21 @@ _HEPATIC_KEYWORDS = ("uln", "hy's law", "hys law", "bilirubin", "aminotransferas
 _DISCHARGE_KEYWORDS = ("discharge", "released from the unit", "release from the unit",
                        "leave the unit", "confinement")
 
+# Biologic CYP/transporter check (see _check_ddi): a pathway named in a sentence
+# that restricts, unless that sentence denies the pathway's relevance.
+_CYP_TERM_RE = re.compile(r"\bcyp\w*|cytochrome|\bp450\b|transporter|\bp-gp\b|\boatp", re.I)
+_RESTRICT_RE = re.compile(r"prohibit|not permitted|must not|washout|exclu|restrict", re.I)
+_CYP_DENIAL_RE = re.compile(
+    r"not (?:predicated|based|dependent) on"
+    r"|no (?:mechanistic )?relevance|not (?:mechanistically )?relevant|irrelevant"
+    r"|is not an?\b[^.;]{0,60}\bsubstrate|not (?:a|an) (?:cyp|p450|transporter)"
+    r"|\bno\b[^.;]{0,120}\b(?:restriction|prohibition)s?\b[^.;]{0,60}"
+    r"\b(?:is|are) (?:imposed|applied|applicable|required|needed)"
+    r"|rather than (?:by )?(?:cytochrome|cyp|p450|drug transporter)"
+    r"|none (?:is|are) imposed|does not (?:apply|exist)|not applicable",
+    re.I,
+)
+
 _MEDIC_RE = r"(?:physician|investigator|medically[- ]qualified|medical officer)"
 _AUTHORISE_RE = r"(?:authoris|authoriz|approv|sign(?:ed|ature)?\b|permission)"
 
@@ -1831,15 +1846,22 @@ def _check_ddi(add: _Add, sections: dict[str, str],
                    "protocol.",
             section="population"))
     # --- Biologic-specific -------------------------------------------------
+    # Judged per sentence: a sentence that names a P450/transporter pathway AND
+    # restricts something is boilerplate for a protein - unless the sentence is
+    # denying that pathway's relevance ("not predicated on a cytochrome P450
+    # interaction", "no restriction of CYP inhibitors is imposed"), which is
+    # exactly what a correct biologic protocol says next to drug-agnostic rules
+    # such as the tobacco exclusion. A proximity window used to flag those.
     # A therapeutic protein is catabolised by proteolysis, so a CYP or
     # transporter restriction can only be boilerplate; and subjects MUST be
     # naive to the molecule, because pre-existing anti-drug antibodies both
     # depress exposure and make treatment-emergent immunogenicity unscoreable.
     if str(ddi.get("modality") or "").lower() == "biologic":
-        cyp_win = _windows(
-            text, ("cyp", "cytochrome", "p450", "transporter", "p-gp", "oatp"), radius=200)
-        if cyp_win and re.search(
-                r"prohibit|not permitted|must not|washout|exclu|restrict", cyp_win, re.I):
+        restricting = [
+            s for s in re.split(r"(?<=[.;])\s+", text)
+            if _CYP_TERM_RE.search(s) and _RESTRICT_RE.search(s) and not _CYP_DENIAL_RE.search(s)
+        ]
+        if restricting:
             add(QCFinding(id="ddi_biologic_cyp", category="Interactions",
                 title="CYP or transporter restriction imposed for a biologic",
                 status=QCStatus.FAIL,

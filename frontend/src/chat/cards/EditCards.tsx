@@ -66,7 +66,7 @@ export function ProtocolOverviewCard({ card }: { card: Card }) {
 /* ---------------------------------------------------------------- edit_impact */
 
 const DEFAULT_RERUN =
-  'Changing an engine input re-runs the full generation for this protocol (a few minutes, and it uses generation credits). Nothing changes in the protocol until you review the result and apply it.'
+  'Changing an engine input re-runs the full generation for this protocol (up to about half an hour, and it uses generation credits). Nothing changes in the protocol until you review the result and apply it.'
 
 export function EditImpactCard({ card }: { card: Card }) {
   const d = card.data as unknown as EditImpactCardData
@@ -465,11 +465,11 @@ export function EditProgressCard({ card }: { card: Card }) {
             <p className="font-medium text-fg">Preparing the edit&hellip;</p>
             <p>
               {engine
-                ? 'Re-running the full generation with your change. This takes a few minutes; you can leave this page and come back.'
+                ? 'Re-running the full generation with your change. This can take up to about half an hour; you can leave this page and come back.'
                 : 'Rewriting the sections you named. This usually takes a minute or two.'}
             </p>
             {poll.phase === 'still_running' ? (
-              <p className="mt-1 text-[color:var(--warn-fg)]">Still working. Reopen this conversation in a few minutes to see the result.</p>
+              <p className="mt-1 text-[color:var(--warn-fg)]">Still working. Reopen this conversation later to see the result.</p>
             ) : null}
           </div>
         </div>

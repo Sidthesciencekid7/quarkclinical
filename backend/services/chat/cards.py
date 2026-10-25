@@ -541,7 +541,7 @@ def build_guideline_card(spec: ProtocolDraftSpec) -> Card:
 
 def build_protocol_summary_card(spec: ProtocolDraftSpec, *, blocking_issue: str | None = None) -> Card:
     ready = spec.ready()
-    notes = ["Generating a protocol uses AI credits and takes several minutes."]
+    notes = ["Generating a protocol uses AI credits and can take up to about half an hour."]
     proposed = [r.label for r in _summary_rows(spec) if r.needs_check]
     if proposed:
         notes.append("Please check: " + ", ".join(proposed) + ". Clicking Generate confirms everything shown.")
@@ -661,7 +661,7 @@ EDIT_FIELD_LABELS: dict[str, str] = {
 }
 
 RERUN_NOTE = (
-    "Changing an engine input re-runs the full generation for this protocol (a few minutes, and it uses "
+    "Changing an engine input re-runs the full generation for this protocol (up to about half an hour, and it uses "
     "generation credits). Nothing changes in the protocol until you review the result and apply it."
 )
 PROSE_NOTE = (
@@ -1360,7 +1360,7 @@ def after_generation_started(
         protocol.get("generation_error"),
     )
     guide = Guide(
-        text="Generation started. This takes a few minutes; you can keep chatting or leave this page.",
+        text="Generation started. It can take up to about half an hour; you can keep chatting or leave this page.",
         chips=[],
     )
     return ActionOutcome(spec=work, cards=_finish(existing, clicked_card_id, [card]), guide=guide)
