@@ -385,6 +385,10 @@ class _Turn:
     def evidence(self) -> list[str]:
         return [
             json.dumps(self.spec.to_json(), ensure_ascii=False, default=str),
+            # Display values too: the spec stores codes (e.g. a guideline id) whose
+            # user-facing labels carry numbers the assistant may quote, such as
+            # the "351(k)" in the biosimilar guideline name.
+            self.spec.summary().model_dump_json(),
             *self.user_texts, *self.card_texts, *self.tool_result_texts,
         ]
 
