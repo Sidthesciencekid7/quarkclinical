@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import { CSR_SECTION_ORDER, CSR_SECTION_TITLES } from '../types'
 import type { CsrInputKind, CsrQCReport, ProtocolSummary, StudyReport } from '../types'
+import { Badge, Banner, Button, Card, CardHeader, Check, ChevronLeft, ChevronRight, Download, RefreshCw, Spinner, cx } from '../ui'
 import CSRDatasetUpload from './CSRDatasetUpload'
 import CSRResultsReview from './CSRResultsReview'
 
@@ -97,7 +98,7 @@ export default function CSRView({ protocol, onBack }: { protocol: ProtocolSummar
       if (p.generation_status === 'failed') throw new Error(p.generation_error || 'Generation failed.')
       if (p.generation_status === 'complete' || p.generation_status == null) return p
     }
-    throw new Error('Generation is taking longer than expected — check back shortly.')
+    throw new Error('Generation is taking longer than expected. Check back shortly.')
   }
 
   async function generate() {
@@ -147,156 +148,211 @@ export default function CSRView({ protocol, onBack }: { protocol: ProtocolSummar
   const activeIdx = phase === 'start' || phase === 'loading' ? 0 : steps.findIndex(s => s.key === phase)
 
   return (
-    <div className="app-canvas min-h-[calc(100vh-57px)]">
-      <div className="max-w-4xl mx-auto px-5 py-8">
-        {/* Header */}
-        <div className="flex items-center gap-3 mb-6 flex-wrap">
-          <button onClick={onBack} className="btn-ghost text-xs">
-            <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M9 3L4 7l5 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
-            My Reports
-          </button>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-xl font-extrabold text-slate-900 tracking-tight capitalize truncate">
-                <span className="capitalize">{protocol.drug_inn}</span> — Clinical Study Report
-              </h1>
-              <span className="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-md bg-teal-50 text-teal-700 border border-teal-200">
-                CSR · ICH E3
-              </span>
-            </div>
-            <p className="text-xs text-slate-500">Post-study bioequivalence analysis → Clinical Study Report (CSR)</p>
+    <div className="mx-auto w-full max-w-4xl px-4 py-8 sm:px-8 sm:py-10">
+      {/* Header */}
+      <div className="mb-6 flex flex-wrap items-start gap-x-3 gap-y-2">
+        <Button variant="secondary" size="sm" onClick={onBack} leftIcon={<ChevronLeft aria-hidden />}>
+          Protocols
+        </Button>
+        <div className="min-w-0 flex-1 basis-64">
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="min-w-0 truncate text-h1 text-fg">
+              <span className="capitalize">{protocol.drug_inn}</span> · Clinical study report
+            </h1>
+            <Badge variant="neutral">CSR · ICH E3</Badge>
           </div>
+          <p className="mt-1 text-body text-fg-muted">Post-study bioequivalence analysis, then the Clinical Study Report (CSR).</p>
         </div>
+      </div>
 
-        {/* Step indicator */}
-        {phase !== 'loading' && (
-          <div className="flex items-center gap-2 mb-6 text-xs font-semibold">
-            {steps.map((s, i) => (
-              <div key={s.key} className="flex items-center gap-2">
-                <span className={`px-2.5 py-1 rounded-lg border ${i === activeIdx ? 'bg-cyan-50 text-cyan-700 border-cyan-200' : i < activeIdx ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-50 text-slate-400 border-slate-200'}`}>
+      {/* Step indicator */}
+      {phase !== 'loading' && (
+        <ol aria-label="Progress" className="mb-6 flex flex-wrap items-center gap-2">
+          {steps.map((s, i) => {
+            const done = i < activeIdx
+            const current = i === activeIdx
+            return (
+              <li key={s.key} aria-current={current ? 'step' : undefined} className="flex items-center gap-2">
+                <Badge
+                  variant={current ? 'solid' : done ? 'success' : 'neutral'}
+                  icon={done ? <Check aria-hidden className="h-3.5 w-3.5" /> : undefined}
+                  className="h-7 px-3 text-small"
+                >
                   {i + 1}. {s.label}
-                </span>
-                {i < steps.length - 1 && <span className="text-slate-300">›</span>}
-              </div>
-            ))}
-          </div>
-        )}
+                  {done ? <span className="sr-only"> (done)</span> : null}
+                </Badge>
+                {i < steps.length - 1 ? <ChevronRight aria-hidden className="h-4 w-4 text-ink-300" /> : null}
+              </li>
+            )
+          })}
+        </ol>
+      )}
 
-        {loadError && (
-          <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{loadError}</div>
-        )}
+      {loadError ? (
+        <Banner tone="danger" className="mb-4">
+          {loadError}
+        </Banner>
+      ) : null}
 
-        {phase === 'loading' && !loadError && (
-          <div className="space-y-3">{[0, 1].map(i => <div key={i} className="h-24 rounded-2xl border border-slate-200 bg-white/60 animate-pulse" />)}</div>
-        )}
+      {phase === 'loading' && !loadError && (
+        <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading study report">
+          {[0, 1].map(i => <div key={i} className="h-24 animate-pulse rounded-card border border-line bg-surface-muted" />)}
+        </div>
+      )}
 
-        {/* Start: pick input kind */}
-        {phase === 'start' && (
-          <div className="rounded-2xl border border-slate-200 bg-white p-6">
-            <h3 className="text-sm font-bold text-slate-800 mb-1">What are you uploading?</h3>
-            <p className="text-xs text-slate-500 mb-4">This determines the template and whether the platform runs non-compartmental analysis for you.</p>
-            <div className="space-y-2.5">
+      {/* Start: pick input kind */}
+      {phase === 'start' && (
+        <Card padding="lg">
+          <fieldset>
+            <legend className="text-h3 text-fg">What are you uploading?</legend>
+            <p className="mt-1 text-small text-fg-muted">
+              This determines the template and whether the platform runs non-compartmental analysis for you.
+            </p>
+            <div className="mt-4 space-y-2.5">
               {([
                 ['params', 'Pre-computed PK parameters', 'You already have per-subject Cmax / AUC (from Phoenix, R, etc.). We run the bioequivalence statistics.'],
                 ['nca', 'Raw concentration–time data', 'You have the concentration samples. We run non-compartmental analysis (AUC/Cmax/λz) first, then the statistics.'],
               ] as [CsrInputKind, string, string][]).map(([k, title, desc]) => (
-                <label key={k} className={`flex items-start gap-3 rounded-xl border p-4 cursor-pointer transition-colors ${inputKind === k ? 'border-cyan-400 bg-cyan-50/60 ring-1 ring-cyan-300' : 'border-slate-200 hover:border-slate-300'}`}>
-                  <input type="radio" name="inputKind" checked={inputKind === k} onChange={() => setInputKind(k)} className="mt-1 accent-cyan-600" />
+                <label
+                  key={k}
+                  className={cx(
+                    'flex cursor-pointer items-start gap-3 rounded-input border p-4 transition-colors duration-fast',
+                    inputKind === k
+                      ? 'border-ink-950 bg-surface-muted ring-1 ring-ink-950'
+                      : 'border-line hover:border-line-strong',
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name="inputKind"
+                    checked={inputKind === k}
+                    onChange={() => setInputKind(k)}
+                    className="mt-1 accent-ink-950"
+                  />
                   <div>
-                    <div className="text-sm font-bold text-slate-800">{title}</div>
-                    <div className="text-xs text-slate-500 mt-0.5 leading-relaxed">{desc}</div>
+                    <div className="text-body font-semibold text-fg">{title}</div>
+                    <div className="mt-0.5 text-small text-fg-muted">{desc}</div>
                   </div>
                 </label>
               ))}
             </div>
-            <button onClick={startCreate} disabled={creating} className="mt-5 inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-bold shadow-sm shadow-cyan-600/20 transition-colors cursor-pointer disabled:opacity-50">
+          </fieldset>
+          <div className="mt-5">
+            <Button onClick={startCreate} loading={creating}>
               {creating ? 'Starting…' : 'Continue'}
-            </button>
+            </Button>
           </div>
-        )}
+        </Card>
+      )}
 
-        {/* Upload */}
-        {phase === 'upload' && studyReport && (
-          <CSRDatasetUpload studyReport={studyReport} onAnalyzed={onAnalyzed} />
-        )}
+      {/* Upload */}
+      {phase === 'upload' && studyReport && (
+        <CSRDatasetUpload studyReport={studyReport} onAnalyzed={onAnalyzed} />
+      )}
 
-        {/* Review results → generate narrative */}
-        {phase === 'review' && studyReport?.results && (
-          <div className="space-y-6">
-            <CSRResultsReview results={studyReport.results} />
-            <div className="rounded-2xl border border-slate-200 bg-white p-5">
-              <h3 className="text-sm font-bold text-slate-800">Generate the Clinical Study Report (CSR)</h3>
-              <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                The numbers above are locked. Generating the CSR writes the full ICH E3 narrative <em>around</em> them — it never changes a figure.
-              </p>
-              {genError && <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{genError}</div>}
-              {genBusy && (
-                <div className="mt-3 flex items-center gap-3 rounded-xl border border-cyan-200 bg-cyan-50 px-4 py-3 text-sm text-cyan-800">
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="animate-spin flex-shrink-0"><circle cx="8" cy="8" r="6" stroke="#a5f3fc" strokeWidth="2.5" /><path d="M8 2a6 6 0 016 6" stroke="#0891b2" strokeWidth="2.5" strokeLinecap="round" /></svg>
-                  <span><strong>Generating your Clinical Study Report…</strong> the AI is drafting each ICH E3 section around your locked results. This can take a minute or two.</span>
-                </div>
-              )}
-              <div className="mt-4 flex items-center gap-2">
-                <button onClick={generate} disabled={genBusy} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-bold shadow-sm shadow-cyan-600/20 transition-colors cursor-pointer disabled:opacity-50">
-                  {genBusy ? 'Generating CSR…' : 'Generate Clinical Study Report'}
-                </button>
-                <button onClick={() => setPhase('upload')} disabled={genBusy} className="btn-ghost text-xs disabled:opacity-50">Re-upload data</button>
-              </div>
+      {/* Review results, then generate the narrative */}
+      {phase === 'review' && studyReport?.results && (
+        <div className="space-y-6">
+          <CSRResultsReview results={studyReport.results} />
+          <Card>
+            <CardHeader
+              level={2}
+              title="Generate the Clinical Study Report (CSR)"
+              subtitle={
+                <>
+                  The numbers above are locked. Generating the CSR writes the full ICH E3 narrative <em>around</em> them; it never
+                  changes a figure.
+                </>
+              }
+            />
+            {genError ? (
+              <Banner tone="danger" className="mt-3">
+                {genError}
+              </Banner>
+            ) : null}
+            {genBusy ? (
+              <Banner tone="info" className="mt-3" title="Generating your Clinical Study Report…">
+                <span className="inline-flex items-start gap-2">
+                  <Spinner size={14} className="mt-1" />
+                  <span>The AI is drafting each ICH E3 section around your locked results. This can take a minute or two.</span>
+                </span>
+              </Banner>
+            ) : null}
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <Button onClick={generate} loading={genBusy}>
+                {genBusy ? 'Generating CSR…' : 'Generate Clinical Study Report'}
+              </Button>
+              <Button variant="ghost" onClick={() => setPhase('upload')} disabled={genBusy}>
+                Re-upload data
+              </Button>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* Final report */}
+      {phase === 'report' && studyReport?.results && (
+        <div className="space-y-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-h2 text-fg">Clinical Study Report: draft</h2>
+              <p className="text-small text-fg-subtle">ICH E3 structure · for qualified review before use</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => doExport('docx')}
+                loading={exporting === 'docx'}
+                disabled={exporting !== null}
+                leftIcon={<Download aria-hidden />}
+              >
+                {exporting === 'docx' ? 'Exporting…' : 'Export CSR (.docx)'}
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => doExport('pdf')}
+                loading={exporting === 'pdf'}
+                disabled={exporting !== null}
+                leftIcon={<Download aria-hidden />}
+              >
+                {exporting === 'pdf' ? 'Exporting…' : 'Export CSR (.pdf)'}
+              </Button>
             </div>
           </div>
-        )}
+          {genError ? <Banner tone="danger">{genError}</Banner> : null}
 
-        {/* Final report */}
-        {phase === 'report' && studyReport?.results && (
-          <div className="space-y-6">
-            <div className="flex items-center justify-between gap-3 flex-wrap">
-              <div>
-                <h2 className="text-base font-extrabold text-slate-900">Clinical Study Report — Draft</h2>
-                <p className="text-[11px] text-slate-400">ICH E3 structure · for qualified review before use</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button onClick={() => doExport('docx')} disabled={exporting !== null} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 text-slate-600 text-xs font-semibold hover:bg-slate-50 cursor-pointer disabled:opacity-50">
-                  {exporting === 'docx' ? 'Exporting…' : 'Export CSR (.docx)'}
-                </button>
-                <button onClick={() => doExport('pdf')} disabled={exporting !== null} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 text-slate-600 text-xs font-semibold hover:bg-slate-50 cursor-pointer disabled:opacity-50">
-                  {exporting === 'pdf' ? 'Exporting…' : 'Export CSR (.pdf)'}
-                </button>
-              </div>
-            </div>
-            {genError && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{genError}</div>}
+          <CSRResultsReview results={studyReport.results} />
 
-            <CSRResultsReview results={studyReport.results} />
+          {qc && (
+            <Banner tone={qc.submission_ready ? 'success' : 'warning'} title="Quality check">
+              {qc.submission_ready ? 'No blocking issues. Requires expert sign-off.' : `${qc.counts.fail || 0} blocking issue(s) to resolve.`}
+              <span className="text-fg-subtle"> · {qc.counts.pass || 0} pass · {qc.counts.warning || 0} warning · {qc.counts.fail || 0} fail</span>
+            </Banner>
+          )}
 
-            {qc && (
-              <div className={`rounded-xl border px-4 py-3 text-sm ${qc.submission_ready ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
-                <span className="font-semibold">QC: </span>
-                {qc.submission_ready ? 'No blocking issues — requires expert sign-off.' : `${qc.counts.fail || 0} blocking issue(s) to resolve.`}
-                <span className="opacity-70"> · {qc.counts.pass || 0} pass · {qc.counts.warning || 0} warning · {qc.counts.fail || 0} fail</span>
-              </div>
-            )}
+          {/* Narrative sections (read-only) */}
+          <Card padding="lg" className="space-y-5">
+            <h2 className="text-h2 text-fg">ICH E3 narrative</h2>
+            {CSR_SECTION_ORDER.filter(k => k !== 'title').map((key, i) => {
+              const html = studyReport.sections?.[key]
+              if (!html) return null
+              return (
+                <section key={key}>
+                  <h3 className="mb-1.5 text-h3 text-fg">{i + 1}. {CSR_SECTION_TITLES[key]}</h3>
+                  <div
+                    className="text-body text-fg-muted [&_p]:mb-2 [&_h3]:mb-1 [&_h3]:mt-3 [&_h3]:font-semibold [&_h3]:text-fg [&_ul]:list-disc [&_ul]:space-y-1 [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_table]:w-full [&_table]:text-small [&_td]:border [&_td]:border-line [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-line [&_th]:bg-surface-muted [&_th]:px-2 [&_th]:py-1"
+                    dangerouslySetInnerHTML={{ __html: html }}
+                  />
+                </section>
+              )
+            })}
+          </Card>
 
-            {/* Narrative sections (read-only) */}
-            <div className="rounded-2xl border border-slate-200 bg-white p-6 space-y-5">
-              <h2 className="text-lg font-extrabold text-slate-900">ICH E3 Narrative</h2>
-              {CSR_SECTION_ORDER.filter(k => k !== 'title').map((key, i) => {
-                const html = studyReport.sections?.[key]
-                if (!html) return null
-                return (
-                  <section key={key}>
-                    <h3 className="text-sm font-bold text-cyan-800 mb-1.5">{i + 1}. {CSR_SECTION_TITLES[key]}</h3>
-                    <div
-                      className="text-sm text-slate-700 leading-relaxed [&_p]:mb-2 [&_h3]:font-bold [&_h3]:text-slate-800 [&_h3]:mt-3 [&_h3]:mb-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:space-y-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_table]:w-full [&_table]:text-xs [&_td]:border [&_td]:border-slate-200 [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-slate-200 [&_th]:px-2 [&_th]:py-1 [&_th]:bg-slate-50"
-                      dangerouslySetInnerHTML={{ __html: html }}
-                    />
-                  </section>
-                )
-              })}
-            </div>
-
-            <button onClick={() => setPhase('review')} className="btn-ghost text-xs">Re-generate narrative</button>
-          </div>
-        )}
-      </div>
+          <Button variant="ghost" onClick={() => setPhase('review')} leftIcon={<RefreshCw aria-hidden />}>
+            Re-generate narrative
+          </Button>
+        </div>
+      )}
     </div>
   )
 }

@@ -1,4 +1,5 @@
-import { useMemo } from 'react'
+import { useId, useMemo } from 'react'
+import { Badge, Button, ChevronDown, cx } from '../ui'
 
 interface Props {
   sections: Record<string, string>
@@ -31,50 +32,37 @@ export default function SourcesPanel({ sections, open, onToggle }: Props) {
   const fdaRefs = useMemo(() => extractFDARefs(sections), [sections])
   const cfrRefs = useMemo(() => extractCFRRefs(sections), [sections])
   const total = pmids.length + fdaRefs.length + cfrRefs.length
+  const bodyId = useId()
 
   return (
-    <div className="flex-shrink-0 border-t border-slate-200 bg-white">
+    <div className="flex-none border-t border-line bg-surface">
       {/* Toggle bar */}
-      <button
-        onClick={onToggle}
-        className="w-full px-5 py-2.5 flex items-center gap-2 hover:bg-slate-50 transition-colors"
-      >
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 12 12"
-          fill="none"
-          className={`flex-shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`}
+      <div className="flex items-center gap-2 px-3 py-1.5">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onToggle}
+          aria-expanded={open}
+          aria-controls={bodyId}
+          leftIcon={<ChevronDown aria-hidden className={cx('transition-transform duration-fast', open && 'rotate-180')} />}
         >
-          <path
-            d="M2 4l4 4 4-4"
-            stroke="currentColor"
-            strokeWidth="1.75"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-        <span className="text-[11px] font-semibold text-slate-600">Sources &amp; References</span>
-        {total > 0 && (
-          <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded-full font-medium">
-            {total}
-          </span>
+          Sources &amp; references
+        </Button>
+        {total > 0 ? (
+          <Badge variant="neutral">{total}</Badge>
+        ) : (
+          <span className="text-small text-fg-subtle">None extracted yet</span>
         )}
-        {total === 0 && (
-          <span className="text-[10px] text-slate-400">None extracted yet</span>
-        )}
-      </button>
+      </div>
 
-      {open && (
-        <div className="h-52 overflow-y-auto border-t border-slate-100">
-          <div className="grid grid-cols-3 gap-6 px-5 py-4">
+      {open ? (
+        <div id={bodyId} className="h-52 overflow-y-auto border-t border-line">
+          <div className="grid grid-cols-1 gap-6 px-5 py-4 sm:grid-cols-3">
             {/* PubMed */}
             <div>
-              <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
-                PubMed ({pmids.length})
-              </p>
+              <h3 className="eyebrow mb-2">PubMed ({pmids.length})</h3>
               {pmids.length === 0 ? (
-                <p className="text-xs text-slate-400">None extracted</p>
+                <p className="text-small text-fg-subtle">None extracted</p>
               ) : (
                 <ul className="space-y-1">
                   {pmids.map(pmid => (
@@ -83,7 +71,7 @@ export default function SourcesPanel({ sections, open, onToggle }: Props) {
                         href={`https://pubmed.ncbi.nlm.nih.gov/${pmid}/`}
                         target="_blank"
                         rel="noreferrer noopener"
-                        className="text-xs text-indigo-600 hover:text-indigo-800 hover:underline font-mono"
+                        className="rounded text-small text-accent-700 underline-offset-2 hover:underline"
                       >
                         PMID: {pmid}
                       </a>
@@ -95,15 +83,13 @@ export default function SourcesPanel({ sections, open, onToggle }: Props) {
 
             {/* FDA */}
             <div>
-              <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
-                FDA Guidances ({fdaRefs.length})
-              </p>
+              <h3 className="eyebrow mb-2">FDA guidances ({fdaRefs.length})</h3>
               {fdaRefs.length === 0 ? (
-                <p className="text-xs text-slate-400">None extracted</p>
+                <p className="text-small text-fg-subtle">None extracted</p>
               ) : (
                 <ul className="space-y-1.5">
                   {fdaRefs.map((ref, i) => (
-                    <li key={i} className="text-xs text-slate-600 leading-snug">
+                    <li key={i} className="text-small text-fg-muted">
                       {ref}
                     </li>
                   ))}
@@ -113,15 +99,13 @@ export default function SourcesPanel({ sections, open, onToggle }: Props) {
 
             {/* CFR */}
             <div>
-              <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
-                CFR Citations ({cfrRefs.length})
-              </p>
+              <h3 className="eyebrow mb-2">CFR citations ({cfrRefs.length})</h3>
               {cfrRefs.length === 0 ? (
-                <p className="text-xs text-slate-400">None extracted</p>
+                <p className="text-small text-fg-subtle">None extracted</p>
               ) : (
                 <ul className="space-y-1.5">
                   {cfrRefs.map((ref, i) => (
-                    <li key={i} className="text-xs text-slate-600 font-mono">
+                    <li key={i} className="font-mono text-small text-fg-muted">
                       {ref}
                     </li>
                   ))}
@@ -130,7 +114,7 @@ export default function SourcesPanel({ sections, open, onToggle }: Props) {
             </div>
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   )
 }

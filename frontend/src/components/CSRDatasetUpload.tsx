@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { api, DatasetValidationError } from '../api/client'
 import type { StudyReport } from '../types'
+import { Badge, Banner, Button, Card, CardHeader, Download, Field, FileText, Input } from '../ui'
 
 /** Step: download the fixed template, fill it in, upload the results file. On
  *  success the backend has run the deterministic analysis and returns the CSR
@@ -35,6 +36,7 @@ export default function CSRDatasetUpload({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [rowErrors, setRowErrors] = useState<string[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const lloqInvalid = kind === 'nca' && lloq.trim() !== '' && !(Number.isFinite(Number(lloq)) && Number(lloq) > 0)
 
   async function download(fmt: 'csv' | 'xlsx') {
@@ -73,77 +75,90 @@ export default function CSRDatasetUpload({
 
   return (
     <div className="space-y-5">
-      <div className="rounded-2xl border border-slate-200 bg-white p-5">
-        <div className="flex items-center gap-2 mb-1">
-          <h3 className="text-sm font-bold text-slate-800">1 · Get the template</h3>
-          <span className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-md bg-cyan-50 text-cyan-700 border border-cyan-200">
-            {kind === 'params' ? 'Pre-computed parameters' : 'Raw concentration–time'}
-          </span>
+      <Card>
+        <CardHeader
+          level={2}
+          title="1 · Get the template"
+          badge={<Badge variant="info">{kind === 'params' ? 'Pre-computed parameters' : 'Raw concentration–time'}</Badge>}
+          subtitle={KIND_DESC[kind]}
+        />
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Button variant="secondary" size="sm" leftIcon={<Download aria-hidden />} onClick={() => download('csv')}>
+            Download CSV template
+          </Button>
+          <Button variant="secondary" size="sm" leftIcon={<Download aria-hidden />} onClick={() => download('xlsx')}>
+            Download Excel template
+          </Button>
         </div>
-        <p className="text-xs text-slate-500 leading-relaxed mb-3">{KIND_DESC[kind]}</p>
-        <div className="flex gap-2">
-          <button onClick={() => download('csv')} className="btn-ghost text-xs">Download CSV template</button>
-          <button onClick={() => download('xlsx')} className="btn-ghost text-xs">Download Excel template</button>
-        </div>
-      </div>
+      </Card>
 
-      <div className="rounded-2xl border border-slate-200 bg-white p-5">
-        <h3 className="text-sm font-bold text-slate-800 mb-3">2 · Upload your filled-in file</h3>
+      <Card>
+        <CardHeader level={2} title="2 · Upload your filled-in file" />
 
         {kind === 'nca' && (
-          <div className="mb-4">
-            <label className="block text-xs font-semibold text-slate-600 mb-1">
-              LLOQ (lower limit of quantification) — optional
-            </label>
-            <input
-              type="number"
-              step="any"
-              min="0.0000001"
-              value={lloq}
-              onChange={e => setLloq(e.target.value)}
-              placeholder="e.g. 5"
-              aria-invalid={lloqInvalid}
-              className={`w-40 rounded-lg border px-3 py-1.5 text-sm focus:outline-none focus:ring-1 ${lloqInvalid ? 'border-red-400 focus:border-red-500 focus:ring-red-500' : 'border-slate-300 focus:border-cyan-500 focus:ring-cyan-500'}`}
-            />
-            {lloqInvalid && <p className="text-[11px] text-red-600 mt-1">LLOQ must be a positive number.</p>}
-            <p className="text-[11px] text-slate-400 mt-1.5 leading-relaxed">
-              Below-LLOQ samples: leave the concentration blank or enter <code className="text-slate-500">BLQ</code>. They are treated as
-              missing (never zero) after the first measurable sample, and as 0 before it — the standard convention.
-            </p>
+          <div className="mt-4">
+            <Field
+              label="LLOQ (lower limit of quantification), optional"
+              error={lloqInvalid ? 'LLOQ must be a positive number.' : undefined}
+              hint={
+                <>
+                  Below-LLOQ samples: leave the concentration blank or enter <code className="font-mono">BLQ</code>. They are treated as
+                  missing (never zero) after the first measurable sample, and as 0 before it, the standard convention.
+                </>
+              }
+              className="max-w-md"
+            >
+              <Input
+                type="number"
+                step="any"
+                min="0.0000001"
+                value={lloq}
+                onChange={e => setLloq(e.target.value)}
+                placeholder="e.g. 5"
+                className="w-40"
+              />
+            </Field>
           </div>
         )}
 
-        <label className="flex items-center gap-3 cursor-pointer">
-          <span className="btn-ghost text-xs">Choose file…</span>
+        <div className="mt-4 flex flex-wrap items-center gap-3">
           <input
+            ref={fileInputRef}
             type="file"
             accept=".csv,.xlsx"
+            aria-label="Choose results file (.csv or .xlsx)"
             onChange={e => { setFile(e.target.files?.[0] ?? null); setError(null); setRowErrors([]) }}
+            tabIndex={-1}
             className="hidden"
           />
-          <span className="text-sm text-slate-500 truncate">{file ? file.name : 'No file selected (.csv or .xlsx)'}</span>
-        </label>
+          <Button
+            variant="secondary"
+            size="sm"
+            leftIcon={<FileText aria-hidden />}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            Choose file…
+          </Button>
+          <span className="min-w-0 truncate text-body text-fg-muted">{file ? file.name : 'No file selected (.csv or .xlsx)'}</span>
+        </div>
 
-        <button
-          onClick={analyze}
-          disabled={!file || busy || lloqInvalid}
-          className="mt-4 inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-bold shadow-sm shadow-cyan-600/20 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {busy ? 'Analyzing…' : 'Upload & analyze'}
-        </button>
+        <div className="mt-4">
+          <Button onClick={analyze} loading={busy} disabled={!file || lloqInvalid}>
+            {busy ? 'Analyzing…' : 'Upload & analyze'}
+          </Button>
+        </div>
 
-        {error && (
-          <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            <div className="font-semibold">{error}</div>
-            {rowErrors.length > 0 && (
-              <ul className="mt-2 space-y-0.5 text-xs list-disc pl-4 max-h-52 overflow-y-auto">
+        {error ? (
+          <Banner tone="danger" title={error} className="mt-4">
+            {rowErrors.length > 0 ? (
+              <ul className="mt-1 max-h-52 list-disc space-y-0.5 overflow-y-auto pl-4 text-small">
                 {rowErrors.slice(0, 50).map((er, i) => <li key={i}>{er}</li>)}
                 {rowErrors.length > 50 && <li>… and {rowErrors.length - 50} more</li>}
               </ul>
-            )}
-          </div>
-        )}
-      </div>
+            ) : null}
+          </Banner>
+        ) : null}
+      </Card>
     </div>
   )
 }

@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import type { Comment, SectionName } from '../types'
 import { SECTION_DISPLAY_NAMES } from '../types'
+import { Badge, Banner, Button, Check, IconButton, MessageSquare, PillNav, Textarea, Trash2, cx } from '../ui'
+import { PANEL_CLASS } from './PanelShell'
 
 interface Props {
   protocolId: string
@@ -18,6 +20,11 @@ function relativeTime(iso: string): string {
   return `${Math.floor(hrs / 24)}d ago`
 }
 
+const SCOPE_ITEMS = [
+  { id: 'section', label: 'This section' },
+  { id: 'all', label: 'All sections' },
+]
+
 export default function CommentPanel({ protocolId, activeSection }: Props) {
   const [comments, setComments] = useState<Comment[]>([])
   const [loading, setLoading] = useState(true)
@@ -29,7 +36,7 @@ export default function CommentPanel({ protocolId, activeSection }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   // Notes live server-side (org-shared, user-attributed), so load them for this
-  // protocol on mount. Every failure path is swallowed into `error` — a broken
+  // protocol on mount. Every failure path is swallowed into `error`: a broken
   // notes panel must never take the editor down with it.
   useEffect(() => {
     let cancelled = false
@@ -80,7 +87,7 @@ export default function CommentPanel({ protocolId, activeSection }: Props) {
     if (!target) return
     const next = !target.resolved
     setPendingIds(prev => new Set(prev).add(id))
-    // Optimistic: the checkbox should feel instant; revert if the server says no.
+    // Optimistic: the toggle should feel instant; revert if the server says no.
     setComments(prev => prev.map(c => (c.id === id ? { ...c, resolved: next } : c)))
     try {
       await api.updateComment(protocolId, id, next)
@@ -108,135 +115,102 @@ export default function CommentPanel({ protocolId, activeSection }: Props) {
   }
 
   return (
-    <aside className="w-72 flex-shrink-0 flex flex-col bg-white border-l border-slate-200">
+    <aside aria-label="Review notes" className={PANEL_CLASS}>
       {/* Header */}
-      <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-slate-800">Review Notes</span>
-          {unresolvedCount > 0 && (
-            <span className="text-[10px] font-semibold bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full">
-              {unresolvedCount}
+      <div className="flex-none border-b border-line px-4 pb-3 pt-4">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span
+              aria-hidden
+              className="flex h-8 w-8 flex-none items-center justify-center rounded-xl bg-surface-muted text-fg-muted [&>svg]:h-4 [&>svg]:w-4"
+            >
+              <MessageSquare />
             </span>
-          )}
+            <h2 className="truncate text-h3 text-fg">Review notes</h2>
+            {unresolvedCount > 0 ? (
+              <Badge variant="warning" aria-label={`${unresolvedCount} unresolved`}>
+                {unresolvedCount}
+              </Badge>
+            ) : null}
+          </div>
         </div>
-        <button
-          onClick={() => setShowAll(s => !s)}
-          className="text-[11px] text-slate-400 hover:text-slate-600 transition-colors"
-        >
-          {showAll ? 'This section' : 'All sections'}
-        </button>
-      </div>
-
-      {/* Section label */}
-      {!showAll && (
-        <div className="px-4 py-2 bg-slate-50 border-b border-slate-100">
-          <p className="text-[11px] text-slate-500">
-            {'§ '}
-            <span className="font-medium text-slate-700">
+        <div className="mt-3">
+          <PillNav
+            size="sm"
+            ariaLabel="Notes scope"
+            items={SCOPE_ITEMS}
+            value={showAll ? 'all' : 'section'}
+            onChange={id => setShowAll(id === 'all')}
+          />
+        </div>
+        {!showAll ? (
+          <p className="mt-2.5 text-small text-fg-muted">
+            Section:{' '}
+            <span className="font-medium text-fg">
               {SECTION_DISPLAY_NAMES[activeSection as SectionName] ?? activeSection}
             </span>
           </p>
-        </div>
-      )}
+        ) : null}
+      </div>
 
       {/* Comment list */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-2">
+      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
         {loading ? (
-          <div className="text-center py-10">
-            <p className="text-xs text-slate-400">Loading notes…</p>
-          </div>
+          <p className="py-10 text-center text-small text-fg-subtle" role="status">
+            Loading notes…
+          </p>
         ) : sectionComments.length === 0 ? (
-          <div className="text-center py-10">
-            <svg
-              width="24"
-              height="24"
-              viewBox="0 0 24 24"
-              fill="none"
-              className="mx-auto mb-2 text-slate-200"
-            >
-              <path
-                d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2v10z"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinejoin="round"
-              />
-            </svg>
-            <p className="text-xs text-slate-400">No notes yet</p>
+          <div className="py-10 text-center">
+            <MessageSquare aria-hidden className="mx-auto mb-2 h-6 w-6 text-ink-300" />
+            <p className="text-small text-fg-subtle">No notes yet</p>
           </div>
         ) : (
           sectionComments.map(comment => (
-            <div
+            <article
               key={comment.id}
-              className={[
-                'rounded-xl p-3 border text-xs transition-opacity',
-                comment.resolved
-                  ? 'bg-slate-50 border-slate-100 opacity-60'
-                  : 'bg-white border-slate-200',
-              ].join(' ')}
+              className={cx(
+                'card p-3 text-small transition-opacity duration-fast',
+                comment.resolved && 'bg-surface-muted opacity-70',
+              )}
             >
-              <div className="flex items-center justify-between gap-2 mb-1.5">
-                <span className="font-semibold text-slate-700">{comment.author}</span>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] text-slate-400">{relativeTime(comment.createdAt)}</span>
-                  <button
-                    onClick={() => toggleResolved(comment.id)}
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <span className="font-semibold text-fg">{comment.author}</span>
+                <div className="flex items-center gap-0.5">
+                  <span className="mr-1 text-[11px] text-fg-subtle">{relativeTime(comment.createdAt)}</span>
+                  <IconButton
+                    size="sm"
+                    label="Mark as resolved"
+                    aria-pressed={comment.resolved}
+                    icon={<Check />}
                     disabled={pendingIds.has(comment.id)}
-                    title={comment.resolved ? 'Reopen' : 'Resolve'}
-                    className={[
-                      'w-4 h-4 rounded border flex items-center justify-center transition-colors',
-                      comment.resolved
-                        ? 'bg-emerald-100 border-emerald-300'
-                        : 'border-slate-300 hover:border-emerald-400',
-                      pendingIds.has(comment.id) ? 'opacity-40 cursor-not-allowed' : '',
-                    ].join(' ')}
-                  >
-                    {comment.resolved && (
-                      <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
-                        <path
-                          d="M1 4l2 2 4-4"
-                          stroke="#059669"
-                          strokeWidth="1.5"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    )}
-                  </button>
-                  <button
+                    onClick={() => toggleResolved(comment.id)}
+                    className={cx(comment.resolved && '!bg-[var(--ok-bg)] !text-[color:var(--ok-fg)]')}
+                  />
+                  <IconButton
+                    size="sm"
+                    label="Delete note"
+                    icon={<Trash2 />}
                     onClick={() => deleteComment(comment.id)}
-                    className="text-slate-300 hover:text-red-400 transition-colors"
-                    title="Delete"
-                  >
-                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                      <path
-                        d="M2 2l6 6M8 2l-6 6"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                      />
-                    </svg>
-                  </button>
+                  />
                 </div>
               </div>
-              <p className="text-slate-600 leading-relaxed whitespace-pre-wrap">{comment.text}</p>
-              {showAll && (
-                <p className="text-[10px] text-indigo-400 mt-1.5 font-medium">
-                  {'§ '}
+              <p className="whitespace-pre-wrap text-fg-muted">{comment.text}</p>
+              {showAll ? (
+                <p className="mt-1.5 text-[11px] font-medium text-fg-subtle">
                   {SECTION_DISPLAY_NAMES[comment.sectionName as SectionName] ?? comment.sectionName}
                 </p>
-              )}
-            </div>
+              ) : null}
+            </article>
           ))
         )}
       </div>
 
       {/* Add note */}
-      <div className="p-3 border-t border-slate-100">
-        {error && (
-          <p className="mb-2 text-[11px] text-red-500 leading-snug">{error}</p>
-        )}
-        <textarea
+      <div className="flex-none space-y-2 border-t border-line p-3">
+        {error ? <Banner tone="danger">{error}</Banner> : null}
+        <Textarea
           ref={textareaRef}
+          aria-label="Add a reviewer note"
           value={newText}
           onChange={e => setNewText(e.target.value)}
           onKeyDown={e => {
@@ -244,16 +218,11 @@ export default function CommentPanel({ protocolId, activeSection }: Props) {
           }}
           placeholder="Add a reviewer note…"
           rows={3}
-          className="w-full px-3 py-2 text-xs text-slate-700 placeholder-slate-400 border border-slate-200 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
         />
-        <button
-          onClick={addComment}
-          disabled={!newText.trim() || posting}
-          className="mt-2 w-full py-1.5 text-xs font-semibold bg-slate-800 text-white rounded-lg hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-        >
-          {posting ? 'Posting…' : 'Post Note'}
-          <span className="ml-1 opacity-40 font-normal">⌘↵</span>
-        </button>
+        <Button fullWidth onClick={addComment} loading={posting} disabled={!newText.trim()}>
+          {posting ? 'Posting…' : 'Post note'}
+        </Button>
+        <p className="text-center text-[11px] text-fg-subtle">Ctrl or Cmd + Enter also posts</p>
       </div>
     </aside>
   )

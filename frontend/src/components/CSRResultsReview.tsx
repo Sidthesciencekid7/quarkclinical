@@ -1,8 +1,11 @@
+import type { ReactNode } from 'react'
 import type { CsrResults } from '../types'
+import { Badge, Card, CheckCircle2, Info, XCircle, cx } from '../ui'
+import type { BadgeVariant } from '../ui'
 
 /** Read-only display of the LOCKED, deterministically-computed CSR results:
  *  the bioequivalence verdict, the pivotal per-metric table, and subject
- *  disposition. These numbers are never editable — they are the analysis. */
+ *  disposition. These numbers are never editable: they are the analysis. */
 
 const METRIC_LABEL: Record<string, string> = {
   cmax: 'Cmax',
@@ -15,29 +18,36 @@ function pct(v?: number | null): string {
   return v === undefined || v === null || Number.isNaN(v) ? '—' : v.toFixed(2)
 }
 
-const VERDICT: Record<string, { label: string; cls: string; badge: string }> = {
+// Full literal class names (Tailwind scans for them).
+const VERDICT: Record<string, { label: string; box: string; text: string; icon: ReactNode; badge: BadgeVariant }> = {
   bioequivalent: {
     label: 'Bioequivalent',
-    cls: 'bg-emerald-50 border-emerald-200 text-emerald-800',
-    badge: 'bg-emerald-600',
+    box: 'border-[color:var(--ok-border)] bg-[var(--ok-bg)]',
+    text: 'text-[color:var(--ok-fg)]',
+    icon: <CheckCircle2 aria-hidden />,
+    badge: 'success',
   },
   not_bioequivalent: {
     label: 'Not bioequivalent',
-    cls: 'bg-red-50 border-red-200 text-red-800',
-    badge: 'bg-red-600',
+    box: 'border-[color:var(--bad-border)] bg-[var(--bad-bg)]',
+    text: 'text-[color:var(--bad-fg)]',
+    icon: <XCircle aria-hidden />,
+    badge: 'danger',
   },
   indeterminate: {
     label: 'Indeterminate',
-    cls: 'bg-amber-50 border-amber-200 text-amber-800',
-    badge: 'bg-amber-500',
+    box: 'border-[color:var(--warn-border)] bg-[var(--warn-bg)]',
+    text: 'text-[color:var(--warn-fg)]',
+    icon: <Info aria-hidden />,
+    badge: 'warning',
   },
 }
 
-function Stat({ label, value }: { label: string; value: React.ReactNode }) {
+function Stat({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
-      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{label}</div>
-      <div className="text-sm font-semibold text-slate-800 mt-0.5 break-words">{value ?? '—'}</div>
+    <div className="rounded-input border border-line bg-surface px-4 py-3">
+      <div className="eyebrow">{label}</div>
+      <div className="mt-0.5 break-words text-body font-semibold text-fg">{value ?? '—'}</div>
     </div>
   )
 }
@@ -67,14 +77,12 @@ export default function CSRResultsReview({ results }: { results: CsrResults }) {
   return (
     <div className="space-y-5">
       {/* Verdict banner */}
-      <div className={`rounded-2xl border px-5 py-4 ${v.cls}`}>
+      <div role="status" className={cx('rounded-card border px-5 py-4', v.box)}>
         <div className="flex items-start gap-3">
-          <span className={`mt-0.5 inline-flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full text-white text-sm font-bold ${v.badge}`}>
-            {results.verdict === 'bioequivalent' ? '✓' : results.verdict === 'not_bioequivalent' ? '✕' : '!'}
-          </span>
+          <span className={cx('mt-0.5 flex flex-none [&>svg]:h-5 [&>svg]:w-5', v.text)}>{v.icon}</span>
           <div>
-            <div className="font-bold">Overall bioequivalence: {v.label}</div>
-            <div className="text-xs opacity-80 mt-0.5">
+            <div className={cx('text-h3', v.text)}>Overall bioequivalence: {v.label}</div>
+            <div className="mt-0.5 text-small text-fg-muted">
               Co-primary endpoints: {coPrimary} · acceptance range {pct(lo)}–{pct(hi)}%
               {results.design_key === 'replicate' && ' · reference-scaled ABE (RSABE)'}
             </div>
@@ -83,38 +91,41 @@ export default function CSRResultsReview({ results }: { results: CsrResults }) {
       </div>
 
       {/* Pivotal BE table */}
-      <div>
-        <h3 className="text-sm font-bold text-slate-800 mb-2">Pivotal Bioequivalence Assessment</h3>
-        <div className="overflow-x-auto rounded-xl border border-slate-200">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-slate-500 text-[11px] uppercase tracking-wide">
-              <tr>
-                <th className="px-3 py-2.5 text-left font-semibold">Parameter</th>
-                <th className="px-3 py-2.5 text-right font-semibold">N</th>
-                <th className="px-3 py-2.5 text-right font-semibold">Point Est. (%)</th>
-                <th className="px-3 py-2.5 text-right font-semibold">90% CI (%)</th>
-                <th className="px-3 py-2.5 text-right font-semibold">Intra CV (%)</th>
-                <th className="px-3 py-2.5 text-center font-semibold">Within {pct(lo)}–{pct(hi)}%</th>
+      <Card padding="none" className="overflow-hidden">
+        <div className="flex flex-wrap items-center gap-2 border-b border-line px-5 py-3.5">
+          <h3 className="text-h3 text-fg">Pivotal bioequivalence assessment</h3>
+          <Badge variant="neutral">Locked</Badge>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-body">
+            <thead className="bg-surface-muted text-fg-subtle">
+              <tr className="eyebrow">
+                <th scope="col" className="px-4 py-2.5 text-left font-semibold">Parameter</th>
+                <th scope="col" className="px-4 py-2.5 text-right font-semibold">N</th>
+                <th scope="col" className="px-4 py-2.5 text-right font-semibold">Point est. (%)</th>
+                <th scope="col" className="px-4 py-2.5 text-right font-semibold">90% CI (%)</th>
+                <th scope="col" className="px-4 py-2.5 text-right font-semibold">Intra CV (%)</th>
+                <th scope="col" className="px-4 py-2.5 text-center font-semibold">Within {pct(lo)}–{pct(hi)}%</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-[color:var(--border)]">
               {order.map(m => {
                 const e = be[m]
                 return (
-                  <tr key={m} className="text-slate-700">
-                    <td className="px-3 py-2.5 font-semibold text-slate-800">{METRIC_LABEL[m] || m}</td>
+                  <tr key={m} className="text-fg-muted">
+                    <th scope="row" className="px-4 py-2.5 text-left font-semibold text-fg">{METRIC_LABEL[m] || m}</th>
                     {e.error ? (
-                      <td className="px-3 py-2.5 text-amber-700 text-xs" colSpan={5}>{e.error}</td>
+                      <td className="px-4 py-2.5 text-small text-[color:var(--warn-fg)]" colSpan={5}>{e.error}</td>
                     ) : (
                       <>
-                        <td className="px-3 py-2.5 text-right tabular-nums">{e.n ?? '—'}</td>
-                        <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-slate-900">{pct(e.point_estimate_pct)}</td>
-                        <td className="px-3 py-2.5 text-right tabular-nums">{pct(e.ci_lower_pct)} – {pct(e.ci_upper_pct)}</td>
-                        <td className="px-3 py-2.5 text-right tabular-nums">{pct(e.cv_intra_pct)}</td>
-                        <td className="px-3 py-2.5 text-center">
+                        <td className="px-4 py-2.5 text-right tabular-nums">{e.n ?? '—'}</td>
+                        <td className="px-4 py-2.5 text-right font-semibold tabular-nums text-fg">{pct(e.point_estimate_pct)}</td>
+                        <td className="px-4 py-2.5 text-right tabular-nums">{pct(e.ci_lower_pct)} – {pct(e.ci_upper_pct)}</td>
+                        <td className="px-4 py-2.5 text-right tabular-nums">{pct(e.cv_intra_pct)}</td>
+                        <td className="px-4 py-2.5 text-center">
                           {e.within_be_limits
-                            ? <span className="text-emerald-700 font-bold">Yes</span>
-                            : <span className="text-red-600 font-bold">No</span>}
+                            ? <Badge variant="success">Yes</Badge>
+                            : <Badge variant="danger">No</Badge>}
                         </td>
                       </>
                     )}
@@ -124,22 +135,22 @@ export default function CSRResultsReview({ results }: { results: CsrResults }) {
             </tbody>
           </table>
         </div>
-        <p className="text-[11px] text-slate-400 mt-2">
+        <p className="border-t border-line px-5 py-3 text-small text-fg-subtle">
           Every figure is computed deterministically from your uploaded data (cross-checked in R). Percentages are shown to 2 decimals per ICH convention.
         </p>
-      </div>
+      </Card>
 
       {/* Disposition */}
       <div>
-        <h3 className="text-sm font-bold text-slate-800 mb-2">Subject Disposition</h3>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <h3 className="mb-2 text-h3 text-fg">Subject disposition</h3>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Stat label="Subjects" value={disp.n_subjects} />
           <Stat label="Treatments" value={(disp.treatments || []).join(', ')} />
           <Stat label="Periods" value={(disp.periods || []).join(', ')} />
           <Stat label="Sequences" value={(disp.sequences || []).join(', ')} />
         </div>
         {disp.n_blq != null && (
-          <p className="text-[11px] text-slate-400 mt-2">
+          <p className="mt-2 text-small text-fg-subtle">
             {disp.n_blq} below-limit-of-quantification observation(s){disp.lloq != null ? ` · LLOQ ${disp.lloq}` : ''}.
           </p>
         )}

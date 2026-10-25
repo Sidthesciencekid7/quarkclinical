@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Banner, ButtonLink, ChevronLeft, Spinner } from '../../ui'
 import ProtocolEditor from '../../editor/ProtocolEditor'
@@ -65,6 +65,22 @@ export default function ProtocolEditorPage() {
     // Re-load when the acting user changes: a different org may not own this id.
   }, [id, currentUser?.id])
 
+  // After "Edit with AI" applies a change: re-fetch quietly (no loading screen,
+  // so the open drawer and scroll position survive) and hand the editor the new
+  // protocol. A failure rejects so the editor can say so.
+  const alive = useRef(true)
+  useEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+    }
+  }, [])
+  const reload = useCallback(async () => {
+    const bundle = await loadProtocolBundle(id)
+    if (!alive.current) return
+    setState(prev => (prev.phase === 'ready' ? { phase: 'ready', bundle } : prev))
+  }, [id])
+
   const label = state.phase === 'ready' ? state.bundle.label : state.phase === 'generating' ? state.label : null
   useSetCrumb(crumbKey.protocol(id), label)
 
@@ -106,16 +122,14 @@ export default function ProtocolEditorPage() {
   }
 
   const { bundle } = state
+  // The editor fills the shell's content area (h-full) and scrolls internally.
   return (
-    // The editor sizes itself to the full viewport (inline `height: 100vh`);
-    // inside the shell it must leave room for the 56px top bar.
-    <div className="[&>div]:!h-[calc(100dvh-3.5rem)]">
-      <ProtocolEditor
-        key={bundle.protocol.id}
-        protocol={bundle.protocol}
-        drug={bundle.drug}
-        onBack={() => navigate('/app/protocols')}
-      />
-    </div>
+    <ProtocolEditor
+      key={bundle.protocol.id}
+      protocol={bundle.protocol}
+      drug={bundle.drug}
+      onBack={() => navigate('/app/protocols')}
+      onReload={reload}
+    />
   )
 }

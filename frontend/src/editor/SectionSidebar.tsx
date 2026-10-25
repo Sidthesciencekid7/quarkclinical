@@ -1,5 +1,6 @@
 import { SECTION_DISPLAY_NAMES } from '../types'
 import type { SectionName } from '../types'
+import { Check, cx } from '../ui'
 
 interface Props {
   order: readonly SectionName[]
@@ -8,78 +9,69 @@ interface Props {
   onScrollTo: (sectionName: string) => void
 }
 
+/** Section list, styled like the app sidebar (active item: bg-ink-100, rounded-xl). */
 export default function SectionSidebar({ order, sections, activeSection, onScrollTo }: Props) {
   const completedCount = order.filter(n => sections[n]?.trim()).length
+  const pct = order.length === 0 ? 0 : Math.round((completedCount / order.length) * 100)
 
   return (
     <aside
-      className="w-56 flex-shrink-0 overflow-y-auto border-r border-white/8 flex flex-col"
-      style={{ background: 'var(--navy)' }}
+      aria-label="Protocol sections"
+      className="hidden w-60 flex-none flex-col overflow-hidden border-r border-line bg-surface md:flex"
     >
-      {/* Header */}
-      <div className="px-4 pt-5 pb-3 border-b border-white/8 flex-shrink-0">
-        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-0.5">Sections</p>
-        <p className="text-xs text-slate-400 font-medium">
-          <span className="text-emerald-400 font-bold">{completedCount}</span>
-          <span className="text-slate-500">/{order.length} complete</span>
+      <div className="flex-none px-4 pb-3 pt-4">
+        <h2 className="eyebrow">Sections</h2>
+        <p className="mt-1 text-small text-fg-muted tabular-nums">
+          <span className="font-semibold text-fg">{completedCount}</span>/{order.length} drafted
         </p>
-      </div>
-
-      {/* Progress bar */}
-      <div className="px-4 py-2 flex-shrink-0">
-        <div className="h-1 bg-white/8 rounded-full overflow-hidden">
-          <div
-            className="h-full bg-gradient-to-r from-cyan-500 to-emerald-400 rounded-full transition-all duration-500"
-            style={{ width: `${(completedCount / order.length) * 100}%` }}
-          />
+        <div
+          role="progressbar"
+          aria-label="Sections drafted"
+          aria-valuemin={0}
+          aria-valuemax={order.length}
+          aria-valuenow={completedCount}
+          className="mt-2 h-1 overflow-hidden rounded-full bg-ink-100"
+        >
+          <div className="h-full rounded-full bg-accent-600 transition-all duration-panel" style={{ width: `${pct}%` }} />
         </div>
       </div>
 
-      {/* Nav items */}
-      <nav className="flex-1 px-2 pb-4 space-y-0.5 overflow-y-auto">
-        {order.map((name, idx) => {
-          const isActive = activeSection === name
-          const hasContent = !!(sections[name]?.trim())
-
-          return (
-            <button
-              key={name}
-              onClick={() => onScrollTo(name)}
-              className={[
-                'w-full text-left px-3 py-2.5 rounded-xl text-xs flex items-center gap-2.5 transition-all duration-150 cursor-pointer group',
-                isActive
-                  ? 'nav-item-active bg-cyan-500/15 text-cyan-200 ring-1 ring-cyan-400/20'
-                  : 'text-slate-400 hover:bg-white/5 hover:text-slate-200',
-              ].join(' ')}
-            >
-              {/* Status dot */}
-              <span className={[
-                'flex-shrink-0 w-1.5 h-1.5 rounded-full transition-colors',
-                hasContent
-                  ? isActive ? 'bg-cyan-400' : 'bg-emerald-400/70'
-                  : isActive ? 'bg-cyan-600' : 'bg-white/15',
-              ].join(' ')} />
-
-              <span className="flex-1 min-w-0 truncate leading-snug">
-                <span className={[
-                  'font-mono mr-1 text-[10px]',
-                  isActive ? 'text-cyan-500' : 'text-slate-600',
-                ].join(' ')}>
-                  {idx + 1}.
-                </span>
-                <span className="font-medium">
-                  {SECTION_DISPLAY_NAMES[name as SectionName]}
-                </span>
-              </span>
-
-              {hasContent && !isActive && (
-                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="flex-shrink-0 opacity-50">
-                  <path d="M1.5 5l2.5 2.5 4.5-5" stroke="#34d399" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              )}
-            </button>
-          )
-        })}
+      <nav aria-label="Jump to section" className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
+        <ul className="flex flex-col gap-0.5">
+          {order.map((name, idx) => {
+            const isActive = activeSection === name
+            const hasContent = !!sections[name]?.trim()
+            return (
+              <li key={name}>
+                <button
+                  type="button"
+                  onClick={() => onScrollTo(name)}
+                  aria-current={isActive ? 'location' : undefined}
+                  className={cx(
+                    'flex h-9 w-full items-center gap-2.5 rounded-xl px-3 text-left text-body transition-colors duration-fast',
+                    isActive ? 'bg-ink-100 font-medium text-fg' : 'text-fg-muted hover:bg-surface-hover hover:text-fg',
+                  )}
+                >
+                  <span
+                    aria-hidden
+                    className={cx(
+                      'h-1.5 w-1.5 flex-none rounded-full',
+                      hasContent ? 'bg-accent-600' : 'bg-ink-300',
+                    )}
+                  />
+                  <span className="min-w-0 flex-1 truncate">
+                    <span className="text-small tabular-nums text-fg-subtle">{idx + 1}.</span>{' '}
+                    {SECTION_DISPLAY_NAMES[name as SectionName]}
+                  </span>
+                  {hasContent ? (
+                    <Check aria-hidden className="h-3.5 w-3.5 flex-none text-fg-subtle" />
+                  ) : null}
+                  <span className="sr-only">{hasContent ? ' (drafted)' : ' (empty)'}</span>
+                </button>
+              </li>
+            )
+          })}
+        </ul>
       </nav>
     </aside>
   )
