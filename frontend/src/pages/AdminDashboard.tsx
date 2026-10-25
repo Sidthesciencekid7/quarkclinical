@@ -1,25 +1,43 @@
 import { useEffect, useState } from 'react'
 import { useClerk } from '@clerk/clerk-react'
 import { api } from '../api/client'
+import { authEnabled } from '../lib/auth'
+import { Badge, Banner, Button, Card, LogOut, Spinner } from '../ui'
+import type { BadgeVariant } from '../ui'
 import type { AdminOrgRow, Lead } from '../types'
 
 /** Operator-only dashboard (ADMIN_EMAILS-gated on the backend) — the
  *  "requests made by organisations" view: Contact Sales leads and
- *  self-serve orgs waiting on manual license activation. Not linked from
- *  anywhere in the regular UI; the backend is the source of truth on
+ *  self-serve orgs waiting on manual license activation. Reached from the
+ *  workspace menu for admins; the backend is the source of truth on
  *  access, so this page just tries the fetch and shows "Access denied" on
- *  a 403 rather than duplicating the ADMIN_EMAILS check client-side. */
+ *  a 403 rather than duplicating the ADMIN_EMAILS check client-side.
+ *
+ *  Clerk's hooks only work under <ClerkProvider>, which is mounted only when
+ *  sign-in is enabled. `authEnabled` is a module constant, so choosing the
+ *  component here keeps every render on the same branch (no conditional
+ *  hooks) and lets the page open in a local sign-in-off run, where there is
+ *  nothing to log out of. */
 export default function AdminDashboard() {
+  return authEnabled ? <AdminDashboardWithClerk /> : <AdminDashboardView onLogout={null} />
+}
+
+function AdminDashboardWithClerk() {
   const clerk = useClerk()
+  return <AdminDashboardView onLogout={() => { void clerk.signOut({ redirectUrl: '/admin' }) }} />
+}
+
+const LICENSE_VARIANT: Record<string, BadgeVariant> = {
+  active: 'success',
+  pending: 'warning',
+}
+
+function AdminDashboardView({ onLogout }: { onLogout: (() => void) | null }) {
   const [leads, setLeads] = useState<Lead[] | null>(null)
   const [orgs, setOrgs] = useState<AdminOrgRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [pendingActionId, setPendingActionId] = useState<string | null>(null)
-
-  const handleLogout = () => {
-    clerk.signOut({ redirectUrl: '/admin' })
-  }
 
   const load = async () => {
     setLoading(true)
@@ -74,178 +92,188 @@ export default function AdminDashboard() {
     }
   }
 
+  // /admin sits outside the app shell, so this page owns its <main> landmark.
   if (loading) {
     return (
-      <div className="app-canvas min-h-screen flex items-center justify-center">
-        <span className="text-sm text-slate-400 font-medium">Loading…</span>
-      </div>
+      <main id="main-content" className="flex min-h-[50vh] items-center justify-center">
+        <div role="status" className="flex items-center gap-2 text-body text-fg-muted">
+          <Spinner size={18} />
+          <span>Loading…</span>
+        </div>
+      </main>
     )
   }
 
   if (error) {
     return (
-      <div className="app-canvas min-h-screen flex items-center justify-center px-4">
-        <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xl max-w-md w-full p-8 text-center">
-          <h1 className="text-lg font-bold text-slate-900 mb-2">Access denied</h1>
-          <p className="text-sm text-slate-500 leading-relaxed mb-6">{error}</p>
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="text-sm font-semibold text-slate-500 hover:text-slate-900 border border-slate-200 hover:border-slate-300 px-4 py-2 rounded-xl cursor-pointer transition-colors"
-          >
-            Log out
-          </button>
-        </div>
-      </div>
+      <main id="main-content" className="mx-auto w-full max-w-md px-4 py-16">
+        <Card padding="lg" className="text-center">
+          <h1 className="text-h2 text-fg">Access denied</h1>
+          <p className="mt-2 text-body text-fg-muted">{error}</p>
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+            <Button variant="secondary" onClick={() => { void load() }}>
+              Try again
+            </Button>
+            {onLogout ? (
+              <Button variant="ghost" leftIcon={<LogOut aria-hidden />} onClick={onLogout}>
+                Log out
+              </Button>
+            ) : null}
+          </div>
+        </Card>
+      </main>
     )
   }
 
   return (
-    <div className="app-canvas min-h-screen px-4 py-10">
-      <div className="max-w-5xl mx-auto space-y-10">
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-extrabold text-slate-900">Admin dashboard</h1>
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="text-sm font-semibold text-slate-500 hover:text-slate-900 border border-slate-200 hover:border-slate-300 bg-white px-4 py-2 rounded-xl cursor-pointer transition-colors"
-          >
-            Log out
-          </button>
+    <main id="main-content" className="mx-auto w-full max-w-5xl space-y-8 px-4 py-8 sm:px-8 sm:py-10">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-h1 text-fg">Admin dashboard</h1>
+          <p className="mt-1 text-body text-fg-muted">
+            Contact-sales requests and organizations waiting on a license.
+          </p>
         </div>
+        {onLogout ? (
+          <Button variant="secondary" leftIcon={<LogOut aria-hidden />} onClick={onLogout}>
+            Log out
+          </Button>
+        ) : null}
+      </div>
 
-        <section>
-          <h2 className="text-sm font-bold text-slate-500 uppercase tracking-widest mb-3">
-            Contact sales leads ({leads?.length ?? 0})
-          </h2>
-          <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
-            {!leads || leads.length === 0 ? (
-              <p className="p-6 text-sm text-slate-400">No leads yet.</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead className="bg-slate-50 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">
+      {!onLogout ? (
+        <Banner tone="info">Sign-in is off in this environment, so admin access is not enforced here.</Banner>
+      ) : null}
+
+      <section aria-labelledby="admin-leads">
+        <h2 id="admin-leads" className="mb-3 text-h3 text-fg">
+          Contact sales leads ({leads?.length ?? 0})
+        </h2>
+        <Card padding="none" className="overflow-hidden">
+          {!leads || leads.length === 0 ? (
+            <p className="p-6 text-body text-fg-subtle">No leads yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[760px] text-body">
+                <thead className="bg-surface-muted text-left text-eyebrow uppercase text-fg-subtle">
                   <tr>
-                    <th className="px-4 py-3">Company</th>
-                    <th className="px-4 py-3">Contact</th>
-                    <th className="px-4 py-3">Team size</th>
-                    <th className="px-4 py-3">Message</th>
-                    <th className="px-4 py-3">Status</th>
-                    <th className="px-4 py-3">Received</th>
-                    <th className="px-4 py-3"></th>
+                    <th className="px-4 py-3 font-semibold">Company</th>
+                    <th className="px-4 py-3 font-semibold">Contact</th>
+                    <th className="px-4 py-3 font-semibold">Team size</th>
+                    <th className="px-4 py-3 font-semibold">Message</th>
+                    <th className="px-4 py-3 font-semibold">Status</th>
+                    <th className="px-4 py-3 font-semibold">Received</th>
+                    <th className="px-4 py-3"><span className="sr-only">Actions</span></th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100">
+                <tbody>
                   {leads.map(lead => (
-                    <tr key={lead.id}>
-                      <td className="px-4 py-3 font-semibold text-slate-900">{lead.company_name}</td>
-                      <td className="px-4 py-3 text-slate-600">
+                    <tr key={lead.id} className="border-t border-line">
+                      <td className="px-4 py-3 font-semibold text-fg">{lead.company_name}</td>
+                      <td className="px-4 py-3 text-fg-muted">
                         {lead.contact_name}
-                        <div className="text-xs text-slate-400">{lead.contact_email}</div>
+                        <div className="text-small text-fg-subtle">{lead.contact_email}</div>
                       </td>
-                      <td className="px-4 py-3 text-slate-600">{lead.team_size_estimate || '—'}</td>
-                      <td className="px-4 py-3 text-slate-500 max-w-xs truncate">{lead.message || '—'}</td>
+                      <td className="px-4 py-3 tabular-nums text-fg-muted">{lead.team_size_estimate || '—'}</td>
+                      <td className="max-w-xs truncate px-4 py-3 text-fg-muted">{lead.message || '—'}</td>
                       <td className="px-4 py-3">
-                        <span className="tag bg-slate-100 border-slate-200 text-slate-600">{lead.status}</span>
+                        <Badge>{lead.status}</Badge>
                       </td>
-                      <td className="px-4 py-3 text-slate-400 text-xs">
+                      <td className="whitespace-nowrap px-4 py-3 text-small tabular-nums text-fg-subtle">
                         {new Date(lead.created_at).toLocaleString()}
                       </td>
-                      <td className="px-4 py-3">
-                        <button
-                          type="button"
+                      <td className="px-4 py-3 text-right">
+                        <Button
+                          variant="danger"
+                          size="sm"
                           onClick={() => handleDeleteLead(lead.id)}
                           disabled={pendingActionId === lead.id}
-                          className="text-xs font-semibold text-red-600 hover:text-red-700 disabled:opacity-50 cursor-pointer"
                         >
                           {pendingActionId === lead.id ? 'Deleting…' : 'Delete'}
-                        </button>
+                        </Button>
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            )}
-          </div>
-        </section>
+            </div>
+          )}
+        </Card>
+      </section>
 
-        <section>
-          <h2 className="text-sm font-bold text-slate-500 uppercase tracking-widest mb-3">
-            Organizations ({orgs?.length ?? 0})
-          </h2>
-          <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
-            {!orgs || orgs.length === 0 ? (
-              <p className="p-6 text-sm text-slate-400">No organizations yet.</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead className="bg-slate-50 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">
+      <section aria-labelledby="admin-orgs">
+        <h2 id="admin-orgs" className="mb-3 text-h3 text-fg">
+          Organizations ({orgs?.length ?? 0})
+        </h2>
+        <Card padding="none" className="overflow-hidden">
+          {!orgs || orgs.length === 0 ? (
+            <p className="p-6 text-body text-fg-subtle">No organizations yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[760px] text-body">
+                <thead className="bg-surface-muted text-left text-eyebrow uppercase text-fg-subtle">
                   <tr>
-                    <th className="px-4 py-3">Organization</th>
-                    <th className="px-4 py-3">Owner</th>
-                    <th className="px-4 py-3">License</th>
-                    <th className="px-4 py-3">Days left</th>
-                    <th className="px-4 py-3">Seats</th>
-                    <th className="px-4 py-3">Created</th>
-                    <th className="px-4 py-3"></th>
+                    <th className="px-4 py-3 font-semibold">Organization</th>
+                    <th className="px-4 py-3 font-semibold">Owner</th>
+                    <th className="px-4 py-3 font-semibold">License</th>
+                    <th className="px-4 py-3 font-semibold">Days left</th>
+                    <th className="px-4 py-3 font-semibold">Seats</th>
+                    <th className="px-4 py-3 font-semibold">Created</th>
+                    <th className="px-4 py-3"><span className="sr-only">Actions</span></th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100">
+                <tbody>
                   {orgs.map(org => (
-                    <tr key={org.id}>
-                      <td className="px-4 py-3 font-semibold text-slate-900">
+                    <tr key={org.id} className="border-t border-line">
+                      <td className="px-4 py-3 font-semibold text-fg">
                         {org.name}
-                        <div className="text-xs text-slate-400">{org.slug}</div>
+                        <div className="text-small font-normal text-fg-subtle">{org.slug}</div>
                       </td>
-                      <td className="px-4 py-3 text-slate-600">{org.owner_email || '—'}</td>
+                      <td className="px-4 py-3 text-fg-muted">{org.owner_email || '—'}</td>
                       <td className="px-4 py-3">
-                        <span className={[
-                          'tag',
-                          org.license_status === 'active' ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
-                            : org.license_status === 'pending' ? 'bg-amber-50 border-amber-200 text-amber-700'
-                            : 'bg-slate-100 border-slate-200 text-slate-600',
-                        ].join(' ')}>
+                        <Badge variant={LICENSE_VARIANT[org.license_status ?? ''] ?? 'neutral'} dot>
                           {org.license_status || 'none'}
-                        </span>
+                        </Badge>
                       </td>
-                      <td className="px-4 py-3 text-slate-600">
+                      <td className="px-4 py-3 tabular-nums text-fg-muted">
                         {org.days_remaining === null
                           ? '—'
                           : org.days_remaining < 0
-                            ? <span className="text-red-600 font-semibold">Expired</span>
+                            ? <span className="font-semibold text-[color:var(--bad-fg)]">Expired</span>
                             : `${org.days_remaining}d`}
                       </td>
-                      <td className="px-4 py-3 text-slate-600">{org.seats_used}/{org.seat_count ?? '—'}</td>
-                      <td className="px-4 py-3 text-slate-400 text-xs">
+                      <td className="px-4 py-3 tabular-nums text-fg-muted">{org.seats_used}/{org.seat_count ?? '—'}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-small tabular-nums text-fg-subtle">
                         {new Date(org.created_at).toLocaleString()}
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3 text-right">
                         {org.license_status === 'active' ? (
-                          <button
-                            type="button"
+                          <Button
+                            variant="danger"
+                            size="sm"
                             onClick={() => handleSuspend(org.id)}
                             disabled={pendingActionId === org.id}
-                            className="text-xs font-bold text-white bg-red-500 hover:bg-red-600 disabled:opacity-50 px-3 py-1.5 rounded-lg cursor-pointer transition-colors"
                           >
                             {pendingActionId === org.id ? 'Suspending…' : 'Suspend'}
-                          </button>
+                          </Button>
                         ) : (
-                          <button
-                            type="button"
+                          <Button
+                            size="sm"
                             onClick={() => handleActivate(org.id)}
                             disabled={pendingActionId === org.id}
-                            className="text-xs font-bold text-white bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 px-3 py-1.5 rounded-lg cursor-pointer transition-colors"
                           >
                             {pendingActionId === org.id ? 'Activating…' : 'Activate'}
-                          </button>
+                          </Button>
                         )}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            )}
-          </div>
-        </section>
-      </div>
-    </div>
+            </div>
+          )}
+        </Card>
+      </section>
+    </main>
   )
 }

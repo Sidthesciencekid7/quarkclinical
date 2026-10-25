@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { api } from '../api/client'
 import BudgetProtocolPicker from './BudgetProtocolPicker'
 import { formatMoney, relativeDate } from './budgetFormat'
+import { Activity, AlertTriangle, Badge, Button, Card, ChevronDown, LinkIcon } from '../ui'
 import type { Budget, BudgetDerivation } from '../types'
 
 interface Props {
@@ -9,31 +10,6 @@ interface Props {
   /** link-protocol always returns the WHOLE budget — replace state with it. */
   onBudgetUpdated: (b: Budget) => void
   onError: (msg: string) => void
-}
-
-function LinkIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 20 20" fill="none">
-      <path d="M8.5 11.5a3 3 0 004.24 0l2-2a3 3 0 10-4.24-4.24l-.7.7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M11.5 8.5a3 3 0 00-4.24 0l-2 2a3 3 0 104.24 4.24l.7-.7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-function WarningIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 20 20" fill="none" className="flex-shrink-0 mt-0.5">
-      <path d="M10 3.5l7.5 13a1 1 0 01-.87 1.5h-15a1 1 0 01-.87-1.5l7.5-13a1 1 0 011.74 0z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-      <path d="M10 8.5v3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-      <circle cx="10" cy="14.5" r="0.9" fill="currentColor" />
-    </svg>
-  )
-}
-function ChevronIcon({ open }: { open: boolean }) {
-  return (
-    <svg width="14" height="14" viewBox="0 0 20 20" fill="none" className={`transition-transform flex-shrink-0 ${open ? 'rotate-180' : ''}`}>
-      <path d="M5 8l5 5 5-5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
 }
 
 type DerivationField = {
@@ -77,15 +53,6 @@ const CROSS_CHECK_PREFIXES = [
   'Investigator grant share',
 ]
 
-function ChartIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 20 20" fill="none" className="flex-shrink-0 mt-0.5">
-      <path d="M4 16V9M10 16V4M16 16v-6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M2.5 17.5h15" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-    </svg>
-  )
-}
-
 function humaniseKey(key: string): string {
   const leaf = key.includes('.') ? key.split('.').slice(1).join(' ') : key
   return leaf.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
@@ -115,16 +82,20 @@ function matchCrossCheck(
 function WarningList({ warnings, crossChecks }: { warnings: string[]; crossChecks?: NonNullable<BudgetDerivation['cross_checks']> }) {
   if (warnings.length === 0) return null
   return (
-    <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 space-y-2 text-amber-800">
+    <div className="space-y-2 rounded-card border border-[color:var(--warn-border)] bg-[var(--warn-bg)] px-4 py-3 text-[color:var(--warn-fg)]">
       {warnings.map((w, i) => {
         const check = crossChecks && crossChecks.length > 0 ? matchCrossCheck(w, crossChecks) : null
         return (
-          <div key={i} className="flex gap-2.5 text-xs">
-            {check ? <ChartIcon /> : <WarningIcon />}
+          <div key={i} className="flex gap-2.5 text-small">
+            {check ? (
+              <Activity aria-hidden className="mt-0.5 h-4 w-4 flex-none" />
+            ) : (
+              <AlertTriangle aria-hidden className="mt-0.5 h-4 w-4 flex-none" />
+            )}
             <div className="flex-1">
               <p>{w}</p>
               {check && (
-                <p className="text-[11px] text-amber-600 mt-0.5">
+                <p className="mt-0.5 tabular-nums opacity-80">
                   Expected band {(check.band[0] * 100).toFixed(0)}–{(check.band[1] * 100).toFixed(0)}% · actual {(check.value * 100).toFixed(1)}%
                 </p>
               )}
@@ -136,33 +107,33 @@ function WarningList({ warnings, crossChecks }: { warnings: string[]; crossCheck
   )
 }
 
-/** Disclosure, not an error — amber border, never red. Compares this estimate
+/** Disclosure, not an error — amber, never red. Compares this estimate
  *  against real CRO bids for a comparable reference study, patient budgets
  *  only. Rendered as its own bordered callout at the TOP of the panel. */
 function BidReconciliation({ data, currency }: { data: NonNullable<BudgetDerivation['bid_reconciliation']>; currency: string }) {
   return (
-    <div className="rounded-xl border border-amber-200 bg-amber-50/60 px-4 py-3.5 space-y-3">
+    <div className="space-y-3 rounded-card border border-[color:var(--warn-border)] bg-[var(--warn-bg)] px-4 py-3.5 text-[color:var(--warn-fg)]">
       <div>
-        <h4 className="text-[11px] font-bold text-amber-800 uppercase tracking-wider">Reconciled against real CRO bids</h4>
-        <p className="text-[11px] text-amber-700 mt-0.5">{data.reference_study}</p>
+        <h4 className="text-eyebrow uppercase">Reconciled against real CRO bids</h4>
+        <p className="mt-0.5 text-small">{data.reference_study}</p>
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full text-xs">
+        <table className="w-full text-small">
           <tbody>
             {data.bids.map((b, i) => (
-              <tr key={i} className="border-t border-amber-200/70 first:border-t-0">
-                <td className="py-1.5 pr-3 text-amber-800 font-medium">{b.cro}</td>
-                <td className="py-1.5 pr-3 text-right tabular-nums text-amber-900 font-semibold">
+              <tr key={i} className="border-t border-[color:var(--warn-border)] first:border-t-0">
+                <td className="py-1.5 pr-3 font-medium">{b.cro}</td>
+                <td className="py-1.5 pr-3 text-right font-semibold tabular-nums">
                   {b.grand_total != null ? formatMoney(b.grand_total, currency) : 'n/a'}
                 </td>
-                <td className="py-1.5 text-amber-600">{b.note ?? ''}</td>
+                <td className="py-1.5 opacity-80">{b.note ?? ''}</td>
               </tr>
             ))}
-            <tr className="border-t border-amber-300">
-              <td className="py-1.5 pr-3 text-amber-900 font-bold">This estimate</td>
-              <td className="py-1.5 pr-3 text-right tabular-nums text-amber-900 font-bold">{formatMoney(data.this_estimate, currency)}</td>
-              <td className="py-1.5 text-amber-700 font-semibold">
+            <tr className="border-t border-[color:var(--warn-border)]">
+              <td className="py-1.5 pr-3 font-semibold">This estimate</td>
+              <td className="py-1.5 pr-3 text-right font-semibold tabular-nums">{formatMoney(data.this_estimate, currency)}</td>
+              <td className="py-1.5 font-medium tabular-nums">
                 +{data.delta_vs_highest_bid_pct.toFixed(1)}% vs. highest bid
               </td>
             </tr>
@@ -172,14 +143,51 @@ function BidReconciliation({ data, currency }: { data: NonNullable<BudgetDerivat
 
       {data.explained_by.length > 0 && (
         <div>
-          <p className="text-[11px] font-bold text-amber-800 mb-1">What this estimate adds that the bids don&apos;t:</p>
-          <ul className="space-y-1 text-[11px] text-amber-700 list-disc list-inside">
+          <p className="mb-1 text-small font-semibold">What this estimate adds that the bids don&apos;t:</p>
+          <ul className="list-inside list-disc space-y-1 text-small">
             {data.explained_by.map((e, i) => <li key={i}>{e}</li>)}
           </ul>
         </div>
       )}
 
-      <p className="text-[11px] text-amber-600 leading-relaxed border-t border-amber-200/70 pt-2">{data.disclaimer}</p>
+      <p className="border-t border-[color:var(--warn-border)] pt-2 text-small leading-relaxed opacity-90">{data.disclaimer}</p>
+    </div>
+  )
+}
+
+/** The protocol picker plus its Cancel / Link buttons, shared by the slim
+ *  legacy prompt and the expanded derivation card. */
+function LinkPicker({
+  pickerProtocolId,
+  setPickerProtocolId,
+  linking,
+  onCancel,
+  onLink,
+}: {
+  pickerProtocolId: string | null
+  setPickerProtocolId: (id: string | null) => void
+  linking: boolean
+  onCancel: () => void
+  onLink: (id: string) => void
+}) {
+  return (
+    <div className="w-full space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-body font-semibold text-fg">Link a protocol</p>
+        <Button variant="ghost" size="sm" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+      <BudgetProtocolPicker value={pickerProtocolId} onChange={id => setPickerProtocolId(id)} disabled={linking} />
+      <div className="flex justify-end">
+        <Button
+          size="sm"
+          onClick={() => pickerProtocolId && onLink(pickerProtocolId)}
+          disabled={!pickerProtocolId || linking}
+        >
+          {linking ? 'Linking…' : 'Link this protocol'}
+        </Button>
+      </div>
     </div>
   )
 }
@@ -242,34 +250,22 @@ export default function BudgetDerivationPanel({ budget, onBudgetUpdated, onError
   // always has a full derivation (protocol_linked: false) and skips this.
   if (!derivation) {
     return (
-      <div className="rounded-2xl border border-dashed border-slate-300 bg-white/60 px-5 py-4">
+      <div className="rounded-card border border-dashed border-line-strong bg-surface-muted px-5 py-4">
         {!picking ? (
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <p className="text-sm text-slate-500">Link a protocol to pull its real cost drivers in.</p>
-            <button onClick={() => setPicking(true)} className="btn-ghost text-xs py-1.5 px-3">
-              <LinkIcon />
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-body text-fg-muted">Link a protocol to pull its real cost drivers in.</p>
+            <Button variant="secondary" size="sm" leftIcon={<LinkIcon aria-hidden />} onClick={() => setPicking(true)}>
               Link a protocol
-            </button>
+            </Button>
           </div>
         ) : (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-semibold text-slate-700">Link a protocol</p>
-              <button onClick={() => setPicking(false)} className="text-xs text-slate-400 hover:text-slate-600 cursor-pointer">
-                Cancel
-              </button>
-            </div>
-            <BudgetProtocolPicker value={pickerProtocolId} onChange={id => setPickerProtocolId(id)} disabled={linking} />
-            <div className="flex justify-end">
-              <button
-                onClick={() => pickerProtocolId && doLink(pickerProtocolId)}
-                disabled={!pickerProtocolId || linking}
-                className="btn-primary text-xs py-1.5 px-3"
-              >
-                {linking ? 'Linking…' : 'Link this protocol'}
-              </button>
-            </div>
-          </div>
+          <LinkPicker
+            pickerProtocolId={pickerProtocolId}
+            setPickerProtocolId={setPickerProtocolId}
+            linking={linking}
+            onCancel={() => setPicking(false)}
+            onLink={doLink}
+          />
         )}
       </div>
     )
@@ -281,65 +277,66 @@ export default function BudgetDerivationPanel({ budget, onBudgetUpdated, onError
   const visibleAssumptions = showAllAssumptions || assumptionEntries.length <= 8 ? assumptionEntries : assumptionEntries.slice(0, 8)
 
   return (
-    <div className="card overflow-hidden">
-      <button onClick={() => setExpanded(e => !e)} className="w-full flex items-center justify-between gap-3 px-5 py-4 text-left cursor-pointer">
-        <div className="flex items-center gap-2 flex-wrap">
-          <h3 className="text-sm font-bold text-slate-900">
+    <Card padding="none" className="overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setExpanded(e => !e)}
+        aria-expanded={expanded}
+        className="flex w-full cursor-pointer items-center justify-between gap-3 px-5 py-4 text-left"
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="text-h3 text-fg">
             {derivation.protocol_linked ? 'From your protocol' : 'How these figures were built'}
           </h3>
           {derivation.protocol_linked ? (
-            <span className="text-[10px] font-bold text-cyan-700 bg-cyan-50 border border-cyan-100 px-1.5 py-0.5 rounded-full whitespace-nowrap">
-              From protocol
-            </span>
+            <Badge variant="info">From protocol</Badge>
           ) : (
             <>
-              <span className="text-[10px] font-bold text-slate-500 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded-full whitespace-nowrap">
-                Estimated
-              </span>
+              <Badge>Estimated</Badge>
               {derivation.rate_card_version && (
-                <span className="text-[11px] text-slate-400">Rate card {derivation.rate_card_version}</span>
+                <span className="text-small text-fg-subtle">Rate card {derivation.rate_card_version}</span>
               )}
             </>
           )}
-          <span className="text-[11px] text-slate-400">Derived {relativeDate(derivation.derived_at)}</span>
+          <span className="text-small text-fg-subtle">Derived {relativeDate(derivation.derived_at)}</span>
         </div>
-        <ChevronIcon open={expanded} />
+        <ChevronDown
+          aria-hidden
+          className={`h-4 w-4 flex-none text-fg-subtle transition-transform duration-fast ${expanded ? 'rotate-180' : ''}`}
+        />
       </button>
 
       {expanded && (
-        <div className="px-5 pb-5 space-y-4">
+        <div className="space-y-4 px-5 pb-5">
           {derivation.bid_reconciliation && <BidReconciliation data={derivation.bid_reconciliation} currency={budget.currency} />}
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             {FIELD_LABELS.filter(f => derivation[f.key] !== null && derivation[f.key] !== undefined).map(f => (
               <div key={f.key}>
-                <div className="text-[11px] text-slate-400">{f.label}</div>
-                <div className="text-sm font-semibold text-slate-800 tabular-nums">{String(derivation[f.key])}</div>
+                <div className="text-small text-fg-subtle">{f.label}</div>
+                <div className="text-body font-semibold tabular-nums text-fg">{String(derivation[f.key])}</div>
               </div>
             ))}
           </div>
 
           {assumptionEntries.length > 0 && (
-            <div className="pt-1 border-t border-slate-100">
-              <div className="flex items-center justify-between pt-3 pb-1">
-                <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Assumptions</h4>
+            <div className="border-t border-line pt-1">
+              <div className="flex items-center justify-between pb-1 pt-3">
+                <h4 className="eyebrow">Assumptions</h4>
                 {assumptionEntries.length > 8 && (
-                  <button
-                    onClick={() => setShowAllAssumptions(s => !s)}
-                    className="text-[11px] font-semibold text-cyan-600 hover:text-cyan-700 cursor-pointer"
-                  >
+                  <Button variant="link" size="sm" onClick={() => setShowAllAssumptions(s => !s)}>
                     {showAllAssumptions ? 'Show fewer' : `Show all ${assumptionEntries.length} assumptions`}
-                  </button>
+                  </Button>
                 )}
               </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                 {visibleAssumptions.map(([key, a]) => (
                   <div key={key} title={a.basis}>
                     <div className="flex items-center gap-1.5">
-                      <span className="text-[11px] text-slate-400">{humaniseKey(key)}</span>
-                      <span className="tag text-[9px] py-0 px-1 leading-4">{ASSUMPTION_SOURCE_LABEL[a.source] ?? a.source}</span>
+                      <span className="text-small text-fg-subtle">{humaniseKey(key)}</span>
+                      <span className="tag px-1.5 py-0 text-[10px] leading-4">{ASSUMPTION_SOURCE_LABEL[a.source] ?? a.source}</span>
                     </div>
-                    <div className="text-sm font-semibold text-slate-800 tabular-nums truncate">{String(a.value)}</div>
+                    <div className="truncate text-body font-semibold tabular-nums text-fg">{String(a.value)}</div>
                   </div>
                 ))}
               </div>
@@ -347,22 +344,20 @@ export default function BudgetDerivationPanel({ budget, onBudgetUpdated, onError
           )}
 
           {derivation.trial_precedent && (
-            <div className="pt-1 border-t border-slate-100">
-              <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider pt-3 pb-1">
-                Trial precedent
-              </h4>
+            <div className="border-t border-line pt-1">
+              <h4 className="eyebrow pb-1 pt-3">Trial precedent</h4>
               {derivation.trial_precedent.found ? (
                 <>
-                  <p className="text-[11px] text-slate-500 mb-1.5">
+                  <p className="mb-1.5 text-small text-fg-muted">
                     Enrollment{derivation.trial_precedent.median_n_sites != null ? ', site,' : ''}
                     {derivation.trial_precedent.median_n_countries != null ? ' and country' : ''} counts
-                    above marked <span className="tag text-[9px] py-0 px-1 leading-4 align-middle">{ASSUMPTION_SOURCE_LABEL.trial_precedent}</span> come
+                    above marked <span className="tag px-1.5 py-0 align-middle text-[10px] leading-4">{ASSUMPTION_SOURCE_LABEL.trial_precedent}</span> come
                     from this drug's own real trial history, not a generic template:
                   </p>
                   <ul className="space-y-0.5">
                     {derivation.trial_precedent.trials.map(t => (
-                      <li key={t.nct_id} className="text-[11px] text-slate-600">
-                        <span className="font-mono text-slate-500">{t.nct_id}</span>
+                      <li key={t.nct_id} className="text-small text-fg-muted">
+                        <span className="font-mono text-fg-subtle">{t.nct_id}</span>
                         {' — '}{t.title}
                         {t.enrollment_count != null && ` · n=${t.enrollment_count}${t.enrollment_type ? ` (${t.enrollment_type.toLowerCase()})` : ''}`}
                         {t.n_countries > 0 && ` · ${t.n_countries} ${t.n_countries === 1 ? 'country' : 'countries'}`}
@@ -372,7 +367,7 @@ export default function BudgetDerivationPanel({ budget, onBudgetUpdated, onError
                   </ul>
                 </>
               ) : (
-                <p className="text-[11px] text-slate-400">
+                <p className="text-small text-fg-subtle">
                   No usable ClinicalTrials.gov history was found for this drug — every quantity above
                   falls back to the generic per-study-type default.
                 </p>
@@ -381,13 +376,13 @@ export default function BudgetDerivationPanel({ budget, onBudgetUpdated, onError
           )}
 
           {derivation.conduct && (
-            <div className="pt-1 border-t border-slate-100">
-              <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider pt-3 pb-1">Conduct rates</h4>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <div className="border-t border-line pt-1">
+              <h4 className="eyebrow pb-1 pt-3">Conduct rates</h4>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                 {CONDUCT_LABELS.map(c => (
                   <div key={c.key}>
-                    <div className="text-[11px] text-slate-400">{c.label}</div>
-                    <div className="text-sm font-semibold text-slate-800 tabular-nums">{derivation.conduct![c.key]}</div>
+                    <div className="text-small text-fg-subtle">{c.label}</div>
+                    <div className="text-body font-semibold tabular-nums text-fg">{derivation.conduct![c.key]}</div>
                   </div>
                 ))}
               </div>
@@ -396,56 +391,44 @@ export default function BudgetDerivationPanel({ budget, onBudgetUpdated, onError
 
           <WarningList warnings={derivation.warnings} crossChecks={derivation.cross_checks} />
 
-          <div className="flex items-center gap-3 pt-1 flex-wrap">
+          <div className="flex flex-wrap items-center gap-3 pt-1">
             {derivation.protocol_linked ? (
               <>
-                <button
+                <Button
+                  variant="secondary"
+                  size="sm"
                   onClick={handleRelink}
                   disabled={linking}
                   title="Re-prices every row you haven’t edited; your own numbers and deleted rows are left alone."
-                  className="btn-ghost text-xs py-1.5 px-3"
                 >
                   {linking ? 'Refreshing…' : 'Refresh from protocol'}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant={confirmUnlink ? 'danger' : 'secondary'}
+                  size="sm"
                   onClick={handleUnlinkClick}
                   disabled={linking}
                   title="Line items are kept"
-                  className={`text-xs font-semibold px-3 py-1.5 rounded-xl border cursor-pointer ${
-                    confirmUnlink ? 'border-red-300 text-red-700 bg-red-50' : 'border-slate-200 text-slate-500 hover:bg-slate-50'
-                  }`}
                 >
                   {confirmUnlink ? 'Confirm unlink — line items are kept' : 'Unlink'}
-                </button>
+                </Button>
               </>
             ) : !picking ? (
-              <button onClick={() => setPicking(true)} className="btn-ghost text-xs py-1.5 px-3">
-                <LinkIcon />
+              <Button variant="secondary" size="sm" leftIcon={<LinkIcon aria-hidden />} onClick={() => setPicking(true)}>
                 Link a protocol for real subject counts
-              </button>
+              </Button>
             ) : (
-              <div className="w-full space-y-3">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-semibold text-slate-700">Link a protocol</p>
-                  <button onClick={() => setPicking(false)} className="text-xs text-slate-400 hover:text-slate-600 cursor-pointer">
-                    Cancel
-                  </button>
-                </div>
-                <BudgetProtocolPicker value={pickerProtocolId} onChange={id => setPickerProtocolId(id)} disabled={linking} />
-                <div className="flex justify-end">
-                  <button
-                    onClick={() => pickerProtocolId && doLink(pickerProtocolId)}
-                    disabled={!pickerProtocolId || linking}
-                    className="btn-primary text-xs py-1.5 px-3"
-                  >
-                    {linking ? 'Linking…' : 'Link this protocol'}
-                  </button>
-                </div>
-              </div>
+              <LinkPicker
+                pickerProtocolId={pickerProtocolId}
+                setPickerProtocolId={setPickerProtocolId}
+                linking={linking}
+                onCancel={() => setPicking(false)}
+                onLink={doLink}
+              />
             )}
           </div>
         </div>
       )}
-    </div>
+    </Card>
   )
 }

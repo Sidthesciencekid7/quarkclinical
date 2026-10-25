@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, HttpError } from '../api/client'
+import { Button, Download } from '../ui'
 import type { Budget, BudgetSummary } from '../types'
 
 interface Props {
@@ -40,27 +41,13 @@ export async function downloadBudgetDocx(budget: Pick<Budget | BudgetSummary, 'i
   URL.revokeObjectURL(url)
 }
 
-function DownloadIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-      <path d="M6 2v6M3.5 5.5L6 8l2.5-2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M2 10h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-function SpinIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="animate-spin">
-      <circle cx="6" cy="6" r="5" stroke="rgba(255,255,255,0.3)" strokeWidth="2" />
-      <path d="M6 1a5 5 0 015 5" stroke="white" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-/** Single-format download action for the budget's Word export — no dropdown,
- *  this IS the primary action. Mirrors ExportButton.tsx's fetch-a-blob-and-
- *  anchor-click mechanism exactly. */
+/** Single-format download action for the budget's Word export. There is only
+ *  one format, so this is a plain pill button rather than a menu. Mirrors
+ *  ExportButton.tsx's fetch-a-blob-and-anchor-click mechanism exactly.
+ *
+ *  `primary` (default) is the editor toolbar's export: the black primary pill.
+ *  `hero` is the echo inside the one-time "your budget is ready" banner, which
+ *  sits right under that toolbar, so it is the outlined secondary pill. */
 export default function BudgetExportButton({ budget, variant = 'primary', className }: Props) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -88,19 +75,23 @@ export default function BudgetExportButton({ budget, variant = 'primary', classN
     ? (busy ? 'Building .docx…' : 'Download Word document')
     : (busy ? 'Building .docx…' : 'Download Word (.docx)')
 
-  const buttonClassName = variant === 'hero'
-    ? `btn-primary ${className ?? ''}`
-    : `flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-cyan-600 text-white hover:bg-cyan-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors cursor-pointer ${className ?? ''}`
-
   return (
     <div className="relative">
-      <button onClick={handleDownload} disabled={busy} className={buttonClassName}>
-        {busy ? <SpinIcon /> : <DownloadIcon />}
+      <Button
+        variant={variant === 'hero' ? 'secondary' : 'primary'}
+        onClick={handleDownload}
+        loading={busy}
+        leftIcon={<Download aria-hidden />}
+        className={className}
+      >
         {label}
-      </button>
+      </Button>
 
       {error && (
-        <p className="absolute right-0 top-full mt-1.5 z-30 max-w-[22rem] text-[11px] text-red-600 bg-red-50 border border-red-200 px-3 py-1.5 rounded-lg shadow-sm leading-relaxed">
+        <p
+          role="alert"
+          className="absolute right-0 top-full z-30 mt-1.5 max-w-[22rem] rounded-input border border-[color:var(--bad-border)] bg-[var(--bad-bg)] px-3 py-2 text-small text-[color:var(--bad-fg)] shadow-pop"
+        >
           {error}
         </p>
       )}

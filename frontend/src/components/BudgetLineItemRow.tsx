@@ -3,6 +3,8 @@ import { api } from '../api/client'
 import { formatMoney, formatQty, parseMoneyInput } from './budgetFormat'
 import { BUDGET_LINE_STATUS_LABELS } from '../types'
 import type { BudgetDerivation, BudgetLineItem, BudgetLineItemUpdatePayload, BudgetLineSource, BudgetLineStatus, BudgetProvenanceTier, BudgetSourceRecord } from '../types'
+import { Badge, ChevronDown, IconButton, Input, RefreshCw, Select, Spinner, Trash2, X } from '../ui'
+import type { BadgeVariant } from '../ui'
 
 interface Props {
   budgetId: string
@@ -36,19 +38,18 @@ const STATUSES: BudgetLineStatus[] = [
   'actuals_only',
 ]
 
-// Deliberately quiet, non-alarming palette — none of these are errors.
-// outsourced/actuals_only get their own hues because they're the two that
+// Deliberately quiet, non-alarming tones — none of these are errors.
+// outsourced/actuals_only get their own tone because they're the two that
 // mean "real money exists, it just isn't in this cell".
-const LINE_STATUS_CHIP: Record<BudgetLineStatus, string> = {
-  costed: '',
-  out_of_scope: 'bg-slate-100 text-slate-500 border-slate-200',
-  not_applicable: 'bg-slate-100 text-slate-500 border-slate-200',
-  not_planned: 'bg-slate-100 text-slate-500 border-slate-200',
-  outsourced: 'bg-violet-50 text-violet-700 border-violet-200',
+const LINE_STATUS_VARIANT: Record<BudgetLineStatus, BadgeVariant> = {
+  costed: 'neutral',
+  out_of_scope: 'neutral',
+  not_applicable: 'neutral',
+  not_planned: 'neutral',
+  outsourced: 'info',
   // Same family as `outsourced` — both mean "real money, billed elsewhere".
-  // Amber is reserved solely for "a human overrode the estimate" now, so
-  // actuals_only can no longer share that hue.
-  actuals_only: 'bg-violet-50 text-violet-700 border-violet-200',
+  // Warning is reserved solely for "a human overrode the estimate".
+  actuals_only: 'info',
 }
 
 const STATUS_HELP: Record<BudgetLineStatus, string> = {
@@ -60,67 +61,79 @@ const STATUS_HELP: Record<BudgetLineStatus, string> = {
   actuals_only: 'Billed at actual cost when incurred — no estimate is carried in this budget.',
 }
 
+// The same badge classes, for the one badge that is a real <button> (the
+// "Sourced" badge that opens the citation popover). Full literal strings so
+// Tailwind keeps them.
+const BADGE_BUTTON_CLASS: Record<BadgeVariant, string> = {
+  neutral: 'badge badge-neutral',
+  solid: 'badge badge-solid',
+  success: 'badge badge-success',
+  warning: 'badge badge-warning',
+  danger: 'badge badge-danger',
+  info: 'badge badge-info',
+}
+
 // Four-way provenance badge. `rate_card` is the majority of rows in an
 // auto-populated healthy-volunteer budget, so it stays the QUIETEST
-// treatment — a grey badge and a plain grey rail, no background tint. A
-// 60-row wall of amber/cyan would read as 60 problems instead of the normal,
-// expected content it is. Cyan is reserved for the rarer, better-provenanced
-// protocol rows; amber is reserved solely for a human-edited price/qty.
+// treatment — a neutral badge and a plain neutral rail. A 60-row wall of
+// amber/cyan would read as 60 problems instead of the normal, expected
+// content it is. Info is reserved for the rarer, better-provenanced protocol
+// rows; warning is reserved solely for a human-edited price/qty.
 // `researched` inverts that hierarchy — on a patient budget "this number has
 // a citation" is the signal worth finding, so it is the LOUDEST of the four.
-const SOURCE_BADGE: Record<BudgetLineSource, { label: string; cls: string; title: string } | null> = {
+const SOURCE_BADGE: Record<BudgetLineSource, { label: string; variant: BadgeVariant; title: string } | null> = {
   rate_card: {
     label: 'Estimated',
-    cls: 'text-slate-500 bg-slate-100 border-slate-200',
+    variant: 'neutral',
     title: 'Quantity and unit cost are calibrated approximations from our CRO rate card. Edit either one.',
   },
   protocol_derived: {
     label: 'From protocol',
-    cls: 'text-cyan-700 bg-cyan-50 border-cyan-100',
+    variant: 'info',
     title: 'Quantity comes from your linked protocol’s real schedule.',
   },
   manual: {
     label: 'Yours',
-    cls: 'text-slate-600 bg-white border-slate-200',
+    variant: 'neutral',
     title: 'You created this row.',
   },
   researched: {
     label: 'Sourced',
-    cls: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+    variant: 'success',
     title: 'This unit cost is a real published rate. Click to see the citation.',
   },
 }
 const SOURCE_RAIL: Record<BudgetLineSource, string> = {
-  rate_card: 'border-slate-200',
-  protocol_derived: 'border-cyan-300 bg-cyan-50/30',
+  rate_card: 'border-line',
+  protocol_derived: 'border-[color:var(--info-border)]',
   manual: 'border-transparent',
-  researched: 'border-emerald-300 bg-emerald-50/30',
+  researched: 'border-[color:var(--ok-border)]',
 }
 
 /** Within `researched`, the provenance TIER further modulates the badge so a
  *  `derived` triangulation is never passed off as a `published_rate`
  *  benchmark, a `bid_calibrated` rate reads as one vendor's price rather than
  *  a market rate, and `estimate` (no citation exists at all) falls back to
- *  the same quiet grey as a plain rate-card row. */
-const RESEARCHED_TIER_BADGE: Record<BudgetProvenanceTier, { label: string; cls: string; title: string }> = {
+ *  the same quiet neutral as a plain rate-card row. */
+const RESEARCHED_TIER_BADGE: Record<BudgetProvenanceTier, { label: string; variant: BadgeVariant; title: string }> = {
   published_rate: {
     label: 'Sourced',
-    cls: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+    variant: 'success',
     title: 'A real, published rate. Click to see the citation.',
   },
   derived: {
     label: 'Derived',
-    cls: 'text-amber-800 bg-emerald-50/70 border-amber-200',
+    variant: 'warning',
     title: 'Triangulated by us from two or more published figures — not itself a published benchmark. Click to see the sources.',
   },
   bid_calibrated: {
     label: 'CRO bid',
-    cls: 'text-indigo-700 bg-indigo-50 border-indigo-200',
+    variant: 'info',
     title: 'Taken from a real CRO bid for a comparable study — one vendor’s price, not a market benchmark. Click for details.',
   },
   estimate: {
     label: 'Estimated',
-    cls: 'text-slate-500 bg-slate-100 border-slate-200',
+    variant: 'neutral',
     title: 'No public figure exists for this item — a rate-card approximation.',
   },
 }
@@ -165,76 +178,32 @@ function SourcePopover({ source, onClose }: { source: BudgetSourceRecord; onClos
       ref={ref}
       role="dialog"
       aria-label="Source citation"
-      className="absolute z-50 top-full left-0 mt-1.5 w-80 max-w-[85vw] rounded-xl border border-slate-200 bg-white shadow-lg p-4 text-left normal-case cursor-default"
+      className="absolute left-0 top-full z-50 mt-1.5 w-80 max-w-[85vw] cursor-default rounded-card border border-line bg-surface-pop p-4 text-left text-small font-normal normal-case text-fg shadow-pop"
     >
-      <div className="flex items-start justify-between gap-2 mb-2">
-        <span className="tag text-[10px] capitalize">{source.tier.replace(/_/g, ' ')}</span>
-        <button
-          onClick={onClose}
-          aria-label="Close"
-          className="text-slate-400 hover:text-slate-600 cursor-pointer font-bold leading-none flex-shrink-0"
-        >
-          ×
-        </button>
+      <div className="mb-2 flex items-start justify-between gap-2">
+        <Badge className="capitalize">{source.tier.replace(/_/g, ' ')}</Badge>
+        <IconButton size="sm" label="Close" icon={<X />} onClick={onClose} className="-mr-1 -mt-1" />
       </div>
-      <p className="text-[11px] text-slate-500 mb-2.5">{PROVENANCE_TIER_COPY[source.tier]}</p>
-      <p className="text-sm font-bold text-slate-900 mb-1.5">{source.figure}</p>
-      <p className="text-xs text-slate-600 leading-relaxed mb-2">{source.citation}</p>
+      <p className="mb-2.5 text-fg-subtle">{PROVENANCE_TIER_COPY[source.tier]}</p>
+      <p className="mb-1.5 text-body font-semibold text-fg">{source.figure}</p>
+      <p className="mb-2 text-fg-muted">{source.citation}</p>
       {source.url && (
         <a
           href={source.url}
           target="_blank"
           rel="noopener noreferrer"
-          className="block text-xs font-semibold text-cyan-700 hover:text-cyan-800 break-all mb-1"
+          className="mb-1 block break-all font-medium text-[color:var(--link)] underline-offset-2 hover:underline"
         >
           {source.url}
         </a>
       )}
-      <p className="text-[11px] text-slate-400">Accessed {source.accessed}</p>
+      <p className="text-fg-subtle">Accessed {source.accessed}</p>
       {source.caveat && (
-        <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2 mt-2 leading-relaxed">
+        <p className="mt-2 rounded-lg border border-[color:var(--warn-border)] bg-[var(--warn-bg)] px-2.5 py-2 text-[color:var(--warn-fg)]">
           {source.caveat}
         </p>
       )}
     </div>
-  )
-}
-
-function Spinner({ size = 13 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" className="animate-spin">
-      <circle cx="8" cy="8" r="6" stroke="#e0f2fe" strokeWidth="2.5" />
-      <path d="M8 2a6 6 0 016 6" stroke="#0891b2" strokeWidth="2.5" strokeLinecap="round" />
-    </svg>
-  )
-}
-function ChevronUpIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 20 20" fill="none">
-      <path d="M5 12l5-5 5 5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-function ChevronDownIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 20 20" fill="none">
-      <path d="M5 8l5 5 5-5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-function TrashIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 20 20" fill="none">
-      <path d="M4 6h12M8 6V4.5A1.5 1.5 0 019.5 3h1A1.5 1.5 0 0112 4.5V6m-6.5 0l.6 10.2a1.5 1.5 0 001.5 1.4h4.8a1.5 1.5 0 001.5-1.4L14.5 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-function RefreshIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 20 20" fill="none">
-      <path d="M4 10a6 6 0 0110-4.24M16 10a6 6 0 01-10 4.24" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-      <path d="M14 3v3.5h-3.5M6 17v-3.5h3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
   )
 }
 
@@ -256,6 +225,10 @@ function provenanceText(derivation: BudgetDerivation, key: string, fallbackQty: 
   }
   return `${formatQty(fallbackQty)}${fallbackUnit ? ` ${fallbackUnit}` : ''}`
 }
+
+// Borderless-until-hover cell inputs: a dense table of always-boxed fields
+// reads as a spreadsheet, so the box appears on hover and focus.
+const CELL_INPUT = 'h-9 border-transparent px-2 py-1 hover:border-line-strong'
 
 export default function BudgetLineItemRow({
   budgetId, item, currency, derivation, isFirst, isLast, autoFocusLabel, showManualBadge,
@@ -396,8 +369,9 @@ export default function BudgetLineItemRow({
   const totalMatchesComputed = computedTotal != null && item.total != null && Math.abs(item.total - computedTotal) < 0.005
   const showRecalc = computedTotal != null && !totalMatchesComputed
 
-  const fieldMuted = isNonCosted ? 'text-slate-400 bg-slate-50/60' : ''
-  const quantityWeight = isDerived ? 'font-medium text-slate-700' : 'font-semibold text-slate-900'
+  // Non-costed rows keep their stored numbers but read as inactive.
+  const fieldMuted = isNonCosted ? 'bg-surface-muted text-fg-subtle' : 'bg-transparent'
+  const quantityWeight = isDerived ? 'font-medium' : 'font-semibold'
 
   const editedTitle = isEditedPrice
     ? `Estimated at ${formatMoney(autoPrice, currency)} — you set ${formatMoney(item.unit_cost, currency)}`
@@ -406,28 +380,32 @@ export default function BudgetLineItemRow({
       : undefined
 
   return (
-    <tr className={`${isFirst ? '' : 'border-t border-slate-100'} border-l-2 ${SOURCE_RAIL[item.source]}`}>
+    <tr className={`${isFirst ? '' : 'border-t border-line'} border-l-2 ${SOURCE_RAIL[item.source]}`}>
       <td className="px-5 py-2.5 align-top">
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <input
-            ref={labelRef}
-            value={label}
-            onChange={e => setLabel(e.target.value)}
-            onBlur={commitLabel}
-            onKeyDown={e => {
-              if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-              if (e.key === 'Escape') setLabel(item.label)
-            }}
-            className="font-semibold text-slate-900 bg-transparent border border-transparent hover:border-slate-200 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/40 rounded-lg px-2 py-1 min-w-[160px] w-full max-w-[320px]"
-          />
+        <div className="flex flex-wrap items-center gap-1.5">
+          <div className="w-full min-w-[160px] max-w-[320px]">
+            <Input
+              ref={labelRef}
+              value={label}
+              onChange={e => setLabel(e.target.value)}
+              onBlur={commitLabel}
+              onKeyDown={e => {
+                if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                if (e.key === 'Escape') setLabel(item.label)
+              }}
+              aria-label="Line item label"
+              className={`${CELL_INPUT} bg-transparent font-semibold`}
+            />
+          </div>
           {showBadge && badge && (
             sourceRecord ? (
               <span className="relative inline-block">
                 <button
                   type="button"
                   onClick={() => setShowSourcePopover(s => !s)}
-                  className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap border cursor-pointer ${badge.cls}`}
+                  className={`${BADGE_BUTTON_CLASS[badge.variant]} cursor-pointer transition-opacity duration-fast hover:opacity-80`}
                   title={badge.title}
+                  aria-expanded={showSourcePopover}
                 >
                   {badge.label}
                 </button>
@@ -436,29 +414,26 @@ export default function BudgetLineItemRow({
                 )}
               </span>
             ) : (
-              <span
-                className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap border ${badge.cls}`}
-                title={badge.title}
-              >
+              <Badge variant={badge.variant} title={badge.title}>
                 {badge.label}
-              </span>
+              </Badge>
             )
           )}
           {isEdited && (
-            <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full whitespace-nowrap" title={editedTitle}>
+            <Badge variant="warning" title={editedTitle}>
               Edited
-            </span>
+            </Badge>
           )}
         </div>
         {derivationLine && (
-          <p className="text-[11px] text-slate-500 mt-0.5" title={editedTitle ?? undefined}>
+          <p className="mt-0.5 px-2 text-xs leading-4 text-fg-subtle" title={editedTitle ?? undefined}>
             {editedTitle ?? provenanceText(derivation!, derivationLine.derivation_key, derivationLine.quantity, derivationLine.unit_description, derivationLine.basis)}
           </p>
         )}
       </td>
 
       <td className="px-2 py-2.5 align-top text-right">
-        <input
+        <Input
           value={quantity}
           onChange={e => setQuantity(e.target.value)}
           onBlur={commitQuantityOrUnitCost}
@@ -467,12 +442,13 @@ export default function BudgetLineItemRow({
             if (e.key === 'Escape') setQuantity(item.quantity != null ? String(item.quantity) : '')
           }}
           placeholder="—"
-          className={`w-full text-right tabular-nums border border-transparent hover:border-slate-200 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/40 rounded-lg px-2 py-1 ${quantityWeight} ${fieldMuted}`}
+          aria-label={`Quantity for ${item.label}`}
+          className={`${CELL_INPUT} text-right tabular-nums ${quantityWeight} ${fieldMuted}`}
         />
       </td>
 
       <td className="px-2 py-2.5 align-top text-right">
-        <input
+        <Input
           value={unitCost}
           onChange={e => setUnitCost(e.target.value)}
           onBlur={commitQuantityOrUnitCost}
@@ -481,11 +457,12 @@ export default function BudgetLineItemRow({
             if (e.key === 'Escape') setUnitCost(item.unit_cost != null ? String(item.unit_cost) : '')
           }}
           placeholder="—"
-          className={`w-full text-right tabular-nums font-semibold text-slate-900 border border-transparent hover:border-slate-200 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/40 rounded-lg px-2 py-1 ${fieldMuted}`}
+          aria-label={`Unit cost for ${item.label}`}
+          className={`${CELL_INPUT} text-right font-semibold tabular-nums ${fieldMuted}`}
         />
         {isGeoScaled && (
           <div
-            className="text-[10px] text-slate-400 text-right pr-2"
+            className="pr-2 text-right text-xs leading-4 tabular-nums text-fg-subtle"
             title={`Scaled for the ${GEOGRAPHY_LABEL[derivation?.geography_profile ?? ''] ?? 'selected'} geography profile.`}
           >
             ({derivationLine!.unit_cost_published!.toLocaleString()} × {derivationLine!.geography_factor} geo)
@@ -494,7 +471,7 @@ export default function BudgetLineItemRow({
       </td>
 
       <td className="px-2 py-2.5 align-top">
-        <input
+        <Input
           value={unitDesc}
           onChange={e => setUnitDesc(e.target.value)}
           onBlur={commitUnitDesc}
@@ -503,33 +480,34 @@ export default function BudgetLineItemRow({
             if (e.key === 'Escape') setUnitDesc(item.unit_description ?? '')
           }}
           placeholder="—"
-          className={`w-full border border-transparent hover:border-slate-200 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/40 rounded-lg px-2 py-1 text-slate-600 ${fieldMuted}`}
+          aria-label={`Unit for ${item.label}`}
+          className={`${CELL_INPUT} text-fg-muted ${fieldMuted}`}
         />
       </td>
 
       <td className="px-2 py-2.5 align-top text-right">
         {isNonCosted ? (
-          <span
+          <Badge
+            variant={LINE_STATUS_VARIANT[item.status]}
             aria-label={`No cost carried — ${BUDGET_LINE_STATUS_LABELS[item.status]}`}
             title={STATUS_HELP[item.status]}
-            className={`tag whitespace-nowrap ${LINE_STATUS_CHIP[item.status]}`}
+            className="mt-1.5"
           >
             {BUDGET_LINE_STATUS_LABELS[item.status]}
-          </span>
+          </Badge>
         ) : (
           <div>
             <div className="flex items-center justify-end gap-1">
               {showRecalc && (
-                <button
+                <IconButton
+                  size="sm"
+                  label="Recalculate total from quantity times unit cost"
+                  icon={<RefreshCw />}
                   onClick={handleRecalculate}
-                  title="Recalculate from quantity × unit cost"
-                  aria-label="Recalculate total from quantity times unit cost"
-                  className="text-slate-400 hover:text-cyan-600 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60 rounded"
-                >
-                  <RefreshIcon />
-                </button>
+                  className="flex-none"
+                />
               )}
-              <input
+              <Input
                 value={total}
                 onChange={e => setTotal(e.target.value)}
                 onBlur={commitTotal}
@@ -538,11 +516,12 @@ export default function BudgetLineItemRow({
                   if (e.key === 'Escape') setTotal(item.total != null ? String(item.total) : '')
                 }}
                 placeholder="—"
-                className="w-full text-right tabular-nums font-semibold text-slate-900 border border-transparent hover:border-slate-200 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/40 rounded-lg px-2 py-1"
+                aria-label={`Total for ${item.label}`}
+                className={`${CELL_INPUT} bg-transparent text-right font-semibold tabular-nums`}
               />
             </div>
             {totalMatchesComputed && item.quantity != null && item.unit_cost != null && (
-              <div className="text-[10px] text-slate-400 text-right pr-2">
+              <div className="pr-2 text-right text-xs leading-4 tabular-nums text-fg-subtle">
                 = {formatQty(item.quantity)} × {formatMoney(item.unit_cost, currency)}
               </div>
             )}
@@ -551,46 +530,43 @@ export default function BudgetLineItemRow({
       </td>
 
       <td className="px-2 py-2.5 align-top">
-        <select
+        <Select
           value={item.status}
           onChange={e => handleStatusChange(e.target.value as BudgetLineStatus)}
-          className="w-full text-xs font-medium text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60"
+          aria-label={`Status for ${item.label}`}
+          className="h-9 py-1 pl-2 text-small"
         >
           {STATUSES.map(s => <option key={s} value={s}>{BUDGET_LINE_STATUS_LABELS[s]}</option>)}
-        </select>
+        </Select>
       </td>
 
       <td className="px-2 py-2.5 align-top">
-        <div className="flex items-center gap-0.5 justify-end">
+        <div className="flex h-9 items-center justify-end gap-0.5">
           {saving ? (
-            <Spinner />
+            <Spinner size={16} className="mr-2 text-fg-subtle" />
           ) : (
             <>
-              <button
+              <IconButton
+                size="sm"
+                label={`Move ${item.label} up`}
+                icon={<ChevronDown className="rotate-180" />}
                 onClick={() => onMove('up')}
                 disabled={isFirst}
-                aria-label={`Move ${item.label} up`}
-                className="p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60"
-              >
-                <ChevronUpIcon />
-              </button>
-              <button
+              />
+              <IconButton
+                size="sm"
+                label={`Move ${item.label} down`}
+                icon={<ChevronDown />}
                 onClick={() => onMove('down')}
                 disabled={isLast}
-                aria-label={`Move ${item.label} down`}
-                className="p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60"
-              >
-                <ChevronDownIcon />
-              </button>
-              <button
+              />
+              <IconButton
+                size="sm"
+                variant={confirmDelete ? 'danger' : 'ghost'}
+                label={confirmDelete ? `Confirm delete of ${item.label}` : `Delete ${item.label}`}
+                icon={<Trash2 />}
                 onClick={handleDeleteClick}
-                aria-label={confirmDelete ? `Confirm delete of ${item.label}` : `Delete ${item.label}`}
-                className={`p-1 rounded cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60 ${
-                  confirmDelete ? 'text-red-600 bg-red-50' : 'text-slate-400 hover:text-red-600 hover:bg-red-50'
-                }`}
-              >
-                <TrashIcon />
-              </button>
+              />
             </>
           )}
         </div>

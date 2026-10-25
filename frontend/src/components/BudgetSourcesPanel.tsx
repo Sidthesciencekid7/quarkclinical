@@ -1,25 +1,10 @@
+import { Badge, BookOpen, Card, ChevronDown } from '../ui'
 import type { Budget, BudgetProvenanceTier, BudgetSourceRecord } from '../types'
 
 interface Props {
   budget: Budget
   expanded: boolean
   onToggle: () => void
-}
-
-function ChevronIcon({ open }: { open: boolean }) {
-  return (
-    <svg width="14" height="14" viewBox="0 0 20 20" fill="none" className={`transition-transform flex-shrink-0 ${open ? 'rotate-180' : ''}`}>
-      <path d="M5 8l5 5 5-5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-function BookIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 20 20" fill="none" className="flex-shrink-0 text-emerald-600">
-      <path d="M4 4.5A1.5 1.5 0 015.5 3H10v14H5.5A1.5 1.5 0 014 15.5v-11z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-      <path d="M16 4.5A1.5 1.5 0 0014.5 3H10v14h4.5a1.5 1.5 0 001.5-1.5v-11z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-    </svg>
-  )
 }
 
 // Newest-tier-first, matching the provenance meter's ordering and colors.
@@ -56,28 +41,28 @@ function SourceCard({
   lineLabels: string[]
 }) {
   return (
-    <div id={`source-${id}`} className="rounded-xl border border-slate-200 bg-white px-4 py-3.5">
-      <p className="text-sm font-bold text-slate-900">{source.figure}</p>
-      <p className="text-xs text-slate-600 leading-relaxed mt-1.5">{source.citation}</p>
+    <div id={`source-${id}`} className="rounded-xl border border-line bg-surface px-4 py-3.5">
+      <p className="text-body font-semibold text-fg">{source.figure}</p>
+      <p className="mt-1.5 text-small text-fg-muted">{source.citation}</p>
       {source.url && (
         <a
           href={source.url}
           target="_blank"
           rel="noopener noreferrer"
-          className="block text-xs font-semibold text-cyan-700 hover:text-cyan-800 break-all mt-1.5"
+          className="mt-1.5 block break-all text-small font-medium text-[color:var(--link)] underline-offset-2 hover:underline"
         >
           {source.url}
         </a>
       )}
-      <p className="text-[11px] text-slate-400 mt-1.5">Accessed {source.accessed}</p>
+      <p className="mt-1.5 text-small text-fg-subtle">Accessed {source.accessed}</p>
       {source.caveat && (
-        <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2 mt-2 leading-relaxed">
+        <p className="mt-2 rounded-lg border border-[color:var(--warn-border)] bg-[var(--warn-bg)] px-2.5 py-2 text-small text-[color:var(--warn-fg)]">
           {source.caveat}
         </p>
       )}
       {lineLabels.length > 0 && (
-        <div className="mt-2.5 pt-2.5 border-t border-slate-100">
-          <p className="text-[11px] text-slate-400">
+        <div className="mt-2.5 border-t border-line pt-2.5">
+          <p className="text-small text-fg-subtle">
             Backs {lineLabels.length} line item{lineLabels.length === 1 ? '' : 's'}: {lineLabels.join(', ')}
           </p>
         </div>
@@ -103,28 +88,34 @@ export default function BudgetSourcesPanel({ budget, expanded, onToggle }: Props
   })).filter(g => g.items.length > 0)
 
   return (
-    <div className="card overflow-hidden">
-      <button onClick={onToggle} className="w-full flex items-center justify-between gap-3 px-5 py-4 text-left cursor-pointer">
-        <div className="flex items-center gap-2 flex-wrap">
-          <BookIcon />
-          <h3 className="text-sm font-bold text-slate-900">Sources &amp; citations</h3>
-          <span className="text-[10px] font-bold text-slate-500 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded-full whitespace-nowrap">
-            {entries.length}
-          </span>
+    <Card padding="none" className="overflow-hidden">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        className="flex w-full cursor-pointer items-center justify-between gap-3 px-5 py-4 text-left"
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <BookOpen aria-hidden className="h-4 w-4 flex-none text-[color:var(--ok-fg)]" />
+          <h3 className="text-h3 text-fg">Sources &amp; citations</h3>
+          <Badge>{entries.length}</Badge>
         </div>
-        <ChevronIcon open={expanded} />
+        <ChevronDown
+          aria-hidden
+          className={`h-4 w-4 flex-none text-fg-subtle transition-transform duration-fast ${expanded ? 'rotate-180' : ''}`}
+        />
       </button>
 
       {expanded && (
-        <div className="px-5 pb-5 space-y-5">
+        <div className="space-y-5 px-5 pb-5">
           {byTier.map(({ tier, items }) => (
             <div key={tier}>
               <div className="flex items-center gap-2 pb-1.5">
-                <span className={`w-2 h-2 rounded-full flex-shrink-0 ${TIER_DOT[tier]}`} />
-                <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">{TIER_LABEL[tier]}</h4>
-                <span className="text-[11px] text-slate-400">· {items.length}</span>
+                <span aria-hidden className={`h-2 w-2 flex-none rounded-full ${TIER_DOT[tier]}`} />
+                <h4 className="eyebrow">{TIER_LABEL[tier]}</h4>
+                <span className="text-small tabular-nums text-fg-subtle">· {items.length}</span>
               </div>
-              <p className="text-[11px] text-slate-400 mb-2.5">{TIER_COPY[tier]}</p>
+              <p className="mb-2.5 text-small text-fg-subtle">{TIER_COPY[tier]}</p>
               <div className="space-y-2.5">
                 {items.map(([id, source]) => (
                   <SourceCard
@@ -139,6 +130,6 @@ export default function BudgetSourcesPanel({ budget, expanded, onToggle }: Props
           ))}
         </div>
       )}
-    </div>
+    </Card>
   )
 }

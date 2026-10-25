@@ -7,6 +7,7 @@ import BudgetCategorySection from './BudgetCategorySection'
 import BudgetRollupCard from './BudgetRollupCard'
 import BudgetExportButton from './BudgetExportButton'
 import { formatMoney } from './budgetFormat'
+import { Badge, Banner, Button, Card, ChevronLeft, Input, PillNav, Plus, Select } from '../ui'
 import { BUDGET_BUCKET_LABELS } from '../types'
 import type { Budget, BudgetBucket, BudgetCategory, BudgetLineItem, BudgetRollup, BudgetStatus } from '../types'
 
@@ -22,29 +23,7 @@ interface Props {
 const STATUSES: BudgetStatus[] = ['draft', 'final', 'archived']
 const BUCKETS: BudgetBucket[] = ['direct', 'stipend', 'variable', 'pass_through', 'investigator_grants', 'software']
 
-function LeftArrowIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-      <path d="M11 7H3M6 3L2 7l4 4" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-function PlusIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 15 15" fill="none">
-      <path d="M7.5 2v11M2 7.5h11" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  )
-}
-function InfoIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 20 20" fill="none" className="flex-shrink-0 mt-0.5 text-slate-400">
-      <circle cx="10" cy="10" r="7.25" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M10 9v4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-      <circle cx="10" cy="6.5" r="0.9" fill="currentColor" />
-    </svg>
-  )
-}
+const STATUS_ITEMS = STATUSES.map(s => ({ id: s, label: s.charAt(0).toUpperCase() + s.slice(1) }))
 
 export default function BudgetEditor({ budget: initialBudget, onBack, onChanged, justCreated }: Props) {
   const [budget, setBudget] = useState<Budget>(initialBudget)
@@ -212,24 +191,21 @@ export default function BudgetEditor({ budget: initialBudget, onBack, onChanged,
   }
 
   return (
-    <main className="app-canvas min-h-[calc(100vh-57px)]">
-      <div className="max-w-5xl mx-auto px-5 py-10 space-y-5 fade-up">
-        <button onClick={onBack} className="btn-ghost">
-          <LeftArrowIcon />
+    // The shell already provides the single <main> landmark.
+    <div>
+      <div className="mx-auto w-full max-w-5xl space-y-5 px-4 py-8 sm:px-8 sm:py-10">
+        <Button variant="ghost" size="sm" leftIcon={<ChevronLeft aria-hidden />} onClick={onBack}>
           All budgets
-        </button>
+        </Button>
 
         {error && (
-          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 flex items-start justify-between gap-3">
-            <span>{error}</span>
-            <button onClick={() => setError(null)} aria-label="Dismiss" className="flex-shrink-0 text-red-400 hover:text-red-600 cursor-pointer font-bold leading-none">
-              ×
-            </button>
-          </div>
+          <Banner tone="danger" onDismiss={() => setError(null)}>
+            {error}
+          </Banner>
         )}
 
-        <div className="flex items-center justify-between gap-4 flex-wrap">
-          <div className="flex items-center gap-2.5 flex-wrap min-w-0">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex min-w-0 flex-1 basis-72 flex-wrap items-center gap-2.5">
             <input
               value={nameDraft}
               onChange={e => setNameDraft(e.target.value)}
@@ -239,58 +215,39 @@ export default function BudgetEditor({ budget: initialBudget, onBack, onChanged,
                 if (e.key === 'Escape') setNameDraft(budget.name)
               }}
               aria-label="Budget name"
-              className="text-2xl font-extrabold text-slate-900 tracking-tight bg-transparent border border-transparent hover:border-slate-200 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/40 rounded-lg px-2 py-1 min-w-[220px]"
+              className="min-w-0 max-w-full flex-1 basis-56 rounded-input border border-transparent bg-transparent px-2 py-1 text-h1 text-fg hover:border-line-strong focus:border-[color:var(--ring)] focus:outline-none focus:ring-2 focus:ring-[color:var(--ring)]"
             />
-            {budget.protocol_id && (
-              <span className="text-[10px] font-bold text-cyan-700 bg-cyan-50 border border-cyan-100 px-1.5 py-0.5 rounded-full whitespace-nowrap">
-                From protocol
-              </span>
-            )}
+            {budget.protocol_id && <Badge variant="info">From protocol</Badge>}
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <BudgetExportButton budget={budget} />
-            <select
+          <div className="flex flex-none flex-wrap items-center gap-2">
+            <PillNav
+              ariaLabel="Budget status"
+              size="sm"
+              items={STATUS_ITEMS}
               value={budget.status}
-              onChange={e => handleStatusChange(e.target.value as BudgetStatus)}
-              aria-label="Budget status"
-              className="text-xs font-semibold text-slate-600 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 cursor-pointer capitalize focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60"
-            >
-              {STATUSES.map(s => <option key={s} value={s} className="capitalize">{s}</option>)}
-            </select>
+              onChange={id => handleStatusChange(id as BudgetStatus)}
+            />
+            <BudgetExportButton budget={budget} />
           </div>
         </div>
 
         {showReady && (
-          <div className="rounded-2xl border border-cyan-200 bg-cyan-50/60 px-5 py-4 flex items-center justify-between gap-4 flex-wrap fade-up">
-            <div>
-              <p className="text-sm font-bold text-slate-900">
-                Your budget is ready — {formatMoney(rollup.grand_total, budget.currency)}
-              </p>
-              <p className="text-xs text-slate-600 mt-0.5">
-                {budget.categories.length} categories, {totalLineCount} line items, every figure priced. Download it,
-                or edit anything below first.
-              </p>
-            </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <BudgetExportButton budget={budget} variant="hero" />
-              <button
-                onClick={() => setShowReady(false)}
-                aria-label="Dismiss"
-                className="text-slate-400 hover:text-slate-600 cursor-pointer font-bold leading-none px-1"
-              >
-                ×
-              </button>
-            </div>
-          </div>
+          <Banner
+            tone="success"
+            title={`Your budget is ready — ${formatMoney(rollup.grand_total, budget.currency)}`}
+            action={<BudgetExportButton budget={budget} variant="hero" />}
+            onDismiss={() => setShowReady(false)}
+          >
+            {budget.categories.length} categories, {totalLineCount} line items, every figure priced. Download it,
+            or edit anything below first.
+          </Banner>
         )}
 
-        <p className="flex items-start gap-2 text-[12px] leading-relaxed text-slate-500 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5">
-          <InfoIcon />
-          <span>
-            {budget.derivation?.disclaimer ||
-              'Every figure here is an estimate from our CRO rate card. Edit any number — the totals and the Word document follow.'}
-          </span>
-        </p>
+        {/* The one disclaimer that must never be missed: every figure is an estimate. */}
+        <Banner tone="warning">
+          {budget.derivation?.disclaimer ||
+            'Every figure here is an estimate from our CRO rate card. Edit any number — the totals and the Word document follow.'}
+        </Banner>
 
         <BudgetDerivationPanel budget={budget} onBudgetUpdated={applyBudget} onError={setError} />
 
@@ -301,15 +258,16 @@ export default function BudgetEditor({ budget: initialBudget, onBack, onChanged,
         <BudgetSettingsCard budget={budget} onBudgetUpdated={applyBudget} onError={setError} />
 
         <div className="flex items-center justify-between gap-3">
-          <p className="text-xs font-semibold text-slate-500">
+          <p className="text-small font-medium tabular-nums text-fg-muted">
             {budget.categories.length} categories · {totalLineCount} line items
           </p>
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => setExpandedIds(allExpanded ? new Set() : new Set(budget.categories.map(c => c.id)))}
-            className="btn-ghost text-xs py-1.5 px-3"
           >
             {allExpanded ? 'Collapse all' : 'Expand all'}
-          </button>
+          </Button>
         </div>
 
         <div className="space-y-4">
@@ -336,39 +294,42 @@ export default function BudgetEditor({ budget: initialBudget, onBack, onChanged,
         </div>
 
         {addingCategory ? (
-          <div className="card p-4 flex items-center gap-3 flex-wrap">
-            <input
-              value={newCategoryName}
-              onChange={e => setNewCategoryName(e.target.value)}
-              placeholder="Category name"
-              autoFocus
-              className="input-base flex-1 min-w-[200px]"
-            />
-            <select
-              value={newCategoryBucket}
-              onChange={e => setNewCategoryBucket(e.target.value as BudgetBucket)}
-              className="input-base w-auto cursor-pointer"
-            >
-              {BUCKETS.map(b => <option key={b} value={b}>{BUDGET_BUCKET_LABELS[b]}</option>)}
-            </select>
-            <button onClick={handleAddCategory} disabled={!newCategoryName.trim()} className="btn-primary text-xs py-2 px-4">
+          <Card padding="sm" className="flex flex-wrap items-center gap-3">
+            <div className="min-w-[200px] flex-1">
+              <Input
+                value={newCategoryName}
+                onChange={e => setNewCategoryName(e.target.value)}
+                placeholder="Category name"
+                aria-label="New category name"
+                autoFocus
+              />
+            </div>
+            <div className="w-48">
+              <Select
+                value={newCategoryBucket}
+                onChange={e => setNewCategoryBucket(e.target.value as BudgetBucket)}
+                aria-label="New category bucket"
+              >
+                {BUCKETS.map(b => <option key={b} value={b}>{BUDGET_BUCKET_LABELS[b]}</option>)}
+              </Select>
+            </div>
+            <Button onClick={handleAddCategory} disabled={!newCategoryName.trim()}>
               Add
-            </button>
-            <button onClick={() => { setAddingCategory(false); setNewCategoryName('') }} className="btn-ghost text-xs py-2 px-4">
+            </Button>
+            <Button variant="ghost" onClick={() => { setAddingCategory(false); setNewCategoryName('') }}>
               Cancel
-            </button>
-          </div>
+            </Button>
+          </Card>
         ) : (
-          <button onClick={() => setAddingCategory(true)} className="btn-ghost">
-            <PlusIcon />
+          <Button variant="secondary" leftIcon={<Plus aria-hidden />} onClick={() => setAddingCategory(true)}>
             Add category
-          </button>
+          </Button>
         )}
 
         <BudgetRollupCard budget={budget} rollup={rollup} variant="full" onBudgetUpdated={applyBudget} onError={setError} onOpenSources={openSources} />
       </div>
 
       <BudgetRollupCard budget={budget} rollup={rollup} variant="sticky" />
-    </main>
+    </div>
   )
 }

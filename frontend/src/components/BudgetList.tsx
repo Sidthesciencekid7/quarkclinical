@@ -5,6 +5,22 @@ import { useActingUser } from '../lib/actingUser'
 import { formatMoney, relativeDate } from './budgetFormat'
 import { downloadBudgetDocx } from './BudgetExportButton'
 import type { BudgetStatus, BudgetSummary, StudyType } from '../types'
+import {
+  ArrowRight,
+  Badge,
+  Banner,
+  Button,
+  Card,
+  Download,
+  EmptyState,
+  Plus,
+  Receipt,
+  Search,
+  TabPanel,
+  Tabs,
+  Trash2,
+} from '../ui'
+import type { BadgeVariant } from '../ui'
 
 interface Props {
   /** Open a budget in the editor (parent fetches the full object). */
@@ -25,28 +41,18 @@ const STUDY_LABELS: Record<StudyType, string> = {
   food_effect: 'Food Effect',
 }
 
-const STUDY_BADGE: Record<StudyType, string> = {
-  BE: 'bg-cyan-50 text-cyan-700 border-cyan-200',
-  biosimilar_pk: 'bg-violet-50 text-violet-700 border-violet-200',
-  food_effect: 'bg-amber-50 text-amber-700 border-amber-200',
-}
-
-// Subject-profile pill, next to the study-type pill — a 22-category patient
-// budget and a 17-category healthy one look identical until this tells you
-// which is which.
-const PROFILE_PILL: Record<'healthy' | 'patient', string> = {
-  healthy: 'bg-slate-50 text-slate-600 border-slate-200',
-  patient: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-}
+// Subject profile, spelled out in the meta line: a 22-category patient budget
+// and a 17-category healthy one look identical until this tells you which is
+// which.
 const PROFILE_LABEL: Record<'healthy' | 'patient', string> = {
-  healthy: 'Healthy',
-  patient: 'Patient',
+  healthy: 'Healthy volunteers',
+  patient: 'Patient study',
 }
 
-const STATUS_PILL: Record<BudgetStatus, string> = {
-  draft: 'bg-slate-100 text-slate-600 border-slate-200',
-  final: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-  archived: 'bg-slate-100 text-slate-400 border-slate-200',
+const STATUS_BADGE: Record<BudgetStatus, { label: string; variant: BadgeVariant }> = {
+  draft: { label: 'Draft', variant: 'neutral' },
+  final: { label: 'Final', variant: 'success' },
+  archived: { label: 'Archived', variant: 'neutral' },
 }
 
 type StatusFilter = 'all' | BudgetStatus
@@ -58,47 +64,7 @@ const FILTERS: { id: StatusFilter; label: string }[] = [
   { id: 'archived', label: 'Archived' },
 ]
 
-/** Same path data as SuiteHome's BudgetIcon — kept local per this codebase's
- *  convention of declaring small icons in the file that uses them. */
-function WalletIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 20 20" fill="none">
-      <rect x="2" y="5" width="16" height="11" rx="2" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M2 8.5h16" stroke="currentColor" strokeWidth="1.5" />
-      <circle cx="14.5" cy="12" r="1.25" fill="currentColor" />
-    </svg>
-  )
-}
-
-function Spinner({ size = 16 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" className="animate-spin">
-      <circle cx="8" cy="8" r="6" stroke="#e0f2fe" strokeWidth="2.5" />
-      <path d="M8 2a6 6 0 016 6" stroke="#0891b2" strokeWidth="2.5" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-// Same glyphs as ExportButton.tsx / BudgetExportButton.tsx, kept local per
-// this codebase's convention of declaring small icons in the file that uses
-// them — this row action is a plain slate icon button, not the cyan-filled
-// primary action, so it doesn't reuse BudgetExportButton's own markup.
-function DownloadIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 12 12" fill="none">
-      <path d="M6 2v6M3.5 5.5L6 8l2.5-2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M2 10h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  )
-}
-function SpinIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 12 12" fill="none" className="animate-spin">
-      <circle cx="6" cy="6" r="5" stroke="#e0f2fe" strokeWidth="2" />
-      <path d="M6 1a5 5 0 015 5" stroke="#0891b2" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  )
-}
+const TABS_ID = 'budget-status-tabs'
 
 export default function BudgetList({ onOpen, onNew, openingId, openError, onDismissOpenError }: Props) {
   const [budgets, setBudgets] = useState<BudgetSummary[] | null>(null)
@@ -136,6 +102,15 @@ export default function BudgetList({ onOpen, onNew, openingId, openError, onDism
     return budgets.filter(b => b.status === filter)
   }, [budgets, filter])
 
+  const counts = useMemo(() => {
+    const c: Record<StatusFilter, number> = { all: 0, draft: 0, final: 0, archived: 0 }
+    for (const b of budgets ?? []) {
+      c.all += 1
+      c[b.status] += 1
+    }
+    return c
+  }, [budgets])
+
   // Two-step inline delete: first click arms a 4s confirm window, a second
   // click within it deletes. No window.confirm, no modal.
   function handleDeleteClick(id: string) {
@@ -170,211 +145,212 @@ export default function BudgetList({ onOpen, onNew, openingId, openError, onDism
     }
   }
 
+  const tabItems = FILTERS.map(f => ({
+    id: f.id,
+    label: f.label,
+    badge: budgets ? (
+      <span className="ml-0.5 text-small tabular-nums text-fg-subtle">{counts[f.id]}</span>
+    ) : undefined,
+  }))
+
   return (
-    <main className="app-canvas min-h-[calc(100vh-57px)]">
-      <div className="max-w-5xl mx-auto px-5 py-10 fade-up">
-        {/* Header row */}
-        <div className="flex items-end justify-between mb-6 flex-wrap gap-3">
-          <div>
-            <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">My Budgets</h1>
-            <p className="text-sm text-slate-500 mt-1">
-              Every study budget your organization has built. Open one to keep costing it.
-            </p>
-          </div>
-          <button onClick={onNew} className="btn-primary">
-            <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
-              <path d="M7.5 2v11M2 7.5h11" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            </svg>
-            New Budget
-          </button>
+    // The shell already provides the single <main> landmark.
+    <div className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-8 sm:py-10">
+      {/* Header row */}
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-h1 text-fg">Budgets</h1>
+          <p className="mt-1 text-body text-fg-muted">
+            Every study budget your organization has built. Open one to keep costing it.
+          </p>
         </div>
-
-        {/* Status filter */}
-        {budgets && budgets.length > 0 && (
-          <div className="flex items-center gap-1.5 mb-5">
-            {FILTERS.map(f => (
-              <button
-                key={f.id}
-                onClick={() => setFilter(f.id)}
-                className={`text-xs font-semibold px-3 py-1.5 rounded-lg border transition-colors cursor-pointer ${
-                  filter === f.id
-                    ? 'bg-cyan-50 text-cyan-700 border-cyan-200'
-                    : 'text-slate-500 border-slate-200 hover:bg-slate-50'
-                }`}
-              >
-                {f.label}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* Loading */}
-        {budgets === null && !error && (
-          <div className="space-y-3">
-            {[0, 1, 2].map(i => (
-              <div key={i} className="h-[76px] rounded-2xl border border-slate-200 bg-white/60 animate-pulse" />
-            ))}
-          </div>
-        )}
-
-        {/* Fatal error */}
-        {error && (
-          <div className="rounded-2xl border border-red-200 bg-red-50 p-5 text-sm text-red-700">
-            Couldn&apos;t load your budgets: {error}
-          </div>
-        )}
-
-        {/* Opening a budget failed — non-fatal */}
-        {openError && (
-          <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 flex items-start justify-between gap-3">
-            <span>Couldn&apos;t open that budget: {openError}</span>
-            <button
-              onClick={onDismissOpenError}
-              aria-label="Dismiss"
-              className="flex-shrink-0 text-red-400 hover:text-red-600 cursor-pointer font-bold leading-none"
-            >
-              ×
-            </button>
-          </div>
-        )}
-
-        {/* Delete failed — non-fatal */}
-        {deleteError && (
-          <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            Couldn&apos;t delete that budget: {deleteError}
-          </div>
-        )}
-
-        {/* Word export failed — non-fatal */}
-        {exportError && (
-          <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            Couldn&apos;t export that budget: {exportError}
-          </div>
-        )}
-
-        {/* Empty (no budgets at all) */}
-        {budgets?.length === 0 && (
-          <div className="rounded-2xl border border-slate-200 bg-white p-12 text-center shadow-sm">
-            <div className="w-14 h-14 rounded-2xl bg-cyan-50 border border-cyan-100 text-cyan-500 flex items-center justify-center mx-auto mb-4">
-              <WalletIcon />
-            </div>
-            <h3 className="text-lg font-bold text-slate-900">No budgets yet</h3>
-            <p className="text-sm text-slate-500 mt-1.5 max-w-sm mx-auto">
-              Enter a drug name and get a complete, priced 17-category budget — then edit anything you disagree with.
-            </p>
-            <button
-              onClick={onNew}
-              className="mt-5 inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-bold cursor-pointer transition-colors"
-            >
-              Create your first budget
-            </button>
-          </div>
-        )}
-
-        {/* Empty (filter hides everything) */}
-        {budgets && budgets.length > 0 && filtered.length === 0 && (
-          <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">
-            No budgets match this filter.
-          </div>
-        )}
-
-        {/* List */}
-        {filtered.length > 0 && (
-          <div className="space-y-2.5">
-            {filtered.map(b => {
-              const isOpening = openingId === b.id
-              const isDeleting = deletingId === b.id
-              const isConfirming = confirmDeleteId === b.id
-              return (
-                <div
-                  key={b.id}
-                  className={`section-card w-full flex items-center gap-4 px-5 py-4 group ${
-                    b.status === 'archived' ? 'opacity-70' : ''
-                  }`}
-                >
-                  <button
-                    onClick={() => onOpen(b)}
-                    disabled={isOpening || isDeleting}
-                    className="flex-1 min-w-0 text-left flex items-center gap-4 disabled:opacity-70 cursor-pointer"
-                  >
-                    <span className="flex-shrink-0 w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-teal-600 text-white flex items-center justify-center shadow-sm shadow-cyan-600/25">
-                      <WalletIcon />
-                    </span>
-
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-bold text-slate-900 truncate">{b.name}</span>
-                        <span className={`text-[10px] font-bold border px-1.5 py-0.5 rounded-md capitalize ${STATUS_PILL[b.status]}`}>
-                          {b.status}
-                        </span>
-                        {b.protocol_id && (
-                          <span className="text-[10px] font-bold text-cyan-700 bg-cyan-50 border border-cyan-100 px-1.5 py-0.5 rounded-full whitespace-nowrap">
-                            From protocol
-                          </span>
-                        )}
-                        {b.study_type && (
-                          <span className={`text-[10px] font-bold border px-1.5 py-0.5 rounded-md ${STUDY_BADGE[b.study_type]}`}>
-                            {STUDY_LABELS[b.study_type]}
-                          </span>
-                        )}
-                        {b.subject_profile && (
-                          <span className={`text-[10px] font-bold border px-1.5 py-0.5 rounded-md ${PROFILE_PILL[b.subject_profile]}`}>
-                            {PROFILE_LABEL[b.subject_profile]}
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-xs text-slate-500 mt-1 font-medium truncate">
-                        {b.drug_inn ?? 'No drug linked'} · {b.category_count} categories · {b.line_item_count} lines · {relativeDate(b.updated_at)}
-                      </p>
-                    </div>
-
-                    <div className="flex-shrink-0 text-right">
-                      <div className="text-base font-bold text-slate-900 tabular-nums">{formatMoney(b.grand_total, b.currency)}</div>
-                      <div className="text-[11px] text-slate-400">Grand total</div>
-                    </div>
-
-                    <span className="flex-shrink-0 text-slate-400 group-hover:text-cyan-600 transition-colors flex items-center gap-1.5 text-xs font-semibold">
-                      {isOpening ? (
-                        <Spinner />
-                      ) : (
-                        <>
-                          Open
-                          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" className="transition-transform group-hover:translate-x-0.5">
-                            <path d="M3 7h8M7 3l4 4-4 4" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
-                          </svg>
-                        </>
-                      )}
-                    </span>
-                  </button>
-
-                  <button
-                    onClick={e => handleDownloadClick(e, b)}
-                    disabled={exportingId === b.id || isDeleting || isOpening}
-                    title="Download Word document"
-                    aria-label={`Download ${b.name} as a Word document`}
-                    className="flex-shrink-0 p-1.5 rounded-lg text-slate-400 hover:text-cyan-600 hover:bg-cyan-50 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {exportingId === b.id ? <SpinIcon /> : <DownloadIcon />}
-                  </button>
-
-                  <button
-                    onClick={() => handleDeleteClick(b.id)}
-                    disabled={isDeleting || isOpening}
-                    className={`flex-shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
-                      isConfirming
-                        ? 'border-red-300 text-red-700 bg-red-50'
-                        : 'border-slate-200 text-slate-500 hover:text-red-700 hover:border-red-200 hover:bg-red-50'
-                    }`}
-                  >
-                    {isDeleting && <Spinner size={13} />}
-                    {isDeleting ? 'Deleting…' : isConfirming ? 'Confirm' : 'Delete'}
-                  </button>
-                </div>
-              )
-            })}
-          </div>
-        )}
+        <Button onClick={onNew} leftIcon={<Plus aria-hidden />}>
+          New budget
+        </Button>
       </div>
-    </main>
+
+      {/* Opening a budget failed — non-fatal */}
+      {openError ? (
+        <Banner tone="danger" title="Couldn't open that budget" onDismiss={onDismissOpenError} className="mb-3">
+          {openError}
+        </Banner>
+      ) : null}
+
+      {/* Delete failed — non-fatal */}
+      {deleteError ? (
+        <Banner tone="danger" title="Couldn't delete that budget" onDismiss={() => setDeleteError(null)} className="mb-3">
+          {deleteError}
+        </Banner>
+      ) : null}
+
+      {/* Word export failed — non-fatal */}
+      {exportError ? (
+        <Banner tone="danger" title="Couldn't export that budget" onDismiss={() => setExportError(null)} className="mb-3">
+          {exportError}
+        </Banner>
+      ) : null}
+
+      {/* Fatal error */}
+      {error ? (
+        <Banner tone="danger" title="Couldn't load your budgets">
+          {error}
+        </Banner>
+      ) : null}
+
+      {/* Loading */}
+      {budgets === null && !error ? (
+        <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading budgets">
+          {[0, 1, 2].map(i => (
+            <div key={i} className="h-[76px] animate-pulse rounded-card border border-line bg-surface-muted" />
+          ))}
+        </div>
+      ) : null}
+
+      {/* Empty (no budgets at all) */}
+      {budgets?.length === 0 ? (
+        <Card padding="none">
+          <EmptyState
+            icon={<Receipt />}
+            title="No budgets yet"
+            description="Enter a drug name and get a complete, priced 17-category budget, then edit anything you disagree with."
+            action={
+              <Button onClick={onNew} leftIcon={<Plus aria-hidden />}>
+                Create your first budget
+              </Button>
+            }
+          />
+        </Card>
+      ) : null}
+
+      {budgets && budgets.length > 0 ? (
+        <>
+          {/* Status filter */}
+          <div className="mb-4">
+            <Tabs
+              id={TABS_ID}
+              variant="pill"
+              ariaLabel="Filter budgets by status"
+              items={tabItems}
+              value={filter}
+              onChange={id => setFilter(id as StatusFilter)}
+            />
+          </div>
+
+          <TabPanel tabsId={TABS_ID} id={filter} value={filter}>
+            <p className="sr-only" role="status" aria-live="polite">
+              {filtered.length} {filtered.length === 1 ? 'budget' : 'budgets'} shown
+            </p>
+
+            {/* Empty (filter hides everything) */}
+            {filtered.length === 0 ? (
+              <Card padding="none">
+                <EmptyState
+                  icon={<Search />}
+                  title="No budgets match this filter"
+                  description="Pick another status to see the rest."
+                  action={
+                    <Button variant="secondary" onClick={() => setFilter('all')}>
+                      Show all budgets
+                    </Button>
+                  }
+                />
+              </Card>
+            ) : (
+              <ul className="space-y-2.5">
+                {filtered.map(b => {
+                  const isOpening = openingId === b.id
+                  const isDeleting = deletingId === b.id
+                  const isConfirming = confirmDeleteId === b.id
+                  const status = STATUS_BADGE[b.status]
+                  // Mouse convenience: a click on the card body opens the budget.
+                  // Keyboard and screen-reader users use the explicit Open button.
+                  const openFromCard = (e: MouseEvent<HTMLElement>) => {
+                    if ((e.target as HTMLElement).closest('button, a')) return
+                    if (!isOpening && !isDeleting) onOpen(b)
+                  }
+                  return (
+                    <Card
+                      as="li"
+                      key={b.id}
+                      padding="none"
+                      onClick={openFromCard}
+                      className={`flex cursor-pointer flex-wrap items-center gap-x-4 gap-y-3 p-4 transition duration-fast hover:border-line-strong hover:shadow-pop ${
+                        b.status === 'archived' ? 'opacity-70' : ''
+                      }`}
+                    >
+                      <span
+                        aria-hidden
+                        className="flex h-11 w-11 flex-none items-center justify-center rounded-xl bg-surface-muted text-fg-muted [&>svg]:h-5 [&>svg]:w-5"
+                      >
+                        <Receipt />
+                      </span>
+
+                      <div className="min-w-0 flex-1 basis-56">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h2 className="truncate text-body font-semibold text-fg">{b.name}</h2>
+                          <Badge variant={status.variant} dot>
+                            {status.label}
+                          </Badge>
+                          {b.protocol_id ? <Badge variant="info">From protocol</Badge> : null}
+                          {b.study_type ? <Badge variant="info">{STUDY_LABELS[b.study_type]}</Badge> : null}
+                        </div>
+                        <p className="mt-1 truncate text-small text-fg-muted">
+                          {b.drug_inn ?? 'No drug linked'}
+                          {b.subject_profile ? ` · ${PROFILE_LABEL[b.subject_profile]}` : ''} · {b.category_count} categories · {b.line_item_count} lines · {relativeDate(b.updated_at)}
+                        </p>
+                      </div>
+
+                      <div className="flex-none text-right">
+                        <div className="text-body font-semibold tabular-nums text-fg">
+                          {formatMoney(b.grand_total, b.currency)}
+                        </div>
+                        <div className="text-small text-fg-subtle">Grand total</div>
+                      </div>
+
+                      <div className="flex flex-none flex-wrap items-center gap-2">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => onOpen(b)}
+                          loading={isOpening}
+                          disabled={isDeleting}
+                          rightIcon={<ArrowRight aria-hidden />}
+                          aria-label={`Open ${b.name}`}
+                        >
+                          Open
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={e => handleDownloadClick(e, b)}
+                          loading={exportingId === b.id}
+                          disabled={exportingId !== null || isDeleting || isOpening}
+                          leftIcon={<Download aria-hidden />}
+                          title="Download Word document"
+                          aria-label={`Download ${b.name} as a Word document`}
+                        >
+                          Word
+                        </Button>
+                        <Button
+                          variant={isConfirming ? 'danger' : 'ghost'}
+                          size="sm"
+                          onClick={() => handleDeleteClick(b.id)}
+                          loading={isDeleting}
+                          disabled={isOpening}
+                          leftIcon={<Trash2 aria-hidden />}
+                          aria-label={isConfirming ? `Confirm delete of ${b.name}` : `Delete ${b.name}`}
+                        >
+                          {isDeleting ? 'Deleting…' : isConfirming ? 'Confirm' : 'Delete'}
+                        </Button>
+                      </div>
+                    </Card>
+                  )
+                })}
+              </ul>
+            )}
+          </TabPanel>
+        </>
+      ) : null}
+    </div>
   )
 }

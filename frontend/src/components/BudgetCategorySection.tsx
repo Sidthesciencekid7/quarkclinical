@@ -4,6 +4,7 @@ import BudgetLineItemRow from './BudgetLineItemRow'
 import { formatMoney } from './budgetFormat'
 import { BUDGET_BUCKET_LABELS } from '../types'
 import type { Budget, BudgetBucket, BudgetCategory, BudgetLineItem } from '../types'
+import { Button, Card, ChevronDown, IconButton, Plus, Trash2 } from '../ui'
 
 interface Props {
   budget: Budget
@@ -33,44 +34,15 @@ const BUCKETS: BudgetBucket[] = ['direct', 'stipend', 'variable', 'pass_through'
 
 // Distinguishes the six buckets at a glance down a 22-category patient-study
 // page. `direct`/`stipend`/`variable`/`pass_through` keep the original quiet
-// slate treatment; the two patient-study buckets get their own hue so they
+// neutral treatment; the two patient-study buckets get their own tone so they
 // read as a different KIND of row, not just another category.
 const BUCKET_CHIP: Record<BudgetBucket, string> = {
-  direct: 'bg-slate-100 border-slate-200 text-slate-600',
-  stipend: 'bg-slate-100 border-slate-200 text-slate-600',
-  variable: 'bg-slate-100 border-slate-200 text-slate-600',
-  pass_through: 'bg-slate-100 border-slate-200 text-slate-600',
-  investigator_grants: 'bg-emerald-50 border-emerald-200 text-emerald-700',
-  software: 'bg-violet-50 border-violet-200 text-violet-700',
-}
-
-function ChevronUpIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 20 20" fill="none">
-      <path d="M5 12l5-5 5 5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-function ChevronDownIcon({ className }: { className?: string }) {
-  return (
-    <svg width="14" height="14" viewBox="0 0 20 20" fill="none" className={className}>
-      <path d="M5 8l5 5 5-5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-function TrashIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 20 20" fill="none">
-      <path d="M4 6h12M8 6V4.5A1.5 1.5 0 019.5 3h1A1.5 1.5 0 0112 4.5V6m-6.5 0l.6 10.2a1.5 1.5 0 001.5 1.4h4.8a1.5 1.5 0 001.5-1.4L14.5 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-function PlusIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 15 15" fill="none">
-      <path d="M7.5 2v11M2 7.5h11" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  )
+  direct: 'border-line bg-surface-muted text-fg-muted',
+  stipend: 'border-line bg-surface-muted text-fg-muted',
+  variable: 'border-line bg-surface-muted text-fg-muted',
+  pass_through: 'border-line bg-surface-muted text-fg-muted',
+  investigator_grants: 'border-[color:var(--ok-border)] bg-[var(--ok-bg)] text-[color:var(--ok-fg)]',
+  software: 'border-[color:var(--info-border)] bg-[var(--info-bg)] text-[color:var(--info-fg)]',
 }
 
 export default function BudgetCategorySection({
@@ -163,23 +135,23 @@ export default function BudgetCategorySection({
   }
 
   return (
-    <section className="card overflow-hidden">
+    <Card as="section" padding="none" className="overflow-hidden">
       <div
-        className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-3 flex-wrap cursor-pointer"
+        className="flex cursor-pointer flex-wrap items-center gap-3 border-b border-line px-4 py-3 sm:px-5"
         onClick={e => {
           if ((e.target as HTMLElement).closest('input,select,button')) return
           onToggle()
         }}
       >
-        <button
+        <IconButton
+          size="sm"
+          label={expanded ? `Collapse ${category.name}` : `Expand ${category.name}`}
+          icon={<ChevronDown className={`transition-transform duration-fast ${expanded ? 'rotate-180' : ''}`} />}
           onClick={onToggle}
           aria-expanded={expanded}
           aria-controls={`cat-${category.id}`}
-          aria-label={expanded ? `Collapse ${category.name}` : `Expand ${category.name}`}
-          className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer flex-shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60"
-        >
-          <ChevronDownIcon className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />
-        </button>
+          className="flex-none"
+        />
 
         <input
           value={nameDraft}
@@ -191,68 +163,63 @@ export default function BudgetCategorySection({
           }}
           disabled={savingName}
           aria-label="Category name"
-          className="font-bold text-slate-900 bg-transparent border border-transparent hover:border-slate-200 focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/40 rounded-lg px-2 py-1 flex-1 min-w-[160px]"
+          className="min-w-[160px] flex-1 rounded-input border border-transparent bg-transparent px-2 py-1 text-body font-semibold text-fg hover:border-line-strong focus:border-[color:var(--ring)] focus:outline-none focus:ring-2 focus:ring-[color:var(--ring)] disabled:opacity-60"
         />
 
         <select
           value={category.bucket}
           onChange={e => handleBucketChange(e.target.value as BudgetBucket)}
           aria-label="Category bucket"
-          className={`text-xs font-semibold rounded-lg px-2 py-1 cursor-pointer border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60 ${BUCKET_CHIP[category.bucket]}`}
+          className={`h-8 cursor-pointer rounded-full border px-3 text-small font-medium ${BUCKET_CHIP[category.bucket]}`}
         >
           {BUCKETS.map(b => <option key={b} value={b}>{BUDGET_BUCKET_LABELS[b]}</option>)}
         </select>
 
-        <div className="text-[11px] text-slate-400 flex-shrink-0">{category.line_items.length} items</div>
+        <div className="flex-none text-small tabular-nums text-fg-subtle">{category.line_items.length} items</div>
 
         <div className="text-right">
-          <div className="font-bold text-slate-900 tabular-nums">{formatMoney(subtotal, budget.currency)}</div>
-          <div className="text-[11px] text-slate-400">Subtotal</div>
+          <div className="text-body font-semibold tabular-nums text-fg">{formatMoney(subtotal, budget.currency)}</div>
+          <div className="text-small text-fg-subtle">Subtotal</div>
         </div>
 
-        <div className="flex items-center gap-1 flex-shrink-0">
-          <button
+        <div className="flex flex-none items-center gap-1">
+          <IconButton
+            size="sm"
+            label={`Move ${category.name} up`}
+            icon={<ChevronDown className="rotate-180" />}
             onClick={() => onMove('up')}
             disabled={isFirst}
-            aria-label={`Move ${category.name} up`}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60"
-          >
-            <ChevronUpIcon />
-          </button>
-          <button
+          />
+          <IconButton
+            size="sm"
+            label={`Move ${category.name} down`}
+            icon={<ChevronDown />}
             onClick={() => onMove('down')}
             disabled={isLast}
-            aria-label={`Move ${category.name} down`}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60"
-          >
-            <ChevronDownIcon />
-          </button>
-          <button
+          />
+          <IconButton
+            size="sm"
+            variant={confirmDelete ? 'danger' : 'ghost'}
+            label={confirmDelete ? `Confirm delete of ${category.name} — its line items go with it` : `Delete ${category.name}`}
+            icon={<Trash2 />}
             onClick={handleDeleteClick}
-            aria-label={confirmDelete ? `Confirm delete of ${category.name} — its line items go with it` : `Delete ${category.name}`}
-            title={confirmDelete ? 'This deletes its line items too' : 'Delete category'}
-            className={`p-1.5 rounded-lg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60 ${
-              confirmDelete ? 'text-red-600 bg-red-50' : 'text-slate-400 hover:text-red-600 hover:bg-red-50'
-            }`}
-          >
-            <TrashIcon />
-          </button>
+          />
         </div>
       </div>
 
       {expanded && (
         <>
           <div className="overflow-x-auto" id={`cat-${category.id}`}>
-            <table className="w-full min-w-[720px] text-sm">
+            <table className="w-full min-w-[940px] text-body">
               <thead>
-                <tr className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 bg-slate-50/70">
-                  <th className="text-left px-5 py-2 font-semibold">Line item</th>
-                  <th className="text-right px-2 py-2 font-semibold" style={{ width: 80 }}>Qty</th>
-                  <th className="text-right px-2 py-2 font-semibold" style={{ width: 110 }}>Unit cost</th>
-                  <th className="text-left px-2 py-2 font-semibold" style={{ width: 120 }}>Unit</th>
-                  <th className="text-right px-2 py-2 font-semibold" style={{ width: 130 }}>Total</th>
-                  <th className="text-left px-2 py-2 font-semibold" style={{ width: 130 }}>Status</th>
-                  <th className="px-2 py-2" style={{ width: 56 }} />
+                <tr className="bg-surface-muted text-eyebrow uppercase text-fg-subtle">
+                  <th className="px-5 py-2 text-left font-semibold">Line item</th>
+                  <th className="px-2 py-2 text-right font-semibold" style={{ width: 80 }}>Qty</th>
+                  <th className="px-2 py-2 text-right font-semibold" style={{ width: 110 }}>Unit cost</th>
+                  <th className="px-2 py-2 text-left font-semibold" style={{ width: 110 }}>Unit</th>
+                  <th className="px-2 py-2 text-right font-semibold" style={{ width: 130 }}>Total</th>
+                  <th className="px-2 py-2 text-left font-semibold" style={{ width: 140 }}>Status</th>
+                  <th className="px-2 py-2" style={{ width: 112 }} />
                 </tr>
               </thead>
               <tbody>
@@ -276,7 +243,7 @@ export default function BudgetCategorySection({
                 ))}
                 {category.line_items.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-5 py-6 text-center text-sm text-slate-400">
+                    <td colSpan={7} className="px-5 py-6 text-center text-body text-fg-subtle">
                       No line items — this category will still appear in the Word document with a zero subtotal.
                     </td>
                   </tr>
@@ -285,13 +252,18 @@ export default function BudgetCategorySection({
             </table>
           </div>
 
-          <div className="px-5 py-3 border-t border-slate-100 flex items-center justify-between gap-3 flex-wrap">
-            <button onClick={handleAddLine} disabled={addingLine} className="btn-ghost text-xs py-1.5 px-3">
-              <PlusIcon />
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-3">
+            <Button
+              variant="secondary"
+              size="sm"
+              leftIcon={<Plus aria-hidden />}
+              onClick={handleAddLine}
+              disabled={addingLine}
+            >
               {addingLine ? 'Adding…' : 'Add line item'}
-            </button>
+            </Button>
             {nonCostedCount > 0 && (
-              <p className="text-[11px] text-slate-400">
+              <p className="text-small text-fg-subtle">
                 {nonCostedCount} of {category.line_items.length} rows carry no cost (see Status) and are excluded from
                 this subtotal — they still appear in the Word document.
               </p>
@@ -299,6 +271,6 @@ export default function BudgetCategorySection({
           </div>
         </>
       )}
-    </section>
+    </Card>
   )
 }

@@ -1,5 +1,7 @@
 import {
   forwardRef,
+  useCallback,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -97,7 +99,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   const composing = useRef(false)
 
   // Auto-grow: measure at natural height, clamp to maxRows.
-  useLayoutEffect(() => {
+  const measure = useCallback(() => {
     const el = taRef.current
     if (!el) return
     el.style.height = 'auto'
@@ -105,7 +107,31 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
     const full = el.scrollHeight
     el.style.height = `${Math.min(full, max)}px`
     el.style.overflowY = full > max ? 'auto' : 'hidden'
-  }, [text, maxRows, minRows])
+  }, [maxRows])
+
+  useLayoutEffect(() => {
+    measure()
+  }, [text, minRows, measure])
+
+  // The measurement above also depends on the box's WIDTH: while the box is
+  // empty, a wrapped placeholder makes it taller at a narrow width. Without
+  // this, a viewport resize left the box too tall (or too short) until the
+  // first keystroke. Re-measure when the width changes. Only a width change
+  // triggers it (our own height writes must not re-enter), and jsdom has no
+  // ResizeObserver, so it is feature-detected.
+  useEffect(() => {
+    const el = taRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    let lastWidth: number | null = null
+    const ro = new ResizeObserver(entries => {
+      const width = entries[0]?.contentRect?.width ?? el.clientWidth
+      if (width === lastWidth) return
+      lastWidth = width
+      measure()
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [measure])
 
   const empty = text.trim().length === 0
   const canStop = busy && !!onStop

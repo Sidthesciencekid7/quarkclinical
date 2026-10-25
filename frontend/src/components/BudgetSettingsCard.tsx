@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import type { ReactNode } from 'react'
 import { api } from '../api/client'
+import { Badge, Banner, Card, Field, Input, Select, Spinner } from '../ui'
 import type { Budget, BudgetGeographyProfile, BudgetUpdatePayload, StudyType } from '../types'
 
 interface Props {
@@ -39,43 +40,23 @@ const THERAPEUTIC_AREA_OPTIONS: { value: 'oncology' | 'other' | 'unknown'; label
 ]
 
 function FromProtocolPill() {
-  return (
-    <span className="text-[10px] font-bold text-cyan-700 bg-cyan-50 border border-cyan-100 px-1.5 py-0.5 rounded-full whitespace-nowrap">
-      From protocol
-    </span>
-  )
+  return <Badge variant="info">From protocol</Badge>
 }
 function EditedPill() {
-  return (
-    <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full whitespace-nowrap">
-      Edited
-    </span>
-  )
+  return <Badge variant="warning">Edited</Badge>
 }
 function AutoEstimatedPill() {
-  return (
-    <span className="text-[10px] font-bold text-slate-500 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded-full whitespace-nowrap">
-      Estimated
-    </span>
-  )
+  return <Badge>Estimated</Badge>
 }
 /** `inferred_from_safety_profile` — the value came from the drug's curated
  *  safety knowledge base (e.g. "not NHV-safe"), not a plain estimate. */
 function FromDrugProfilePill() {
-  return (
-    <span className="text-[10px] font-bold text-cyan-700 bg-cyan-50 border border-cyan-200 px-1.5 py-0.5 rounded-full whitespace-nowrap">
-      From drug profile
-    </span>
-  )
+  return <Badge variant="info">From drug profile</Badge>
 }
 /** `phase_scaled` — derived by scaling a per-month/per-visit rate across the
  *  study's own phase durations, distinct from a flat rate-card estimate. */
 function ScaledPill() {
-  return (
-    <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full whitespace-nowrap">
-      Scaled
-    </span>
-  )
+  return <Badge variant="warning">Scaled</Badge>
 }
 
 /** Which pill (if any) a field gets, per the assumption record rather than
@@ -252,68 +233,69 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
   const comparatorBasis = budget.derivation?.assumptions?.['comparator_sourced_by_sponsor']?.basis
 
   return (
-    <div className="card p-6 space-y-6">
+    <Card padding="lg" className="space-y-6">
       {/* Auto-estimated on create; every one of these is editable. */}
       <div className="space-y-3">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h3 className="text-sm font-bold text-slate-900">Study details</h3>
-            <p className="text-xs text-slate-400 mt-0.5">
+            <h3 className="text-h3 text-fg">Study details</h3>
+            <p className="mt-0.5 text-small text-fg-subtle">
               Auto-estimated from the drug and study type — edit any of them.
             </p>
           </div>
           {reprising && (
-            <span className="text-[11px] font-semibold text-cyan-600 flex items-center gap-1.5">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" className="animate-spin">
-                <circle cx="8" cy="8" r="6" stroke="#e0f2fe" strokeWidth="2.5" />
-                <path d="M8 2a6 6 0 016 6" stroke="#0891b2" strokeWidth="2.5" strokeLinecap="round" />
-              </svg>
+            <span role="status" className="flex items-center gap-1.5 text-small font-medium text-[color:var(--link)]">
+              <Spinner size={14} />
               Re-pricing…
             </span>
           )}
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div>
-            <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 mb-1.5" title={drugInnPill.title}>
-              Drug (INN)
-              {linked && <FromProtocolPill />}
-              {!linked && drugInnPill.pill}
-              {editedFields.has('drug_inn') && <EditedPill />}
-            </label>
-            <input
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <Field
+            label={
+              <PillLabel title={drugInnPill.title} text="Drug (INN)">
+                {linked && <FromProtocolPill />}
+                {!linked && drugInnPill.pill}
+                {editedFields.has('drug_inn') && <EditedPill />}
+              </PillLabel>
+            }
+          >
+            <Input
               value={drugInn}
               onChange={e => setDrugInn(e.target.value)}
               onBlur={() => {
                 if (drugInn.trim() !== (budget.drug_inn ?? '')) patch('drug_inn', { drug_inn: drugInn.trim() || null })
               }}
               placeholder="—"
-              className="input-base"
             />
-          </div>
-          <div>
-            <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 mb-1.5" title={studyTypePill.title}>
-              Study type
-              {linked && <FromProtocolPill />}
-              {!linked && studyTypePill.pill}
-              {editedFields.has('study_type') && <EditedPill />}
-            </label>
-            <select
+          </Field>
+          <Field
+            label={
+              <PillLabel title={studyTypePill.title} text="Study type">
+                {linked && <FromProtocolPill />}
+                {!linked && studyTypePill.pill}
+                {editedFields.has('study_type') && <EditedPill />}
+              </PillLabel>
+            }
+          >
+            <Select
               value={budget.study_type ?? ''}
               onChange={e => patch('study_type', { study_type: (e.target.value || null) as StudyType | null })}
-              className="input-base cursor-pointer"
             >
               <option value="">—</option>
               {STUDY_TYPES.map(s => <option key={s} value={s}>{STUDY_LABELS[s]}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 mb-1.5" title={nEnrolledPill.title}>
-              {isPatient ? 'Patients enrolled' : 'Subjects enrolled'}
-              {linked && <FromProtocolPill />}
-              {!linked && nEnrolledPill.pill}
-              {nEnrolledEdited && <EditedPill />}
-            </label>
-            <input
+            </Select>
+          </Field>
+          <Field
+            label={
+              <PillLabel title={nEnrolledPill.title} text={isPatient ? 'Patients enrolled' : 'Subjects enrolled'}>
+                {linked && <FromProtocolPill />}
+                {!linked && nEnrolledPill.pill}
+                {nEnrolledEdited && <EditedPill />}
+              </PillLabel>
+            }
+          >
+            <Input
               value={nEnrolled}
               onChange={e => setNEnrolled(e.target.value)}
               onBlur={() => {
@@ -321,26 +303,26 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
                 if (n !== budget.n_enrolled) patchAndReprice('n_enrolled', { n_enrolled: n })
               }}
               placeholder="—"
-              className="input-base tabular-nums"
+              className="tabular-nums"
             />
-          </div>
+          </Field>
         </div>
       </div>
 
       {/* Study parameters — also auto-estimated, but re-linking a protocol
        *  never re-derives these from it: adjust the affected rows directly,
        *  or re-link to re-derive everything. */}
-      <div className="space-y-3 pt-2 border-t border-slate-100">
+      <div className="space-y-3 border-t border-line pt-5">
         <div>
-          <h3 className="text-sm font-bold text-slate-900">Study parameters</h3>
-          <p className="text-xs text-slate-400 mt-0.5">
+          <h3 className="text-h3 text-fg">Study parameters</h3>
+          <p className="mt-0.5 text-small text-fg-subtle">
             {isPatient
               ? 'Sites and dosing groups here are estimated too — see Footprint below for the patient-study drivers, which DO re-price automatically.'
               : 'Estimated too. Changing one here doesn’t re-price the line items below — adjust the affected rows directly, or re-link a protocol to re-derive everything.'}
           </p>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <Field
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <NumberField
             label="Sites"
             pill={nSitesPill.pill}
             title={nSitesPill.title}
@@ -348,7 +330,7 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
             onChange={setNSites}
             onBlur={() => { const n = numOrNull(nSites); if (n !== budget.n_sites) patch('n_sites', { n_sites: n }) }}
           />
-          <Field
+          <NumberField
             label="Dosing groups"
             pill={nDosingGroupsPill.pill}
             title={nDosingGroupsPill.title}
@@ -356,7 +338,7 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
             onChange={setNDosingGroups}
             onBlur={() => { const n = numOrNull(nDosingGroups); if (n !== budget.n_dosing_groups) patch('n_dosing_groups', { n_dosing_groups: n }) }}
           />
-          <Field
+          <NumberField
             label="Project duration (months)"
             pill={projectMonthsPill.pill}
             title={projectMonthsPill.title}
@@ -364,7 +346,7 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
             onChange={setProjectMonths}
             onBlur={() => { const n = numOrNull(projectMonths); if (n !== budget.project_duration_months) patch('project_duration_months', { project_duration_months: n }) }}
           />
-          <Field
+          <NumberField
             label="Screen failure rate (%)"
             pill={screenFailPctPill.pill}
             title={screenFailPctPill.title}
@@ -372,7 +354,7 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
             onChange={setScreenFailPct}
             onBlur={() => { const n = numOrNull(screenFailPct); if (n !== budget.screen_failure_rate_pct) patch('screen_failure_rate_pct', { screen_failure_rate_pct: n }) }}
           />
-          <Field
+          <NumberField
             label="Screen failures"
             pill={nScreenFailuresPill.pill}
             title={nScreenFailuresPill.title}
@@ -383,7 +365,7 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
           {/* A patient budget forces n_alternates to 0 server-side — hidden
            *  entirely rather than shown disabled. */}
           {!isPatient && (
-            <Field
+            <NumberField
               label="Alternates"
               pill={nAlternatesPill.pill}
               title={nAlternatesPill.title}
@@ -392,7 +374,7 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
               onBlur={() => { const n = numOrNull(nAlternates); if (n !== budget.n_alternates) patch('n_alternates', { n_alternates: n }) }}
             />
           )}
-          <Field
+          <NumberField
             label="Screened"
             pill={nScreenedPill.pill}
             title={nScreenedPill.title}
@@ -409,37 +391,41 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
       {isPatient && (
         <>
           {/* 1. Population */}
-          <div className="space-y-3 pt-2 border-t border-slate-100">
-            <h3 className="text-sm font-bold text-slate-900">Population</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="space-y-3 border-t border-line pt-5">
+            <h3 className="text-h3 text-fg">Population</h3>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
               <div className="sm:col-span-3">
-                <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 mb-1.5" title={indicationPill.title}>
-                  Indication
-                  {indicationPill.pill}
-                </label>
-                <input
-                  value={indication}
-                  onChange={e => setIndication(e.target.value)}
-                  onBlur={() => { if (indication.trim() !== (budget.indication ?? '')) patch('indication', { indication: indication.trim() || null }) }}
-                  placeholder="e.g. unresectable or metastatic melanoma"
-                  className="input-base"
-                />
+                <Field
+                  label={
+                    <PillLabel title={indicationPill.title} text="Indication">
+                      {indicationPill.pill}
+                    </PillLabel>
+                  }
+                >
+                  <Input
+                    value={indication}
+                    onChange={e => setIndication(e.target.value)}
+                    onBlur={() => { if (indication.trim() !== (budget.indication ?? '')) patch('indication', { indication: indication.trim() || null }) }}
+                    placeholder="e.g. unresectable or metastatic melanoma"
+                  />
+                </Field>
               </div>
-              <div>
-                <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 mb-1.5" title={therapeuticAreaPill.title}>
-                  Therapeutic area
-                  {therapeuticAreaPill.pill}
-                </label>
-                <select
+              <Field
+                label={
+                  <PillLabel title={therapeuticAreaPill.title} text="Therapeutic area">
+                    {therapeuticAreaPill.pill}
+                  </PillLabel>
+                }
+              >
+                <Select
                   value={therapeuticArea}
                   onChange={e => { setTherapeuticArea(e.target.value); patch('therapeutic_area', { therapeutic_area: (e.target.value || null) as 'oncology' | 'other' | null }) }}
-                  className="input-base cursor-pointer"
                 >
                   <option value="">—</option>
                   {THERAPEUTIC_AREA_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                </select>
-              </div>
-              <Field
+                </Select>
+              </Field>
+              <NumberField
                 label="Screen failure rate (%)"
                 pill={screenFailPctPill.pill}
                 title={screenFailPctPill.title}
@@ -447,7 +433,7 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
                 onChange={setScreenFailPct}
                 onBlur={() => { const n = numOrNull(screenFailPct); if (n !== budget.screen_failure_rate_pct) patch('screen_failure_rate_pct', { screen_failure_rate_pct: n }) }}
               />
-              <Field
+              <NumberField
                 label="Drop-out rate (%)"
                 pill={dropoutPill.pill}
                 title={dropoutPill.title}
@@ -455,15 +441,18 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
                 onChange={setDropoutRatePct}
                 onBlur={() => { const n = numOrNull(dropoutRatePct); if (n !== budget.dropout_rate_pct) patchAndReprice('dropout_rate_pct', { dropout_rate_pct: n }) }}
               />
-              <div>
-                <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 mb-1.5" title="Server-computed: enrolled minus expected drop-outs.">
-                  Patients completing
-                </label>
-                <div className="input-base bg-slate-50 text-slate-500 tabular-nums cursor-not-allowed">
-                  {nCompleted ?? '—'}
-                </div>
-              </div>
               <Field
+                label={
+                  <PillLabel title="Server-computed: enrolled minus expected drop-outs." text="Patients completing" />
+                }
+              >
+                <Input
+                  readOnly
+                  value={nCompleted ?? '—'}
+                  className="cursor-default bg-surface-muted tabular-nums text-fg-muted"
+                />
+              </Field>
+              <NumberField
                 label="Visits per patient"
                 pill={visitsPerPatientPill.pill}
                 title={visitsPerPatientPill.title}
@@ -475,10 +464,10 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
           </div>
 
           {/* 2. Footprint */}
-          <div className="space-y-3 pt-2 border-t border-slate-100">
-            <h3 className="text-sm font-bold text-slate-900">Footprint</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <Field
+          <div className="space-y-3 border-t border-line pt-5">
+            <h3 className="text-h3 text-fg">Footprint</h3>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <NumberField
                 label="Sites activated"
                 pill={nSitesSelectedPill.pill}
                 title={nSitesSelectedPill.title}
@@ -486,7 +475,7 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
                 onChange={setNSitesSelected}
                 onBlur={() => { const n = numOrNull(nSitesSelected); if (n !== budget.n_sites_selected) patchAndReprice('n_sites_selected', { n_sites_selected: n }) }}
               />
-              <Field
+              <NumberField
                 label="Sites contracted"
                 pill={nSitesPill.pill}
                 title={nSitesPill.title}
@@ -494,7 +483,7 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
                 onChange={setNSites}
                 onBlur={() => { const n = numOrNull(nSites); if (n !== budget.n_sites) patchAndReprice('n_sites', { n_sites: n }) }}
               />
-              <Field
+              <NumberField
                 label="Countries"
                 pill={nCountriesPill.pill}
                 title={nCountriesPill.title}
@@ -502,76 +491,80 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
                 onChange={setNCountries}
                 onBlur={() => { const n = numOrNull(nCountries); if (n !== budget.n_countries) patchAndReprice('n_countries', { n_countries: n }) }}
               />
-              <div>
-                <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 mb-1.5" title={geographyPill.title}>
-                  Geography
-                  {geographyPill.pill}
-                </label>
-                <select
+              <Field
+                label={
+                  <PillLabel title={geographyPill.title} text="Geography">
+                    {geographyPill.pill}
+                  </PillLabel>
+                }
+              >
+                <Select
                   value={geographyProfile}
                   onChange={e => {
                     const v = e.target.value as BudgetGeographyProfile | ''
                     setGeographyProfile(v)
                     patchAndReprice('geography_profile', { geography_profile: (v || null) as BudgetGeographyProfile | null })
                   }}
-                  className="input-base cursor-pointer"
                 >
                   <option value="">—</option>
                   {GEOGRAPHY_OPTIONS.map(g => <option key={g} value={g}>{GEOGRAPHY_LABELS[g]}</option>)}
-                </select>
-              </div>
-              <div>
-                <label
-                  className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 mb-1.5"
-                  title="The multiplier applied to US-baseline unit costs on every geography-scaled line, reflecting typically-lower ex-US site and staffing costs."
-                >
-                  Geography factor
-                </label>
-                <div className="input-base bg-slate-50 text-slate-500 tabular-nums cursor-not-allowed">
-                  {budget.geography_factor != null ? budget.geography_factor.toFixed(2) : '—'}
-                </div>
-              </div>
+                </Select>
+              </Field>
+              <Field
+                label={
+                  <PillLabel
+                    title="The multiplier applied to US-baseline unit costs on every geography-scaled line, reflecting typically-lower ex-US site and staffing costs."
+                    text="Geography factor"
+                  />
+                }
+              >
+                <Input
+                  readOnly
+                  value={budget.geography_factor != null ? budget.geography_factor.toFixed(2) : '—'}
+                  className="cursor-default bg-surface-muted tabular-nums text-fg-muted"
+                />
+              </Field>
             </div>
           </div>
 
           {/* 3. Timeline */}
-          <div className="space-y-3 pt-2 border-t border-slate-100">
-            <div className="flex items-center justify-between gap-3 flex-wrap">
-              <h3 className="text-sm font-bold text-slate-900">Timeline</h3>
-              <span className="text-sm font-bold text-slate-900 tabular-nums">
+          <div className="space-y-3 border-t border-line pt-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h3 className="text-h3 text-fg">Timeline</h3>
+              <span className="text-body font-semibold tabular-nums text-fg">
                 Total {totalMonths.toFixed(1)} months
               </span>
             </div>
-            <p className="text-xs text-slate-400">
+            <p className="text-small text-fg-subtle">
               Nearly every cost in a patient budget is priced per month of a specific phase. Editing one phase
               re-prices only the lines that use it.
             </p>
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-              <Field
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+              <NumberField
                 label="Start-up"
                 value={startupMonths}
                 onChange={setStartupMonths}
                 onBlur={() => { const n = numOrNull(startupMonths); if (n !== budget.startup_months) patchAndReprice('startup_months', { startup_months: n }) }}
               />
-              <Field
+              <NumberField
                 label="Recruitment"
                 value={recruitmentMonths}
                 onChange={setRecruitmentMonths}
                 onBlur={() => { const n = numOrNull(recruitmentMonths); if (n !== budget.recruitment_months) patchAndReprice('recruitment_months', { recruitment_months: n }) }}
               />
-              <Field
+              <NumberField
                 label="Treatment"
                 value={treatmentMonths}
                 onChange={setTreatmentMonths}
                 onBlur={() => { const n = numOrNull(treatmentMonths); if (n !== budget.treatment_months) patchAndReprice('treatment_months', { treatment_months: n }) }}
               />
-              <Field
+              <NumberField
                 label="Follow-up"
                 value={followupMonths}
                 onChange={setFollowupMonths}
                 onBlur={() => { const n = numOrNull(followupMonths); if (n !== budget.followup_months) patchAndReprice('followup_months', { followup_months: n }) }}
               />
-              <Field
+              <NumberField
                 label="Close-out"
                 value={closeoutMonths}
                 onChange={setCloseoutMonths}
@@ -581,10 +574,10 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
           </div>
 
           {/* 4. Volume */}
-          <div className="space-y-3 pt-2 border-t border-slate-100">
-            <h3 className="text-sm font-bold text-slate-900">Volume</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <Field
+          <div className="space-y-3 border-t border-line pt-5">
+            <h3 className="text-h3 text-fg">Volume</h3>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <NumberField
                 label="Expected SAEs"
                 pill={saesPill.pill}
                 title={saesPill.title}
@@ -592,7 +585,7 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
                 onChange={setNExpectedSaes}
                 onBlur={() => { const n = numOrNull(nExpectedSaes); if (n !== budget.n_expected_saes) patchAndReprice('n_expected_saes', { n_expected_saes: n }) }}
               />
-              <Field
+              <NumberField
                 label="Expected SUSARs"
                 pill={susarsPill.pill}
                 title={susarsPill.title}
@@ -600,7 +593,7 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
                 onChange={setNExpectedSusars}
                 onBlur={() => { const n = numOrNull(nExpectedSusars); if (n !== budget.n_expected_susars) patchAndReprice('n_expected_susars', { n_expected_susars: n }) }}
               />
-              <Field
+              <NumberField
                 label="Monitoring visits (on-site)"
                 pill={monitoringOnsitePill.pill}
                 title={monitoringOnsitePill.title}
@@ -608,7 +601,7 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
                 onChange={setNMonitoringOnsite}
                 onBlur={() => { const n = numOrNull(nMonitoringOnsite); if (n !== budget.n_monitoring_visits_onsite) patchAndReprice('n_monitoring_visits_onsite', { n_monitoring_visits_onsite: n }) }}
               />
-              <Field
+              <NumberField
                 label="Monitoring visits (remote)"
                 pill={monitoringRemotePill.pill}
                 title={monitoringRemotePill.title}
@@ -616,7 +609,7 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
                 onChange={setNMonitoringRemote}
                 onBlur={() => { const n = numOrNull(nMonitoringRemote); if (n !== budget.n_monitoring_visits_remote) patchAndReprice('n_monitoring_visits_remote', { n_monitoring_visits_remote: n }) }}
               />
-              <Field
+              <NumberField
                 label="Pharmacy visits"
                 pill={pharmacyVisitsPill.pill}
                 title={pharmacyVisitsPill.title}
@@ -624,7 +617,7 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
                 onChange={setNPharmacyVisits}
                 onBlur={() => { const n = numOrNull(nPharmacyVisits); if (n !== budget.n_pharmacy_visits) patchAndReprice('n_pharmacy_visits', { n_pharmacy_visits: n }) }}
               />
-              <Field
+              <NumberField
                 label="Protocol amendments"
                 pill={amendmentsPill.pill}
                 title={amendmentsPill.title}
@@ -632,7 +625,7 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
                 onChange={setNProtocolAmendments}
                 onBlur={() => { const n = numOrNull(nProtocolAmendments); if (n !== budget.n_protocol_amendments) patchAndReprice('n_protocol_amendments', { n_protocol_amendments: n }) }}
               />
-              <Field
+              <NumberField
                 label="Archival retention (years)"
                 pill={archivalPill.pill}
                 title={archivalPill.title}
@@ -644,9 +637,9 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
           </div>
 
           {/* 5. Options */}
-          <div className="space-y-3 pt-2 border-t border-slate-100">
-            <h3 className="text-sm font-bold text-slate-900">Options</h3>
-            <div className="flex flex-col gap-3">
+          <div className="space-y-3 border-t border-line pt-5">
+            <h3 className="text-h3 text-fg">Options</h3>
+            <div className="flex flex-col gap-4">
               <Toggle
                 label="BICR required"
                 sublabel="Blinded independent central review of imaging."
@@ -660,20 +653,32 @@ export default function BudgetSettingsCard({ budget, onBudgetUpdated, onError }:
                 onChange={v => patchAndReprice('comparator_sourced_by_sponsor', { comparator_sourced_by_sponsor: v })}
               />
               {budget.comparator_sourced_by_sponsor && (
-                <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700">
+                <Banner tone="warning">
                   {comparatorBasis ??
                     'Switching this on prices a full purchased comparator arm at current list price. Only switch it on if your organisation is buying the reference product.'}
-                </div>
+                </Banner>
               )}
             </div>
           </div>
         </>
       )}
-    </div>
+    </Card>
   )
 }
 
-function Field({ label, pill, title, value, onChange, onBlur }: {
+/** A field label that carries its provenance pill(s) and the server's own
+ *  `basis` string as a tooltip. */
+function PillLabel({ text, title, children }: { text: string; title?: string; children?: ReactNode }) {
+  return (
+    <span title={title} className="inline-flex flex-wrap items-center gap-1.5">
+      {text}
+      {children}
+    </span>
+  )
+}
+
+/** A labelled numeric text input (stored as a string draft, parsed on blur). */
+function NumberField({ label, pill, title, value, onChange, onBlur }: {
   label: string
   pill?: ReactNode
   title?: string
@@ -682,42 +687,53 @@ function Field({ label, pill, title, value, onChange, onBlur }: {
   onBlur: () => void
 }) {
   return (
-    <div>
-      <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 mb-1.5" title={title}>
-        {label}
-        {pill}
-      </label>
-      <input
+    <Field label={<PillLabel title={title} text={label}>{pill}</PillLabel>}>
+      <Input
         value={value}
         onChange={e => onChange(e.target.value)}
         onBlur={onBlur}
         placeholder="—"
-        className="input-base tabular-nums"
+        className="tabular-nums"
       />
-    </div>
+    </Field>
   )
 }
 
+/** On/off switch. A real <button role="switch"> so it is focusable and
+ *  Space/Enter toggle it (the old markup was a click-only span). */
 function Toggle({ label, sublabel, checked, onChange }: {
   label: string
   sublabel?: string
   checked: boolean
   onChange: (v: boolean) => void
 }) {
+  const id = useId()
   return (
-    <label className="flex items-start justify-between gap-4 cursor-pointer">
+    <div className="flex items-start justify-between gap-4">
       <span>
-        <span className="block text-xs font-semibold text-slate-700">{label}</span>
-        {sublabel && <span className="block text-[11px] text-slate-400 mt-0.5 max-w-md">{sublabel}</span>}
+        <span id={`${id}-label`} className="block text-small font-medium text-fg">{label}</span>
+        {sublabel && (
+          <span id={`${id}-desc`} className="mt-0.5 block max-w-md text-small text-fg-subtle">{sublabel}</span>
+        )}
       </span>
-      <span
+      <button
+        type="button"
         role="switch"
         aria-checked={checked}
+        aria-labelledby={`${id}-label`}
+        aria-describedby={sublabel ? `${id}-desc` : undefined}
         onClick={() => onChange(!checked)}
-        className={`flex-shrink-0 relative w-9 h-5 rounded-full transition-colors cursor-pointer ${checked ? 'bg-cyan-500' : 'bg-slate-200'}`}
+        className={`relative h-6 w-10 flex-none cursor-pointer rounded-full transition-colors duration-fast ${
+          checked ? 'bg-[var(--btn-primary-bg)]' : 'bg-line-strong'
+        }`}
       >
-        <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-4' : ''}`} />
-      </span>
-    </label>
+        <span
+          aria-hidden
+          className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow-xs transition-transform duration-fast ${
+            checked ? 'translate-x-4' : ''
+          }`}
+        />
+      </button>
+    </div>
   )
 }

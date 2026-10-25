@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import { formatMoney } from './budgetFormat'
+import { Card, Input, PillNav } from '../ui'
 import type { Budget, BudgetDiscountType, BudgetProvenanceTier, BudgetRollup } from '../types'
 
 interface Props {
@@ -41,9 +42,9 @@ function Row({ label, value, bold, valueClassName, className }: {
   className?: string
 }) {
   return (
-    <div className={`flex justify-between text-sm ${bold ? 'font-semibold' : ''} ${className ?? ''}`}>
-      <span className="text-slate-600">{label}</span>
-      <span className={`tabular-nums ${valueClassName ?? 'text-slate-800'}`}>{value}</span>
+    <div className={`flex justify-between gap-6 text-body ${bold ? 'font-semibold' : ''} ${className ?? ''}`}>
+      <span className="text-fg-muted">{label}</span>
+      <span className={`tabular-nums ${valueClassName ?? 'text-fg'}`}>{value}</span>
     </div>
   )
 }
@@ -97,29 +98,31 @@ export default function BudgetRollupCard({ budget, rollup, variant = 'full', onB
 
   if (variant === 'sticky') {
     return (
-      <div className="sticky bottom-0 z-20 border-t border-slate-200 bg-white/95 backdrop-blur px-5 py-3 flex items-center justify-between">
-        <span className="text-xs font-semibold text-slate-500">Grand total</span>
-        <span aria-live="polite" className="text-lg font-extrabold text-slate-900 tabular-nums">
-          {formatMoney(rollup.grand_total, currency)}
-        </span>
+      <div className="sticky bottom-0 z-20 border-t border-line bg-surface px-4 py-3 sm:px-8">
+        <div className="mx-auto flex w-full max-w-5xl items-center justify-between gap-4">
+          <span className="text-small font-medium text-fg-muted">Grand total</span>
+          <span aria-live="polite" className="text-h2 tabular-nums text-fg">
+            {formatMoney(rollup.grand_total, currency)}
+          </span>
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="card p-6">
-      <div aria-live="polite" className="space-y-2 max-w-sm ml-auto text-sm">
+    <Card padding="lg">
+      <div aria-live="polite" className="ml-auto max-w-sm space-y-2">
         <Row label="Direct subtotal" value={formatMoney(rollup.direct_subtotal, currency)} />
 
         {rollup.discount_type !== 'none' && (
           <Row
             label={`Discount${rollup.discount_type === 'percent' ? ` (${rollup.discount_value}%)` : ''}`}
             value={`− ${formatMoney(rollup.discount_amount, currency)}`}
-            valueClassName="text-rose-600"
+            valueClassName="text-[color:var(--bad-fg)]"
           />
         )}
 
-        <Row label="Total direct costs" value={formatMoney(rollup.total_direct_costs, currency)} bold className="border-t border-slate-200 pt-2" />
+        <Row label="Total direct costs" value={formatMoney(rollup.total_direct_costs, currency)} bold className="border-t border-line pt-2" />
         {rollup.software_total > 0 && (
           <Row label="Software licensing and hosting" value={formatMoney(rollup.software_total, currency)} />
         )}
@@ -130,9 +133,9 @@ export default function BudgetRollupCard({ budget, rollup, variant = 'full', onB
           <Row label="Investigator grants and site fees" value={formatMoney(rollup.investigator_grants_total, currency)} />
         )}
 
-        <div className="flex justify-between border-t-2 border-slate-900/10 pt-3">
-          <span className="text-lg font-extrabold text-slate-900">Grand total</span>
-          <span className="text-lg font-extrabold text-slate-900 tabular-nums">{formatMoney(rollup.grand_total, currency)}</span>
+        <div className="flex justify-between gap-6 border-t-2 border-line-strong pt-3">
+          <span className="text-h2 text-fg">Grand total</span>
+          <span className="text-h2 tabular-nums text-fg">{formatMoney(rollup.grand_total, currency)}</span>
         </div>
       </div>
 
@@ -140,44 +143,49 @@ export default function BudgetRollupCard({ budget, rollup, variant = 'full', onB
         <ProvenanceMeter summary={budget.derivation.provenance_summary} onOpenSources={onOpenSources} />
       )}
 
-      <div className="mt-6 pt-5 border-t border-slate-100 space-y-2.5">
-        <div className="flex items-center gap-3 flex-wrap">
-          <div className="inline-flex rounded-xl border border-slate-200 p-0.5">
-            {DISCOUNT_TYPES.map(dt => (
-              <button
-                key={dt.id}
-                disabled={saving}
-                onClick={() => { setDiscountType(dt.id); handleDiscountSave(dt.id, dt.id === 'none' ? '0' : discountValue) }}
-                className={`text-xs font-semibold px-3 py-1.5 rounded-lg cursor-pointer transition-colors ${
-                  discountType === dt.id ? 'bg-cyan-500/15 text-cyan-700' : 'text-slate-500 hover:bg-slate-50'
-                }`}
-              >
-                {dt.label}
-              </button>
-            ))}
-          </div>
+      <div className="mt-6 space-y-2.5 border-t border-line pt-5">
+        <div className="flex flex-wrap items-center gap-3">
+          <PillNav
+            ariaLabel="Discount type"
+            size="sm"
+            value={discountType}
+            items={DISCOUNT_TYPES.map(dt => ({ id: dt.id, label: dt.label, disabled: saving }))}
+            onChange={id => {
+              const dt = id as BudgetDiscountType
+              setDiscountType(dt)
+              handleDiscountSave(dt, dt === 'none' ? '0' : discountValue)
+            }}
+          />
           {discountType !== 'none' && (
-            <input
-              value={discountValue}
-              onChange={e => setDiscountValue(e.target.value)}
-              onBlur={() => handleDiscountSave(discountType, discountValue)}
-              disabled={saving}
-              placeholder={discountType === 'percent' ? '0–100' : '0.00'}
-              className="input-base w-28 tabular-nums"
-            />
+            <div className="w-28">
+              <Input
+                value={discountValue}
+                onChange={e => setDiscountValue(e.target.value)}
+                onBlur={() => handleDiscountSave(discountType, discountValue)}
+                disabled={saving}
+                inputMode="decimal"
+                aria-label={discountType === 'percent' ? 'Discount percent' : 'Discount amount'}
+                placeholder={discountType === 'percent' ? '0–100' : '0.00'}
+                className="tabular-nums"
+              />
+            </div>
           )}
         </div>
-        {discountError && <p className="text-xs text-rose-600">{discountError}</p>}
-        <p className="text-[11px] text-slate-400">
+        {discountError && (
+          <p role="alert" className="text-small font-medium text-[color:var(--bad-fg)]">
+            {discountError}
+          </p>
+        )}
+        <p className="text-small text-fg-subtle">
           {isPatient
             ? 'Applied to professional fees only — investigator grants, software licensing and pass-through are never discounted.'
             : 'Applied to direct costs only.'}
         </p>
         {budget.derivation?.discount_note && (
-          <p className="text-[11px] text-slate-400">{budget.derivation.discount_note}</p>
+          <p className="text-small text-fg-subtle">{budget.derivation.discount_note}</p>
         )}
       </div>
-    </div>
+    </Card>
   )
 }
 
@@ -202,15 +210,9 @@ function ProvenanceMeter({
   const pct = (summary.researched_share_of_grand_total * 100).toFixed(1)
   const interactive = !!onOpenSources
 
-  return (
-    <div
-      role={interactive ? 'button' : undefined}
-      tabIndex={interactive ? 0 : undefined}
-      onClick={onOpenSources}
-      onKeyDown={interactive ? e => { if (e.key === 'Enter' || e.key === ' ') onOpenSources?.() } : undefined}
-      className={`mt-5 pt-4 border-t border-slate-100 w-full text-left ${interactive ? 'cursor-pointer group' : ''}`}
-    >
-      <div className="flex h-[3px] w-full rounded-full overflow-hidden bg-slate-100">
+  const body = (
+    <>
+      <div className="flex h-[3px] w-full overflow-hidden rounded-full bg-surface-muted">
         {total > 0 && segments.filter(s => s.value > 0).map(s => (
           <div
             key={s.tier}
@@ -218,9 +220,20 @@ function ProvenanceMeter({
           />
         ))}
       </div>
-      <p className={`text-[11px] text-slate-500 mt-2 ${interactive ? 'group-hover:text-cyan-700' : ''}`}>
+      <p className={`mt-2 text-small text-fg-subtle ${interactive ? 'group-hover:text-[color:var(--link)]' : ''}`}>
         {pct}% of this budget rests on published rates we cite.{interactive ? ' See sources →' : ''}
       </p>
-    </div>
+    </>
+  )
+
+  const wrapperClass = 'mt-5 w-full border-t border-line pt-4 text-left'
+  // A real <button> when it opens the sources panel, so Enter/Space and focus
+  // come for free; a plain block otherwise.
+  return interactive ? (
+    <button type="button" onClick={onOpenSources} className={`${wrapperClass} group block cursor-pointer rounded-input`}>
+      {body}
+    </button>
+  ) : (
+    <div className={wrapperClass}>{body}</div>
   )
 }

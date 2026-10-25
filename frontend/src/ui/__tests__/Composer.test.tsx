@@ -1,6 +1,6 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import type { ComponentProps } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Composer } from '../Composer'
 
 function setup(props: Partial<ComponentProps<typeof Composer>> = {}) {
@@ -108,6 +108,83 @@ describe('Composer', () => {
     expect(container.querySelector('.composer')).toHaveAttribute('data-surface', 'dark')
     expect(screen.getByText('Linked protocol')).toBeInTheDocument()
     expect(screen.getByText('Protocol mode')).toBeInTheDocument()
+  })
+
+  describe('auto-grow re-measure on resize', () => {
+    type RoCallback = (entries: { contentRect: { width: number } }[]) => void
+    let roCallback: RoCallback | null = null
+    let disconnected = false
+    // scrollHeight of the (empty) box: 24 when the placeholder fits on one line,
+    // 72 when a narrow width wraps it onto three.
+    let naturalHeight = 24
+
+    beforeEach(() => {
+      roCallback = null
+      disconnected = false
+      naturalHeight = 24
+      Object.defineProperty(HTMLTextAreaElement.prototype, 'scrollHeight', {
+        configurable: true,
+        get: () => naturalHeight,
+      })
+      vi.stubGlobal(
+        'ResizeObserver',
+        class {
+          constructor(cb: RoCallback) {
+            roCallback = cb
+          }
+          observe() {}
+          unobserve() {}
+          disconnect() {
+            disconnected = true
+          }
+        },
+      )
+    })
+
+    afterEach(() => {
+      vi.unstubAllGlobals()
+      // Drop the shadowing getter so jsdom's own scrollHeight is visible again.
+      delete (HTMLTextAreaElement.prototype as unknown as Record<string, unknown>).scrollHeight
+    })
+
+    it('re-measures an empty box when its width changes, without a keystroke', () => {
+      const { box } = setup()
+      expect(box.style.height).toBe('24px')
+
+      // The viewport narrows: the placeholder wraps, so the natural height grows.
+      naturalHeight = 72
+      act(() => roCallback?.([{ contentRect: { width: 280 } }]))
+      expect(box.style.height).toBe('72px')
+
+      // And back: the box shrinks again.
+      naturalHeight = 24
+      act(() => roCallback?.([{ contentRect: { width: 640 } }]))
+      expect(box.style.height).toBe('24px')
+    })
+
+    it('ignores callbacks where the width did not change (its own height writes must not loop)', () => {
+      const { box } = setup()
+      act(() => roCallback?.([{ contentRect: { width: 500 } }]))
+      naturalHeight = 96
+      act(() => roCallback?.([{ contentRect: { width: 500 } }]))
+      expect(box.style.height).toBe('24px')
+    })
+
+    it('stops observing on unmount', () => {
+      const { unmount } = render(<Composer onSend={() => {}} />)
+      unmount()
+      expect(disconnected).toBe(true)
+    })
+  })
+
+  it('renders fine where ResizeObserver does not exist', () => {
+    vi.stubGlobal('ResizeObserver', undefined)
+    try {
+      const { box } = setup()
+      expect(box).toBeInTheDocument()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('a disabled composer cannot send', () => {

@@ -6,8 +6,9 @@ import { RouteErrorBoundary } from './RouteErrorBoundary'
 /**
  * Frame for /admin, which lives outside the shell and the org gate: a slim bar
  * with the wordmark and a "Back to app" pill above the (separately restyled)
- * admin page. A crash in the admin page (for example, Clerk is not configured
- * in a local no-auth run) shows a message here instead of a blank screen.
+ * admin page. A crash in the admin page shows a message here instead of a
+ * blank screen. (The page itself renders in a local sign-in-off run: it only
+ * calls Clerk hooks when sign-in is enabled.)
  */
 export function AdminFrame({ children }: { children: ReactNode }) {
   return (
@@ -24,7 +25,7 @@ export function AdminFrame({ children }: { children: ReactNode }) {
         fallback={error => (
           <div className="mx-auto max-w-2xl px-4 py-10">
             <Banner tone="warning" title="The admin console could not load">
-              It needs sign-in to be enabled. If you are running locally without Clerk, this page is not available.
+              Something went wrong while opening this page. Go back to the app and try again.
               <span className="mt-1 block text-fg-subtle">{error.message}</span>
             </Banner>
           </div>
