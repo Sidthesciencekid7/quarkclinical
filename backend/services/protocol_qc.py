@@ -1494,6 +1494,15 @@ def _check_safety_gating(add: _Add, sections: dict[str, str],
     safety = _txt(sections, "safety_monitoring")
     counts = gating.get("counts") if isinstance(gating.get("counts"), dict) else {}
     thresholds = gating.get("thresholds") if isinstance(gating.get("thresholds"), dict) else {}
+    # Rules the engine withheld as mechanistically inapplicable (QT and Hy's Law for
+    # a therapeutic protein) keep their numbers in `thresholds`/`counts`, but the
+    # protocol must NOT state them - so QC must not demand them either.
+    suppressed = {
+        (r.get("key") if isinstance(r, dict) else r)
+        for r in (gating.get("suppressed_rules") or [])
+    }
+    qt_gated = "ind_qt_prolongation" not in suppressed
+    hepatic_gated = "ind_hys_law" not in suppressed
 
     if not safety:
         add(QCFinding(id="safety_halting", category="Safety",
@@ -1532,7 +1541,8 @@ def _check_safety_gating(add: _Add, sections: dict[str, str],
 
     # The other three locked counts are reported together to keep the report short.
     other = [
-        ("QT boundary", counts.get("qt_boundary_subjects_halt")),
+        ("QT boundary", counts.get("qt_boundary_subjects_halt")
+         if qt_gated and "coh_qt_count" not in suppressed else None),
         ("same related Grade >= 2 event cluster", counts.get("same_event_grade2_cluster_halt")),
         ("AE-related withdrawals", counts.get("ae_withdrawal_halt")),
     ]
@@ -1555,7 +1565,7 @@ def _check_safety_gating(add: _Add, sections: dict[str, str],
     qt = thresholds.get("qt") if isinstance(thresholds.get("qt"), dict) else {}
     qt_abs = qt.get("qtcf_absolute_ms")
     qt_delta = qt.get("qtcf_delta_from_baseline_ms")
-    if qt_abs is not None or qt_delta is not None:
+    if qt_gated and (qt_abs is not None or qt_delta is not None):
         qt_win = _windows(safety, _QT_KEYWORDS, radius=340)
         if not qt_win:
             add(QCFinding(id="safety_qt", category="Safety",
@@ -1586,7 +1596,7 @@ def _check_safety_gating(add: _Add, sections: dict[str, str],
     hys = thresholds.get("hys_law") if isinstance(thresholds.get("hys_law"), dict) else {}
     alt_x = hys.get("alt_or_ast_uln_multiple")
     bili_x = hys.get("total_bilirubin_uln_multiple")
-    if alt_x is not None or bili_x is not None:
+    if hepatic_gated and (alt_x is not None or bili_x is not None):
         hep_win = _windows(safety, _HEPATIC_KEYWORDS, radius=300)
         if "uln" not in safety.lower():
             add(QCFinding(id="safety_hepatic", category="Safety",
