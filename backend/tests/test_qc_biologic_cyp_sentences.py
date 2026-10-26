@@ -43,6 +43,41 @@ def test_the_real_generation_denial_wording_passes():
     assert _cyp_flag(text) is None
 
 
+def _flags(population_text: str, treatment_text: str = "") -> dict:
+    out = []
+    _check_ddi(out.append, {"population": f"<p>{population_text}</p>", "treatment": f"<p>{treatment_text}</p>"},
+               {"_ddi": _BIOLOGIC_DDI})
+    return {f.id: f for f in out}
+
+
+def test_second_real_run_denials_raise_no_interaction_failures():
+    # Verbatim from the 2026-10-25 parallel-generation run: every pathway and
+    # grapefruit mention DENIES a restriction, yet three checks failed on them.
+    population = (
+        "The restriction on tobacco and nicotine use in criterion 15 above is imposed as a "
+        "standardised-conditions measure for confinement, not on the basis of CYP1A2 induction "
+        "or any other metabolic mechanism. No restriction is imposed on these grounds, and no "
+        "cytochrome-P450 or drug-transporter comedication prohibition is applicable to adalimumab."
+    )
+    treatment = (
+        "Because adalimumab is catabolised by proteolytic pathways and recycled by the neonatal Fc "
+        "receptor (FcRn) rather than metabolised by cytochrome P450 enzymes or drug transporters, no "
+        "restriction on CYP-interacting agents, P-glycoprotein substrates or inhibitors, gastric acid "
+        "suppressants, grapefruit, or other enzyme-modulating agents is imposed. "
+        "Grapefruit, Seville orange, and pomelo: No restriction is imposed."
+    )
+    flags = _flags(population, treatment)
+    for fid in ("ddi_biologic_cyp", "ddi_grapefruit"):
+        assert fid not in flags, flags.get(fid)
+    assert not (flags.get("ddi_specificity") and flags["ddi_specificity"].status == QCStatus.FAIL), \
+        flags["ddi_specificity"].detail
+
+
+def test_a_real_grapefruit_restriction_still_fails_for_a_biologic():
+    flags = _flags("Subjects must avoid grapefruit and grapefruit juice from 7 days before dosing.")
+    assert flags["ddi_grapefruit"].status == QCStatus.FAIL
+
+
 def test_a_real_cyp_restriction_still_fails():
     text = "Strong CYP3A4 inhibitors are not permitted within 14 days before the first dose."
     flag = _cyp_flag(text)

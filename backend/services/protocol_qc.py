@@ -1461,13 +1461,21 @@ _DISCHARGE_KEYWORDS = ("discharge", "released from the unit", "release from the 
 _CYP_TERM_RE = re.compile(r"\bcyp\w*|cytochrome|\bp450\b|transporter|\bp-gp\b|\boatp", re.I)
 _RESTRICT_RE = re.compile(r"prohibit|not permitted|must not|washout|exclu|restrict", re.I)
 _CYP_DENIAL_RE = re.compile(
-    r"not (?:predicated|based|dependent) on"
-    r"|no (?:mechanistic )?relevance|not (?:mechanistically )?relevant|irrelevant"
+    r"not (?:predicated|based|dependent) on|not on the basis of"
+    r"|no (?:mechanistic )?relevance|not (?:mechanistically )?relevant|irrelevant|inapplicable"
     r"|is not an?\b[^.;]{0,60}\bsubstrate|not (?:a|an) (?:cyp|p450|transporter)"
-    r"|\bno\b[^.;]{0,120}\b(?:restriction|prohibition)s?\b[^.;]{0,60}"
+    r"|\bno\b[^.;]{0,120}\b(?:restriction|prohibition)s?\b[^.;]{0,200}"
     r"\b(?:is|are) (?:imposed|applied|applicable|required|needed)"
+    r"|(?:is|are) not (?:applied|imposed)"
     r"|rather than (?:by )?(?:cytochrome|cyp|p450|drug transporter)"
     r"|none (?:is|are) imposed|does not (?:apply|exist)|not applicable",
+    re.I,
+)
+# A sentence that actually restricts grapefruit (the engine emits that rule only
+# for a CYP3A4 substrate); "Grapefruit: no restriction is imposed" does not.
+_GRAPEFRUIT_RESTRICT_RE = re.compile(
+    r"prohibit|not permitted|must not|restrict|exclu|avoid|abstain|refrain|washout"
+    r"|not (?:be )?(?:consumed|taken|ingested)",
     re.I,
 )
 
@@ -1742,7 +1750,11 @@ def _named_pathways(text: str) -> set[str]:
     found: set[str] = set()
     for key, pat in _PATHWAY_TEXT_CUES:
         for m in re.finditer(pat, win, re.IGNORECASE):
-            if _NEGATED_RE.search(_sentence_around(win, m.start(), m.end())):
+            sentence = _sentence_around(win, m.start(), m.end())
+            # A sentence denying the pathway's relevance ("not on the basis of
+            # CYP1A2 induction", "no restriction on P-glycoprotein substrates
+            # ... is imposed") names it without prohibiting anything.
+            if _NEGATED_RE.search(sentence) or _CYP_DENIAL_RE.search(sentence):
                 continue
             found.add(key)
             break
@@ -1835,8 +1847,11 @@ def _check_ddi(add: _Add, sections: dict[str, str],
     row_keys = {
         r.get("key") for r in _rows(ddi, "prohibited") + _rows(ddi, "restricted")
     }
-    low = text.lower()
-    if "grapefruit" in low and "grapefruit" not in row_keys:
+    grapefruit_restricted = any(
+        _GRAPEFRUIT_RESTRICT_RE.search(s) and not _CYP_DENIAL_RE.search(s)
+        for s in re.split(r"(?<=[.;])\s+", text) if "grapefruit" in s.lower()
+    )
+    if grapefruit_restricted and "grapefruit" not in row_keys:
         add(QCFinding(id="ddi_grapefruit", category="Interactions",
             title="Grapefruit prohibited without a CYP3A4 basis", status=QCStatus.FAIL,
             detail="The text restricts grapefruit, but the screening engine did not "

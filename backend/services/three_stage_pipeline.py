@@ -1137,7 +1137,10 @@ async def _qc_remediate(
         "below in your draft. Regenerate this section, resolving every listed issue "
         "while preserving all content that is already correct. Reuse the locked "
         "design facts above verbatim (sample size N, acceptance limits, washout "
-        "duration, target power) — never restate them with different numbers."
+        "duration, target power) — never restate them with different numbers. "
+        "Write protocol text only: never quote, paraphrase or mention this feedback, "
+        "the quality check, or what would be 'correct' or 'boilerplate' — a reader "
+        "of the protocol must never see review commentary."
     )
     extras = []
     for s in target_sections:
