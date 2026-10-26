@@ -24,6 +24,7 @@ non-empty text.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import os
@@ -565,11 +566,15 @@ def _field_description(name: str) -> str:
     )
 
 
-def _build_full_protocol_tool(section_order: list[str]) -> dict:
+def _build_full_protocol_tool(section_order: list[str], *, required: Optional[list[str]] = None) -> dict:
+    """``required`` defaults to every section. The parallel writer passes ``[]``:
+    all of its requests must send a byte-identical tool so they share one prompt
+    cache, and each request is told in its own text which fields to fill (the
+    returned sections are then checked group by group)."""
     return {
         "name": "write_protocol",
         "description": (
-            "Write the complete clinical trial protocol. Provide one field per "
+            "Write clinical trial protocol sections. Provide one field per requested "
             "section, each containing that section's HTML body content."
         ),
         "input_schema": {
@@ -578,7 +583,7 @@ def _build_full_protocol_tool(section_order: list[str]) -> dict:
                 name: {"type": "string", "description": _field_description(name)}
                 for name in section_order
             },
-            "required": list(section_order),
+            "required": list(section_order) if required is None else list(required),
         },
     }
 
@@ -712,23 +717,83 @@ def _engine_directives(context: dict, already_present: str) -> tuple[str, set[st
     return ("\n".join(parts), rendered)
 
 
-async def _stage2_generate_all_sections(
-    client: anthropic.AsyncAnthropic, study_type: str, context: dict, section_order: list[str],
-    *, extra_directives: str = "", stage: str = "stage2_generate",
-) -> tuple[dict[str, str], dict]:
-    """One Sonnet call, forced tool-use, producing every section at once.
+#: How many write requests run at once (env ``GENERATION_PARALLELISM``). One
+#: request writing all ~50k output tokens took ~17 minutes in a real run
+#: (2026-10-25); the model writes at a steady rate, so the slowest group sets the
+#: wall-clock time. Lower it if the organisation's output-tokens-per-minute rate
+#: limit is small (429s are retried by the SDK, but they cost time).
+DEFAULT_GENERATION_PARALLELISM = 6
 
-    Thinking is intentionally OFF and tool_choice is forced: this reuses the
-    exact pattern services/ai_service.py's extract_pk_parameters() already
-    relies on for reliable large structured output, and avoids stacking an
-    untested thinking + forced-tool_choice combination on top of a call that
-    already has to fit a ~40KB document in its response.
+#: Relative output size of each section (HTML characters in a real 17-section
+#: protocol, 2026-10-25). Only used to balance the groups; unknown sections get
+#: the median.
+_SECTION_WEIGHTS: dict[str, int] = {
+    "title": 350, "synopsis": 8000, "introduction": 9400, "study_rationale": 7300,
+    "objectives": 1900, "endpoints": 4300, "study_design": 6900, "population": 20300,
+    "treatment": 20000, "study_assessments": 22500, "safety_monitoring": 33000,
+    "data_handling": 8500, "study_monitoring": 6200, "statistical_analysis_plan": 26300,
+    "ethics": 6600, "administrative": 7200, "references": 7900,
+}
 
-    ``extra_directives`` (used by the QC remediation pass) is appended to the
-    prompt so the same generation machinery can be re-run on a SUBSET of
-    sections with specific fix instructions. ``stage`` lets the caller label the
-    log entry distinctly (e.g. "stage2_remediate").
-    """
+#: How long the coordinator waits for the first request to start answering (its
+#: prompt is then cached) before launching the rest regardless.
+_FIRST_TOKEN_WAIT_SECONDS = 120.0
+
+
+def generation_parallelism() -> int:
+    try:
+        return max(1, int(os.environ.get("GENERATION_PARALLELISM", DEFAULT_GENERATION_PARALLELISM)))
+    except ValueError:
+        return DEFAULT_GENERATION_PARALLELISM
+
+
+def _partition_sections(section_order: list[str], groups: int) -> list[list[str]]:
+    """Split the sections into at most ``groups`` CONTIGUOUS runs with the smallest
+    possible largest run (by _SECTION_WEIGHTS). Contiguous keeps related sections
+    (objectives / endpoints / design) in one request, so they are written together."""
+    names = list(section_order)
+    if not names:
+        return []
+    k = max(1, min(groups, len(names)))
+    known = sorted(_SECTION_WEIGHTS.values())
+    median = known[len(known) // 2]
+    w = [_SECTION_WEIGHTS.get(n, median) for n in names]
+
+    def runs_needed(cap: int) -> int:
+        count, current = 1, 0
+        for x in w:
+            if current + x > cap:
+                count, current = count + 1, x
+            else:
+                current += x
+        return count
+
+    lo, hi = max(w), sum(w)
+    while lo < hi:  # smallest cap that fits in k runs
+        mid = (lo + hi) // 2
+        if runs_needed(mid) <= k:
+            hi = mid
+        else:
+            lo = mid + 1
+    out: list[list[str]] = [[]]
+    current = 0
+    for name, x in zip(names, w):
+        if out[-1] and current + x > lo:
+            out.append([])
+            current = 0
+        out[-1].append(name)
+        current += x
+    return out
+
+
+def _stage2_prompt(study_type: str, context: dict, all_sections: list[str], *, required: Optional[list[str]] = None) -> tuple[str, str, dict]:
+    """(system, shared prompt text, tool) for writing any subset of ``all_sections``.
+
+    Everything here is byte-identical for every request about one protocol - the
+    first generation pass, its parallel groups and the QC-remediation requests -
+    so they share one prompt cache. What differs per request (which sections to
+    write, remediation feedback) goes in a second text block after the cache
+    breakpoint (see _stage2_call)."""
     guideline_version = context.get("guideline_version")
     expertise, protocol_type = _expertise_for(study_type, guideline_version)
     design_directive = _locked_design_directive(context.get("sample_size"))
@@ -739,9 +804,7 @@ async def _stage2_generate_all_sections(
     # _ENGINE_DIRECTIVES), and are then dropped from the serialised context so
     # the same facts are not carried twice in two different shapes - which is
     # also how a model ends up reconciling two renderings of one number.
-    engine_directives, rendered = _engine_directives(
-        context, design_directive + decisions_directive + extra_directives
-    )
+    engine_directives, rendered = _engine_directives(context, design_directive + decisions_directive)
     context_block = json.dumps(
         {
             k: v for k, v in context.items()
@@ -755,12 +818,13 @@ async def _stage2_generate_all_sections(
         f"Regulatory reference: {cfg['fda_ref']}\n"
         f"Instructions: {cfg['instructions']}"
         for name, cfg in _SECTION_CONFIGS.items()
-        if name in section_order
+        if name in all_sections
     )
 
-    user_prompt = (
-        f"Generate the COMPLETE {protocol_type} study protocol by calling write_protocol "
-        f"with one field per section.\n\n"
+    shared = (
+        f"You are writing the {protocol_type} study protocol by calling write_protocol, "
+        f"one field per section. Each request names the sections to write now; the "
+        f"protocol's sections are: {', '.join(all_sections)}.\n\n"
         f"{design_directive}\n"
         f"{reg_directive}\n"
         f"{decisions_directive}\n"
@@ -770,33 +834,82 @@ async def _stage2_generate_all_sections(
         "For every section, write body text only - no section title, number, or "
         "meta-commentary inside the HTML; that is added separately when the document "
         "is exported."
-        + (f"\n\n{extra_directives}" if extra_directives else "")
     )
+    return expertise, shared, _build_full_protocol_tool(all_sections, required=required)
 
-    tool = _build_full_protocol_tool(section_order)
-    start = time.monotonic()
+
+def _group_request_text(group: list[str], all_sections: list[str], extra: str = "") -> str:
+    if list(group) == list(all_sections):
+        text = (
+            "Write the COMPLETE protocol now: call write_protocol with every section "
+            f"listed above ({', '.join(group)})."
+        )
+    else:
+        text = (
+            f"Write ONLY these sections now: {', '.join(group)}. Call write_protocol with "
+            "exactly these fields and no others. The remaining sections are written in "
+            "separate requests from the same facts: keep terminology and every number "
+            "identical to the facts above, refer to other sections by name where useful, "
+            "and do not repeat their content."
+        )
+    return text + (f"\n\n{extra}" if extra else "")
+
+
+def _usage_dict(usage: Any) -> dict[str, int]:
+    return {
+        key: int(getattr(usage, key, 0) or 0)
+        for key in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+    }
+
+
+async def _stage2_call(
+    client: anthropic.AsyncAnthropic, *, system: str, shared: str, tool: dict,
+    group: list[str], request_text: str, on_first_event: Any = None,
+) -> tuple[dict[str, str], Optional[str], dict[str, int], Optional[str]]:
+    """One streamed write request for ``group``.
+
+    Returns (sections, stop_reason, usage, error). ``sections`` holds only the
+    group's fields, stripped; anything else the model wrote is ignored.
+    ``on_first_event`` is called once the response starts streaming - from that
+    moment the prompt prefix is cached and other requests can read it."""
+    params = dict(
+        model=SONNET_MODEL,
+        # One request may emit the whole protocol as fields of a single tool
+        # call, so the ceiling has to cover the whole document at once. At 20000
+        # this truncated mid-tool-call and returned ~10 of 17 sections: each of
+        # the nine deterministic engines injects locked facts the model must
+        # render as tables (sampling schedule, DDI list, safety gating, the BMV
+        # validation/stability/handling set, CRF spec, DMP, meta-analysis
+        # appendix). The model supports 128k output; streaming (used here) is
+        # what makes a ceiling this large safe from HTTP timeouts.
+        max_tokens=MAX_PROTOCOL_OUTPUT_TOKENS,
+        system=system,
+        tools=[tool],
+        tool_choice={"type": "tool", "name": "write_protocol"},
+        messages=[{
+            "role": "user",
+            "content": [
+                # Breakpoint on the shared block: tools + system + this block are
+                # cached and read at ~0.1x by every other request for this protocol.
+                {"type": "text", "text": shared, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": request_text},
+            ],
+        }],
+    )
     try:
-        async with client.messages.stream(
-            model=SONNET_MODEL,
-            # One call emits ALL 17 sections as fields of a single tool call, so
-            # the ceiling has to cover the whole document at once. At 20000 this
-            # truncated mid-tool-call and returned ~10 of 17 sections: each of
-            # the nine deterministic engines now injects locked facts the model
-            # must render as tables (sampling schedule, DDI list, safety gating,
-            # the BMV validation/stability/handling set, CRF spec, DMP,
-            # meta-analysis appendix), so the document outgrew the old limit.
-            # The model supports 128k output; streaming (used here) is what makes
-            # a ceiling this large safe from HTTP timeouts.
-            max_tokens=MAX_PROTOCOL_OUTPUT_TOKENS,
-            system=expertise,
-            tools=[tool],
-            tool_choice={"type": "tool", "name": "write_protocol"},
-            messages=[{"role": "user", "content": user_prompt}],
-        ) as stream:
+        async with client.messages.stream(**params) as stream:
+            if on_first_event is not None:
+                signalled = False
+                async for _event in stream:
+                    if not signalled:
+                        signalled = True
+                        on_first_event()
             message = await stream.get_final_message()
     except Exception as exc:  # noqa: BLE001
-        return {}, _log_entry(stage, SONNET_MODEL, "failed", error=str(exc))
-    latency_ms = (time.monotonic() - start) * 1000.0
+        return {}, None, {}, str(exc)
+    finally:
+        if on_first_event is not None:
+            on_first_event()  # never leave the coordinator waiting on a failed request
 
     sections: dict[str, str] = {}
     for block in message.content:
@@ -805,10 +918,84 @@ async def _stage2_generate_all_sections(
             and block.name == "write_protocol"
             and isinstance(block.input, dict)
         ):
-            sections = {name: (block.input.get(name) or "").strip() for name in section_order}
+            sections = {name: (block.input.get(name) or "").strip() for name in group}
             break
+    return sections, getattr(message, "stop_reason", None), _usage_dict(message.usage), None
 
-    usage = message.usage
+
+async def _stage2_generate_groups(
+    client: anthropic.AsyncAnthropic, study_type: str, context: dict, all_sections: list[str],
+    groups: list[list[str]], *, extras: Optional[list[str]] = None, stage: str = "stage2_generate",
+    required: Optional[list[str]] = None,
+) -> tuple[dict[str, str], dict]:
+    """Write ``groups`` (lists of section names) in parallel over one shared, cached
+    prompt, and merge them. A truncated or incomplete group fails the WHOLE stage
+    (a silently-incomplete regulated document is the worst failure mode); a group
+    that errors or comes back incomplete is retried once on its own first."""
+    system, shared, tool = _stage2_prompt(study_type, context, all_sections, required=required)
+    extras = extras or [""] * len(groups)
+    texts = [_group_request_text(g, all_sections, x) for g, x in zip(groups, extras)]
+    sem = asyncio.Semaphore(generation_parallelism())
+    first_started = asyncio.Event()
+
+    async def run(i: int, *, signal: bool = False):
+        async with sem:
+            return await _stage2_call(
+                client, system=system, shared=shared, tool=tool, group=groups[i],
+                request_text=texts[i], on_first_event=first_started.set if signal else None,
+            )
+
+    start = time.monotonic()
+    if len(groups) == 1:
+        results = [await run(0)]
+    else:
+        # Fan-out: the cache is readable only once the first response streams, so
+        # start one request, wait for its first event, then launch the rest.
+        first = asyncio.create_task(run(0, signal=True))
+        try:
+            await asyncio.wait_for(first_started.wait(), timeout=_FIRST_TOKEN_WAIT_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+        rest = [asyncio.create_task(run(i)) for i in range(1, len(groups))]
+        results = [await first, *(await asyncio.gather(*rest))]
+
+    def incomplete(i: int, result) -> bool:
+        sections, stop_reason, _usage, error = result
+        return bool(error) or stop_reason == "max_tokens" or any(not sections.get(n) for n in groups[i])
+
+    totals: dict[str, int] = {}
+    retried: list[int] = []
+    for i, result in enumerate(results):
+        if len(groups) > 1 and incomplete(i, result):
+            retried.append(i)
+            for key, value in result[2].items():
+                totals[key] = totals.get(key, 0) + value
+            results[i] = await run(i)
+    latency_ms = (time.monotonic() - start) * 1000.0
+    for result in results:
+        for key, value in result[2].items():
+            totals[key] = totals.get(key, 0) + value
+
+    def entry(status: str, error: Optional[str] = None) -> dict:
+        log = _log_entry(
+            stage, SONNET_MODEL, status, error=error,
+            input_tokens=totals.get("input_tokens", 0), output_tokens=totals.get("output_tokens", 0),
+            latency_ms=latency_ms,
+        )
+        log["cache_read_input_tokens"] = totals.get("cache_read_input_tokens", 0)
+        log["cache_creation_input_tokens"] = totals.get("cache_creation_input_tokens", 0)
+        log["parallel_groups"] = len(groups)
+        if retried:
+            log["groups_retried"] = len(retried)
+        return log
+
+    errors = [r[3] for r in results if r[3]]
+    merged: dict[str, str] = {}
+    for result in results:
+        merged.update(result[0])
+    wanted = [n for g in groups for n in g]
+    if errors and not any(merged.get(n) for n in wanted):
+        return {}, entry("failed", errors[0])
 
     # A truncated generation MUST NOT be reported as success. Missing fields of
     # the tool call arrive as empty strings, so the dict is still fully-keyed and
@@ -817,30 +1004,52 @@ async def _stage2_generate_all_sections(
     # with no error anywhere. For a regulated document a silently-incomplete
     # output is the worst failure mode available, so both signals are checked:
     # the API's own stop_reason, and the sections that actually came back.
-    empty = [name for name in section_order if not sections.get(name)]
-    truncated = getattr(message, "stop_reason", None) == "max_tokens"
-    if sections and (truncated or empty):
+    empty = [n for n in wanted if not merged.get(n)]
+    truncated = any(r[1] == "max_tokens" for r in results)
+    if errors or truncated or empty:
         reason = (
             f"Generation was cut off at the {MAX_PROTOCOL_OUTPUT_TOKENS}-token output ceiling"
             if truncated else
             "Generation returned an incomplete protocol"
         )
         detail = (
-            f"{reason}: {len(section_order) - len(empty)} of {len(section_order)} sections "
+            f"{reason}: {len(wanted) - len(empty)} of {len(wanted)} sections "
             f"were produced. Missing: {', '.join(empty) or 'none'}. "
-            f"Output tokens used: {usage.output_tokens}."
+            f"Output tokens used: {totals.get('output_tokens', 0)}."
+            + (f" Request error: {errors[0]}" if errors else "")
         )
-        return {}, _log_entry(
-            stage, SONNET_MODEL, "failed", error=detail,
-            input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
-            latency_ms=latency_ms,
-        )
+        return {}, entry("failed", detail)
 
-    log = _log_entry(
-        stage, SONNET_MODEL, "success" if sections else "failed",
-        input_tokens=usage.input_tokens, output_tokens=usage.output_tokens, latency_ms=latency_ms,
+    return {n: merged[n] for n in wanted}, entry("success")
+
+
+async def _stage2_generate_all_sections(
+    client: anthropic.AsyncAnthropic, study_type: str, context: dict, section_order: list[str],
+    *, extra_directives: str = "", stage: str = "stage2_generate",
+) -> tuple[dict[str, str], dict]:
+    """One Sonnet request, forced tool-use, producing every section in
+    ``section_order`` at once (the single-request form of _stage2_generate_groups;
+    generation itself now writes the sections in parallel groups).
+
+    Thinking is intentionally OFF and tool_choice is forced: this reuses the
+    exact pattern services/ai_service.py's extract_pk_parameters() already
+    relies on for reliable large structured output.
+    """
+    return await _stage2_generate_groups(
+        client, study_type, context, section_order, [list(section_order)],
+        extras=[extra_directives], stage=stage,
     )
-    return sections, log
+
+
+async def _stage2_generate_parallel(
+    client: anthropic.AsyncAnthropic, study_type: str, context: dict, section_order: list[str],
+) -> tuple[dict[str, str], dict]:
+    """The protocol's sections written as ~GENERATION_PARALLELISM contiguous
+    groups at once over one cached prompt (about 3-4 minutes instead of ~17)."""
+    groups = _partition_sections(section_order, generation_parallelism())
+    return await _stage2_generate_groups(
+        client, study_type, context, section_order, groups, required=[],
+    )
 
 
 _REMEDIABLE_STATUSES = {QCStatus.FAIL.value, QCStatus.WARNING.value}
@@ -923,22 +1132,25 @@ async def _qc_remediate(
         by_section.setdefault(f["section"], []).append(f)
     target_sections = [s for s in section_order if s in by_section]
 
-    directive_lines = [
+    header = (
         "QC REMEDIATION PASS — a deterministic quality check flagged the issues "
-        "below in your draft. Regenerate ONLY these sections, resolving every "
-        "listed issue while preserving all content that is already correct. Reuse "
-        "the locked design facts above verbatim (sample size N, acceptance limits, "
-        "washout duration, target power) — never restate them with different numbers.",
-    ]
+        "below in your draft. Regenerate this section, resolving every listed issue "
+        "while preserving all content that is already correct. Reuse the locked "
+        "design facts above verbatim (sample size N, acceptance limits, washout "
+        "duration, target power) — never restate them with different numbers."
+    )
+    extras = []
     for s in target_sections:
-        directive_lines.append(f"\nSection '{s}' — fix:")
-        for f in by_section[s]:
-            directive_lines.append(f"  - [{f['status'].upper()}] {f['title']}: {f['detail']}")
-    directives = "\n".join(directive_lines)
+        lines = [header, f"\nSection '{s}' — fix:"]
+        lines += [f"  - [{f['status'].upper()}] {f['title']}: {f['detail']}" for f in by_section[s]]
+        extras.append("\n".join(lines))
 
-    fixed, log = await _stage2_generate_all_sections(
-        client, study_type, context, target_sections,
-        extra_directives=directives, stage="stage2_remediate",
+    # One request per flagged section, in parallel, over the SAME cached prompt
+    # as the generation pass (same all-sections tool and shared text), so the
+    # ~50k-token context is read from cache instead of being paid for again.
+    fixed, log = await _stage2_generate_groups(
+        client, study_type, context, section_order, [[s] for s in target_sections],
+        extras=extras, stage="stage2_remediate", required=[],
     )
     if log.get("status") == "success" and fixed:
         merged = dict(sections)
@@ -988,9 +1200,10 @@ async def generate_protocol_via_pipeline(
 
     Returns (sections, classification, validation, pipeline_log, qc).
     ``sections`` matches the shape routers/protocols.py::create_protocol already
-    persists (one HTML string per name in section_order) — callers don't need to
-    know generation happened via three sequential Sonnet calls instead of N
-    parallel Sonnet calls.
+    persists (one HTML string per name in section_order). Stage 2 writes the
+    sections as ~GENERATION_PARALLELISM groups in parallel over one cached
+    prompt (see _stage2_generate_parallel); QC remediation rewrites each flagged
+    section in parallel over the same cache.
     ``qc`` is the before/after QC-remediation summary (None if generation never
     reached the remediation stage).
 
@@ -1022,7 +1235,7 @@ async def generate_protocol_via_pipeline(
     if not (stage1_ok and classification.get("confidence", 0.0) >= CONFIDENCE_THRESHOLD):
         return sections, classification, validation, pipeline_log, None
 
-    sections, log2 = await _stage2_generate_all_sections(client, study_type, context, section_order)
+    sections, log2 = await _stage2_generate_parallel(client, study_type, context, section_order)
     pipeline_log.append(log2)
 
     qc: Optional[dict] = None
